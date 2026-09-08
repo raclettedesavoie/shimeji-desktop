@@ -376,14 +376,26 @@ de dépendances).
 **Si le linker échoue** — c'est le symptôme de composants C++ manquants : reprendre la
 Tâche 1 Step 1.
 
-**Si le compilateur refuse un appel.** Ce code n'a pas pu être compilé par son auteur
-(Rust absent, voir « Contexte d'exécution »). Deux appels sont les candidats les plus
-probables à un écart de signature selon la version exacte de Tauri v2 résolue par cargo :
+**Les signatures d'API ont été vérifiées** contre les sources de tauri 2.11.5, sans
+compilateur (`cargo fetch` puis lecture des sources) : `available_monitors`, `shadow`,
+`set_ignore_cursor_events`, `set_position`, `get_webview_window` et `handle()` existent
+tous tels qu'employés. Détail et emplacements dans
+`docs/specs/2026-09-08-spike-0-resultat.md`.
 
-| Symptôme | Correction |
+**Si l'erreur mentionne `link.exe` — piège identifié le 2026-09-08.** Le message
+
+```
+= note: link: extra operand '…rcgu.o'
+```
+
+n'est **pas** une erreur MSVC : `extra operand` est une formulation GNU coreutils. Le
+`link.exe` invoqué est celui de **Git for Windows** (`<Git>/usr/bin/link.exe`), pas le
+linker de Visual Studio.
+
+| Cas | Correction |
 |---|---|
-| `available_monitors` inconnu sur `app` | l'appeler sur la fenêtre après `build()` : déplacer le bloc topologie après la création de `win` et utiliser `win.available_monitors()?` |
-| `shadow` inconnu sur le builder | retirer `.shadow(false)` — c'est un confort visuel, pas une des sept propriétés testées |
+| la charge C++ n'est pas installée | reprendre la Tâche 1 Step 1 — rustc ne peut pas passer de chemin absolu vers le vrai linker et se rabat sur le `PATH` |
+| la charge C++ **est** installée et l'erreur persiste | c'est le `PATH` : compiler depuis un *Developer PowerShell for VS 2022*, ou depuis PowerShell plutôt qu'un shell Git Bash |
 
 Toute autre erreur : lire le message, il est en général explicite, et consigner la
 correction en Tâche 3 Step 2 — elle vaudra pour l'étape 1.
