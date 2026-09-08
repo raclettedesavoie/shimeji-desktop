@@ -7,6 +7,7 @@
 // comportement). Le plan 1b la supprimera, une fois le tray disponible pour
 // quitter proprement.
 
+mod character;
 mod clock;
 mod geom;
 mod probe;

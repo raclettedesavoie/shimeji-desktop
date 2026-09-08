@@ -1,0 +1,22 @@
+{
+  "id": "blob",
+  "name": "Shimeji (mascotte par défaut)",
+  "frameSize": [128, 128],
+  "scale": 1,
+  "hitbox": [40, 20, 48, 100],
+  "poses": {
+    "stand":     { "frames": [1],                "anchor": [64, 120] },
+    "walk":      { "frames": [2, 3, 1, 4],       "frameMs": 120, "loop": true },
+    "run":       { "frames": [30, 31, 32, 33],   "frameMs": 80,  "loop": true },
+    "sit":       { "frames": [39] },
+    "sleep":     { "frames": [39, 40, 41],       "frameMs": 400, "hold": 41 },
+    "fall":      { "frames": [10],               "anchor": [64, 64] },
+    "land":      { "frames": [4],                "frameMs": 150 },
+    "dragged":   { "frames": [10],               "anchor": [64, 64] },
+    "crawl":     { "frames": [18, 20, 21],       "frameMs": 200, "loop": true },
+    "cling":     { "frames": [23, 24, 25],       "frameMs": 150, "loop": true, "anchor": [110, 64] },
+    "climbOver": { "frames": [34, 35, 36],       "frameMs": 180 },
+    "hang":      { "frames": [22],               "anchor": [64, 10] },
+    "split":     { "frames": [44, 45, 46],       "frameMs": 200 }
+  }
+}
