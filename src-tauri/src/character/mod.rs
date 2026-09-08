@@ -3,6 +3,7 @@
 //! Ce module regroupe ce qui change ensemble. `Character` lui-même arrive à
 //! la Tâche 7, avec le comportement qui le fait vivre.
 
+pub mod attach;
 pub mod manifest;
 
 /// Le sens dans lequel le personnage regarde.
