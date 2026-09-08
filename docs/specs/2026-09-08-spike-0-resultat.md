@@ -15,9 +15,30 @@ Relevé le 2026-09-08.
 | cargo | 1.98.1 (797e8a9bc 2026-08-05) ✅ |
 | cible `x86_64-pc-windows-msvc` | installée ✅ |
 | WebView2 | 152.0.4191.66 ✅ |
-| Visual Studio 2022 Community | installé, **sans la charge de travail C++** ❌ |
-| `cargo-tauri` | non installé ⬜ |
+| Charge de travail C++ | installée sur **Visual Studio 18 Insiders** ✅ |
+| Toolset MSVC | 14.51.36231 ✅ |
+| SDK Windows | 10.0.26100.0 ✅ |
+| `cargo-tauri` | non installé ⬜ (nécessaire seulement pour `tauri dev`) |
 | tauri (résolu par cargo) | **2.11.5** |
+| **Compilation du spike** | ✅ **réussie** — `cargo build`, 2 min 24 s, exe de 12,3 Mo |
+
+### Où vit réellement la chaîne C++
+
+Deux installations Visual Studio coexistent, et **seule l'Insiders porte la charge C++** :
+
+```
+C:\Program Files\Microsoft Visual Studio\2022\Community     ← pas de C++
+C:\Program Files\Microsoft Visual Studio\18\Insiders        ← C++ ✅
+  └── VC\Tools\MSVC\14.51.36231\bin\Hostx64\x64\link.exe
+```
+
+Conséquence pratique : `vswhere` ne la voit **qu'avec `-prerelease`**. Un diagnostic qui
+interroge vswhere sans ce drapeau conclura à tort que la charge C++ est absente — c'est
+l'erreur commise pendant ce spike.
+
+**rustc 1.98.1 détecte l'installation Insiders sans configuration.** Aucune variable
+d'environnement, aucun `Developer PowerShell` n'a été nécessaire : `cargo build` depuis un
+PowerShell ordinaire a suffi.
 
 ### Bloquant : la charge de travail C++ est absente
 
@@ -61,11 +82,27 @@ Enchaînement : faute d'installation C++ détectable, rustc n'a pas pu passer un
 absolu vers le vrai linker et s'est rabattu sur `link.exe` tel que résolu par le `PATH` —
 où le `usr/bin` de Git précédait tout.
 
-**À retenir** : une fois la charge C++ installée, rustc localise le linker via
-l'installation Visual Studio et passe un chemin absolu ; le problème disparaît de
-lui-même. Mais **si l'erreur `extra operand` persiste après installation**, la cause est
-le `PATH` — lancer alors la compilation depuis un *Developer PowerShell for VS 2022*, ou
-depuis PowerShell plutôt que depuis un shell Git Bash.
+**Confirmé résolu** : une fois la charge C++ installée, rustc a localisé le linker via
+l'installation Visual Studio et passé un chemin absolu ; l'erreur a disparu d'elle-même.
+
+Mais **si l'erreur `extra operand` réapparaît un jour**, la cause est le `PATH` et non
+l'installation — compiler alors depuis un *Developer PowerShell*, ou depuis PowerShell
+plutôt que depuis un shell Git Bash.
+
+### Deux corrections nécessaires au script de build
+
+Une fois le linker en place, `tauri-build` a échoué deux fois de suite. Les deux
+corrections valent pour **l'application de l'étape 1**, pas seulement pour le spike :
+
+| Erreur | Cause | Correction |
+|---|---|---|
+| `` `icons/icon.ico` not found; required for generating a Windows Resource file `` | `tauri-build` exige une icône Windows, même pour un projet jetable | créer `icons/icon.ico` (généré ici depuis `shime1.png`, en tailles 16 → 256) |
+| échec silencieux du chargement du front | `frontendDist` est résolu **relativement au dossier du `tauri.conf.json`** — le `../ui` conventionnel suppose une config dans `src-tauri/` | avec une config à la racine du projet : `"./ui"` |
+
+Le second est une erreur de conception du plan initial, qui avait recopié le chemin
+conventionnel `../ui` d'une arborescence `src-tauri/` vers une arborescence plate.
+**L'étape 1 utilisera `src-tauri/`**, donc `../ui` y sera correct — c'est bien le spike
+qui était l'exception.
 
 ---
 

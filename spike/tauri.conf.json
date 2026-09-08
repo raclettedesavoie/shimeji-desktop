@@ -4,7 +4,7 @@
   "version": "0.0.0",
   "identifier": "dev.local.spike-overlay",
   "build": {
-    "frontendDist": "../ui"
+    "frontendDist": "./ui"
   },
   "app": {
     "windows": [],

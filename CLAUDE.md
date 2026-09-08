@@ -119,6 +119,74 @@ astucieuse.
 
 ---
 
+## Conventions de code
+
+**Le code de ce projet doit être abondamment commenté**, en français, pour être relu
+facilement des semaines plus tard par quelqu'un qui apprend encore Rust. C'est une
+exigence explicite de l'auteur, pas une préférence de style — ne pas « nettoyer » les
+commentaires au nom de la concision.
+
+### Commenter le *pourquoi*, pas le *quoi*
+
+```rust
+// ✗ inutile — le code le dit déjà
+// incrémente le compteur
+count += 1;
+
+// ✓ utile — explique une décision non évidente
+// On repart du rectangle courant de la plateforme au lieu de mémoriser la
+// position : c'est ce qui rend gratuit le déplacement de la fenêtre (décision n° 1).
+let pos = platform.rect.point_on(face, offset);
+```
+
+### Renvoyer à la décision que le code applique
+
+Quand un bloc met en œuvre une décision du design, **citer la section de la spec**. C'est
+ce qui permet, en relisant, de retrouver le raisonnement sans le reconstituer :
+
+```rust
+// Les clics traversent en permanence ; on ne les réactive que dans la
+// hitbox de la pose courante (spec §3.3).
+win.set_ignore_cursor_events(true)?;
+```
+
+### Expliquer les constructions Rust non évidentes
+
+Tout ce qui n'est pas du Rust élémentaire mérite une ligne : `let Some(x) = … else`,
+les durées de vie annotées, `Arc`/`Mutex`, les `impl Trait`, les combinateurs sur
+`Option`/`Result`, et toute raison liée à l'emprunt.
+
+```rust
+// `let … else` : si la fenêtre a été fermée, on sort du thread. Équivalent
+// d'un `match` dont la branche None ferait `return`.
+let Some(win) = handle.get_webview_window(LABEL) else {
+    return;
+};
+```
+
+### Découper les fonctions longues par bandeaux
+
+Les boucles et les `setup` deviennent vite illisibles. Les scander :
+
+```rust
+// ── Topologie des écrans ────────────────────────────────
+// ── La fenêtre du personnage ────────────────────────────
+// ── Déplacement à 60 Hz ─────────────────────────────────
+```
+
+### En-tête de fichier
+
+Chaque module s'ouvre sur deux ou trois lignes disant **sa responsabilité unique** et la
+section de la spec dont il relève. Si cet en-tête devient difficile à écrire, c'est que le
+fichier fait trop de choses.
+
+### Ce qui ne s'explique pas en commentaire
+
+Un nom mal choisi ne se rattrape pas par un commentaire. Nommer d'abord, commenter
+ensuite.
+
+---
+
 ## Architecture
 
 ### Une fenêtre par personnage
