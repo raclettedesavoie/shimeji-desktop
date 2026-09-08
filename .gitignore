@@ -14,3 +14,6 @@ settings.json
 # Windows
 Thumbs.db
 desktop.ini
+
+# Généré par tauri-build
+gen/schemas/
