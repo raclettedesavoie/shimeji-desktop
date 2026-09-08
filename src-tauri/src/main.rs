@@ -9,8 +9,16 @@
 
 mod clock;
 mod geom;
+mod probe;
 mod rng;
 
 fn main() {
-    println!("shimeji-desktop — squelette. Fenêtre et boucle : Tâche 10.");
+    // AVANT TOUT LE RESTE. Sans cet appel, Windows virtualise les
+    // coordonnées et la sonde rendrait des pixels logiques en croyant rendre
+    // des pixels physiques (spec §3.4). Voir le commentaire de la fonction.
+    probe::win32::activer_conscience_dpi();
+
+    let sonde = probe::win32::Win32Probe::new();
+    probe::win32::imprimer_diagnostic(&sonde);
+    println!("Monde, personnage et fenêtre : Tâches 3 à 11.");
 }
