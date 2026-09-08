@@ -16,4 +16,4 @@ Thumbs.db
 desktop.ini
 
 # Généré par tauri-build
-gen/schemas/
+**/gen/schemas/
