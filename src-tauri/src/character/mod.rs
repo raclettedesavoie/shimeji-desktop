@@ -5,6 +5,7 @@
 
 pub mod attach;
 pub mod manifest;
+pub mod physics;
 
 /// Le sens dans lequel le personnage regarde.
 ///
