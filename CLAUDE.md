@@ -453,6 +453,7 @@ L'application, elle, n'existe pas encore — aucune ligne de physique n'est écr
 | `docs/specs/2026-09-08-design.md` | le design complet — le *pourquoi* de chaque décision |
 | `docs/plans/2026-09-08-etape-0-spike-overlay.md` | le plan de l'étape 0, **soldé** ; **annexe A = structure de fichiers verrouillée pour l'étape 1** |
 | `docs/specs/2026-09-08-spike-0-resultat.md` | **le résultat de l'étape 0** : grille remplie, décision de stack, API vérifiées, et les 2 découvertes à appliquer |
+| `docs/plans/2026-09-08-etape-1a-il-vit-sur-le-sol.md` | **le plan à exécuter** : 11 tâches, du squelette au personnage attrapable qui marche sur les deux écrans |
 | `docs/conception/2026-09-08-journal-decisions.md` | **pourquoi** chaque décision, et ce qu'elle a écarté — à lire avant d'en défaire une |
 | `docs/conception/2026-09-08-discussion.md` | la discussion de conception intégrale, verbatim |
 | `docs/spike-etape-0/` | le spike **archivé et gelé** + la sonde Win32 rejouable — ne pas le faire évoluer vers l'application |
@@ -487,18 +488,37 @@ un acquis ; il ne se manifestera qu'à l'étape 4 ou sur une autre machine.
 
 ### La prochaine action
 
-**Écrire le plan de l'étape 1** (« il vit sur le sol ») dans `docs/plans/`. Toutes ses
-entrées sont réunies : structure de fichiers verrouillée (plan de l'étape 0, annexe A),
-cadence décidée, attributs de fenêtre connus, signatures d'API vérifiées dans les sources.
+**Exécuter le plan de l'étape 1a**, `docs/plans/2026-09-08-etape-1a-il-vit-sur-le-sol.md`,
+tâche par tâche dans l'ordre. Chaque tâche s'ouvre sur un test qui échoue et se ferme sur
+un commit ; les onze produisent un personnage qui marche, court, s'arrête, fait demi-tour,
+circule sur les deux écrans, et qu'on peut attraper et lâcher.
 
-> **Trois fichiers sont non négociables dans la première tâche de ce plan** : `clock.rs`,
-> `rng.rs` et `probe/mod.rs`. Ce sont les trois contraintes de testabilité de la spec
-> §10.2, et elles ne se rattrapent pas après coup — un `Instant::now()` ou un
+L'étape 1 a été **coupée en deux plans**, ses deux moitiés étant de nature trop
+différente :
+
+| | Périmètre |
+|---|---|
+| **1a** *(écrit)* | le personnage : géométrie, monde, accroche, chute, comportement, fenêtre, rendu, hit-testing, mode simulation |
+| **1b** *(à écrire après 1a)* | le tour du propriétaire : tray et « Quitter », `config.json`, démarrage automatique, rechargement à chaud |
+
+> ⚠️ **Tant que 1b n'existe pas, l'application ne se ferme que par `Ctrl+C`** dans le
+> terminal, ou `Stop-Process -Name shimeji-desktop`. La fenêtre est sans bordure, non
+> focalisable, hors taskbar et hors Alt+Tab : c'est voulu, et ça se retourne contre soi au
+> moment de quitter.
+
+> **Trois fichiers sont non négociables, et le plan les place en Tâches 1 et 2** :
+> `clock.rs`, `rng.rs` et `probe/mod.rs`. Ce sont les trois contraintes de testabilité de
+> la spec §10.2, et elles ne se rattrapent pas après coup — un `Instant::now()` ou un
 > `rand::random()` appelé directement rend intestable tout ce qui en dépend.
 
 Rappel de périmètre : l'étape 1 **n'a pas** de plateformes de fenêtres. Le monde n'expose
 que le sol de chaque écran, donc **pas de soustraction d'intervalles 1D** et **pas de
 filtrage de fenêtres** — ces deux morceaux appartiennent à l'étape 4. YAGNI.
+
+**Le seul point du plan dont l'API n'a pas pu être vérifiée dans les sources** est le pont
+d'événements de `ui/pet.js` (`window.__TAURI_INTERNALS__`, une interface interne). Deux
+replis sont écrits, et la Tâche 10 Step 7 les met à l'épreuve avant que le reste n'en
+dépende.
 
 ### Ce que le spike a déjà établi
 
