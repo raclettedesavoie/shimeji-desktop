@@ -109,8 +109,9 @@ les annuler ramène les bugs.
 | Design complet, le *pourquoi* de tout | `docs/specs/2026-09-08-design.md` |
 | Plan de l'étape 0 | `docs/plans/2026-09-08-etape-0-spike-overlay.md` |
 | Chaîne d'outils, pièges, API vérifiées | `docs/specs/2026-09-08-spike-0-resultat.md` |
-| Le spike, qui compile | `spike/` |
+| Le spike, qui compile — **archivé après avoir répondu** | `docs/spike-etape-0/` |
 | Personnage de test, 46 frames | `characters/blob/img/` |
 
-**Non fait** : les 7 vérifications visuelles du spike, et le plan de l'étape 1 — qui
-dépend de leurs résultats.
+**Fait depuis** (2026-09-08, même journée) : les 7 vérifications du spike sont passées,
+la stack Tauri est confirmée, et l'étape 0 est soldée. Le résultat et les deux découvertes
+qu'il a livrées sont dans `docs/specs/2026-09-08-spike-0-resultat.md`.

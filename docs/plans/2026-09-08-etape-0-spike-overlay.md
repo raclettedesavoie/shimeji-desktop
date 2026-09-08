@@ -499,29 +499,35 @@ ce sont les trois propriétés sans lesquelles le produit n'existe pas. La spec 
 valable à ~90 % — seuls §3.1 (la logique repasserait en JS) et §4 (distribution) changent.
 Consigner précisément ce qui a résisté : c'est ce qui justifiera le changement.
 
-- [ ] **Step 4 : Commit**
+- [x] **Step 4 : Commit** — fait en `7aa6335`.
 
 ```bash
 git add docs/specs/2026-09-08-spike-0-resultat.md
 git commit -m "docs: résultat du spike étape 0 et décision de stack"
 ```
 
-- [ ] **Step 5 : Décider du sort de `spike/`**
+- [x] **Step 5 : Décider du sort de `spike/`** — ✅ **archivé** en `docs/spike-etape-0/`.
 
-Le code est jetable, mais il a une valeur résiduelle : c'est le plus petit reproducteur
-d'un éventuel problème d'affichage. Deux options légitimes :
+Des deux options légitimes du plan, c'est la conservation qui a été retenue : le spike est
+le plus petit reproducteur d'un éventuel problème d'affichage, et il est le seul moyen de
+fermer un jour la question du multi-DPI, restée ouverte faute d'écrans d'échelles
+différentes sur cette machine.
 
 ```bash
-# le conserver comme référence de diagnostic
 git mv spike docs/spike-etape-0
-git commit -m "chore: archiver le spike de l'étape 0 comme référence"
-
-# ou s'en débarrasser, tout étant consigné
-git rm -r spike && git commit -m "chore: retirer le spike de l'étape 0, résultat consigné"
 ```
 
-**Ne pas** faire évoluer `spike/` vers l'application : l'étape 1 repart d'une structure
-propre (voir annexe).
+Deux ajouts par rapport au plan, décidés au moment de l'archivage :
+
+- **`docs/spike-etape-0/README.md`** — dit qu'il est gelé, ce qu'il prouve, comment le
+  rejouer, et **pourquoi ne pas le recopier** : il lui manque délibérément les deux styles
+  étendus que son analyse a révélés nécessaires.
+- **`docs/spike-etape-0/probe-styles.ps1`** — la sonde Win32 qui a servi à vérifier la
+  propriété n° 4 et à découvrir les deux styles absents. Le plan ne l'avait pas prévue ;
+  elle est conservée parce qu'elle reste l'instrument du multi-DPI.
+
+**Ne pas** faire évoluer ce code vers l'application : l'étape 1 repart d'une structure
+propre (voir annexe A).
 
 ---
 

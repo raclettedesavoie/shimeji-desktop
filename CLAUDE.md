@@ -124,13 +124,18 @@ Visual C++ — à **lier statiquement** pour que l'exe soit totalement autonome.
 
 ### Compiler et lancer
 
-Depuis **PowerShell** (voir piège 3). Le spike de l'étape 0 :
+Depuis **PowerShell** (voir piège 3). L'application n'existe pas encore ; le seul projet
+compilable à ce jour est le spike de l'étape 0, **archivé** depuis qu'il a répondu :
 
 ```powershell
-cd C:\Users\alri\Documents\shimeji-desktop\spike
+cd C:\Users\alri\Documents\shimeji-desktop\docs\spike-etape-0
 cargo build          # ~2 min à froid
 cargo run            # ou .\target\debug\spike-overlay.exe
 ```
+
+Voir `docs/spike-etape-0/README.md` pour ce qu'il prouve et la sonde de styles Win32
+qui l'accompagne. **Ne pas le faire évoluer vers l'application** : il lui manque
+délibérément les deux styles étendus que son analyse a révélés nécessaires.
 
 **`cargo run` suffit — pas besoin de `cargo tauri dev`.** Le front étant statique, les
 assets sont embarqués dans le binaire à la compilation. Le CLI Tauri ne devient nécessaire
@@ -450,7 +455,7 @@ L'application, elle, n'existe pas encore — aucune ligne de physique n'est écr
 | `docs/specs/2026-09-08-spike-0-resultat.md` | **le résultat de l'étape 0** : grille remplie, décision de stack, API vérifiées, et les 2 découvertes à appliquer |
 | `docs/conception/2026-09-08-journal-decisions.md` | **pourquoi** chaque décision, et ce qu'elle a écarté — à lire avant d'en défaire une |
 | `docs/conception/2026-09-08-discussion.md` | la discussion de conception intégrale, verbatim |
-| `spike/` | le spike, **jetable** — ne pas le faire évoluer vers l'application |
+| `docs/spike-etape-0/` | le spike **archivé et gelé** + la sonde Win32 rejouable — ne pas le faire évoluer vers l'application |
 | `characters/blob/img/` | les 46 frames du personnage de test |
 
 ### Ce que l'étape 0 a tranché (2026-09-08)
