@@ -11,6 +11,7 @@ mod clock;
 mod geom;
 mod probe;
 mod rng;
+mod world;
 
 fn main() {
     // AVANT TOUT LE RESTE. Sans cet appel, Windows virtualise les
