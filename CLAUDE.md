@@ -94,20 +94,63 @@ Rust est une dépendance de **compilation**, pas d'exécution. On livre un exe ;
 machine cible n'a besoin que de **WebView2** (déjà présent sur Windows 11) et du runtime
 Visual C++ — à **lier statiquement** pour que l'exe soit totalement autonome.
 
-### État de la chaîne d'outils (relevé le 2026-09-08)
+### Chaîne d'outils — opérationnelle (vérifié le 2026-09-08)
+
+**Tout est installé, ne rien réinstaller.** Le spike de l'étape 0 compile.
 
 | Outil | État |
 |---|---|
-| `rustc` / `cargo` / `rustup` | ❌ absents — à installer, voir le plan de l'étape 0 |
-| WebView2 | ✅ présent (152.0.4191.66) |
+| rustc / cargo | ✅ 1.98.1 |
+| cible `x86_64-pc-windows-msvc` | ✅ installée |
+| Charge C++ / MSVC 14.51.36231 / SDK 10.0.26100.0 | ✅ sur **Visual Studio 18 Insiders** |
+| WebView2 | ✅ 152.0.4191.66 |
+| `cargo-tauri` | ⬜ non installé, et **inutile** |
 | Node | ⚠️ v14.17.0 — **délibérément inutilisé** |
-| Composants C++ de Visual Studio | à confirmer |
 
-> **Le piège Node.** Tauri s'installe par npm *ou* par cargo. La voie npm exigerait
-> Node 18+, que cette machine n'a pas. Comme le front est statique (pas de bundler),
-> **on n'a besoin de Node nulle part** : on passe par `cargo-tauri`, et le Node 14
-> devient hors sujet. Ne pas « corriger » ça en installant Node — il n'y a rien à
-> corriger.
+**Trois pièges de cette machine, chacun ayant déjà coûté un diagnostic :**
+
+> **1. La charge C++ vit sur VS 18 Insiders, pas sur 2022 Community.** `vswhere` ne la
+> voit **qu'avec `-prerelease`** ; sans ce drapeau on conclut à tort qu'elle est absente.
+> rustc, lui, la détecte seul — aucune variable d'environnement, aucun *Developer
+> PowerShell* nécessaire.
+
+> **2. Ne pas installer Node.** Tauri s'installe par npm *ou* par cargo. La voie npm
+> exigerait Node 18+, que cette machine n'a pas — mais le front est statique, donc **Node
+> ne sert nulle part**. Il n'y a rien à corriger.
+
+> **3. Compiler depuis PowerShell, pas depuis Git Bash.** Dans un shell Git Bash, rustc
+> peut pêcher le `link.exe` de Git for Windows (un utilitaire coreutils de liens durs) au
+> lieu du linker MSVC, et rendre une erreur `extra operand` totalement opaque.
+
+### Compiler et lancer
+
+Depuis **PowerShell** (voir piège 3). Le spike de l'étape 0 :
+
+```powershell
+cd C:\Users\alri\Documents\shimeji-desktop\spike
+cargo build          # ~2 min à froid
+cargo run            # ou .\target\debug\spike-overlay.exe
+```
+
+**`cargo run` suffit — pas besoin de `cargo tauri dev`.** Le front étant statique, les
+assets sont embarqués dans le binaire à la compilation. Le CLI Tauri ne devient nécessaire
+que pour produire un installateur.
+
+> ⚠️ **Pour arrêter un personnage : `Ctrl+C` dans le terminal.** La fenêtre est
+> volontairement non focalisable, sans bordure, hors taskbar et hors Alt+Tab — elle ne
+> peut donc **pas** se fermer normalement. C'est le comportement voulu, mais il se
+> retourne contre soi au moment de quitter. En secours :
+> `Stop-Process -Name spike-overlay`. L'application de l'étape 1 aura une entrée « Quitter »
+> dans le tray, ce qui règle le problème pour de bon.
+
+**Deux exigences de `tauri-build` découvertes à l'étape 0**, valables aussi pour
+l'application :
+
+- `icons/icon.ico` est **obligatoire**, même pour un projet jetable — son absence fait
+  échouer le script de build.
+- `frontendDist` est résolu **relativement au dossier du `tauri.conf.json`**. Le spike a
+  une arborescence plate, donc `"./ui"` ; l'étape 1 utilisera `src-tauri/`, où le `"../ui"`
+  conventionnel sera correct.
 
 ### L'auteur apprend Rust sur ce projet
 
@@ -397,26 +440,41 @@ avant d'écrire une ligne de physique, pas après.
 
 ## État actuel
 
-**Aucun code n'existe.** Le design est complet, l'étape 0 est planifiée, la chaîne
-d'outils n'est pas installée.
+**L'application n'existe pas encore. Le spike de l'étape 0 existe et compile.**
 
-| Document | Contenu |
+| Où | Contenu |
 |---|---|
 | `docs/specs/2026-09-08-design.md` | le design complet — le *pourquoi* de chaque décision |
-| `docs/plans/2026-09-08-etape-0-spike-overlay.md` | le plan de l'étape 0, exécutable tel quel |
+| `docs/plans/2026-09-08-etape-0-spike-overlay.md` | le plan de l'étape 0 ; **annexe A = structure de fichiers verrouillée pour l'étape 1** |
+| `docs/specs/2026-09-08-spike-0-resultat.md` | chaîne d'outils, pièges rencontrés, signatures d'API vérifiées, **et la grille des 7 vérifications à remplir** |
+| `spike/` | le spike, **jetable** — ne pas le faire évoluer vers l'application |
 | `characters/blob/img/` | les 46 frames du personnage de test |
 
-**La prochaine action est le plan de l'étape 0**, qui commence par installer Rust. Son
-livrable n'est pas du code mais une **réponse écrite** dans
-`docs/specs/2026-09-08-spike-0-resultat.md` : la fenêtre transparente tient-elle sur
-cette machine ? Tant que cette réponse n'existe pas, **ne pas échafauder l'application**
-— un résultat négatif renverrait la stack vers Electron, et le design resterait valable
-à ~90 %.
+### La prochaine action
 
-Le plan de l'étape 1 s'écrira **après** cette réponse : les résultats du spike
-(fluidité à 60 Hz, comportement DPI, attributs de fenêtre nécessaires) en conditionnent
-plusieurs choix. La structure de fichiers de l'étape 1 est en revanche déjà verrouillée —
-annexe A du plan de l'étape 0.
+**Lancer le spike et remplir la grille des 7 propriétés** (transparence, premier plan,
+hors taskbar, clics traversants, pas de vol de focus, fluidité 60 Hz, multi-écran) dans
+`docs/specs/2026-09-08-spike-0-resultat.md`. Le remède de chaque échec possible y est
+déjà écrit, ainsi que dans le plan, Tâche 3 Step 3.
+
+> **Ne pas échafauder l'application avant que cette grille soit remplie.** Un résultat
+> négatif sur la transparence, le premier plan ou les clics traversants renverrait la
+> stack vers Electron — le design resterait alors valable à ~90 %, seuls §3.1 (la logique
+> repasserait en JS) et §4 (distribution) changeraient.
+
+**Le plan de l'étape 1 s'écrit après** : la fluidité réelle à 60 Hz, le comportement
+multi-DPI et les attributs de fenêtre nécessaires en conditionnent plusieurs choix. La
+structure de fichiers, elle, est déjà arrêtée (annexe A) — il n'y a pas à la rediscuter.
+
+### Ce que le spike a déjà établi
+
+- **Le motif `AppHandle` + recherche de la fenêtre par label** est retenu pour `render.rs`,
+  plutôt que de déplacer une `WebviewWindow` dans un thread : `WebviewWindow: Send` n'est
+  pas garanti explicitement, et ce motif gère en prime la fenêtre fermée.
+- Les appels `available_monitors`, `shadow`, `set_ignore_cursor_events`, `set_position`,
+  `get_webview_window` et `handle()` existent tels qu'employés dans **tauri 2.11.5**
+  (vérifiés dans les sources, emplacements consignés).
+- La fenêtre de **128×128** correspond exactement à la taille des frames Shimeji.
 
 Le projet vient d'un prototype d'extension VSCode (`../op`) où le personnage marchait en
 bas de l'éditeur. Seules les **idées** en sont reprises ; ni le code, ni les sprites
