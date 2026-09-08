@@ -161,10 +161,40 @@ Deux points à retenir, car ils **ferment deux questions et en ouvrent une** :
   n° 7 du plan — « bureau virtuel à coordonnées négatives » — ne peut donc pas se
   manifester ici. Le code ne doit pour autant **jamais** supposer `x ≥ 0` : brancher un
   écran à gauche suffit à le faire mentir.
-- **Échelle 1 sur les deux écrans.** Le comportement multi-DPI est donc **non observable
-  sur cette machine** : le spike ne peut pas répondre à cette question, et la
-  vérification n° 7 ne teste ici que le franchissement de frontière, pas le changement
-  d'échelle. C'est la seule inconnue que l'étape 0 laisse derrière elle.
+- **Échelle 1 rapportée sur les deux écrans** — et c'est ce point qui s'est révélé
+  **faux**, voir l'encadré ci-dessous.
+
+> ### ⚠️ Correction du 2026-09-08, découverte en exécutant la Tâche 2 de l'étape 1a
+>
+> **L'« échelle 1 » relevée ici était un artefact de mesure, pas une propriété de la
+> machine.** Cet écran est à **125 %**.
+>
+> Un processus Windows qui n'a pas déclaré sa conscience du DPI se fait **virtualiser** :
+> le système lui rapporte des pixels *logiques* en les présentant comme des pixels
+> d'écran, et lui annonce 96 ppp quel que soit le réglage réel. Mesuré côte à côte sur le
+> même écran :
+>
+> | | largeur | hauteur utile | échelle annoncée |
+> |---|---|---|---|
+> | processus **non** conscient du DPI | 1536 | 816 | 1 |
+> | processus conscient (`PER_MONITOR_AWARE_V2`) | **1920** | **1020** | **1,25** |
+>
+> Deux conséquences, et la seconde est la plus utile :
+>
+> 1. **La conclusion « le multi-DPI est non observable sur cette machine » est
+>    retirée.** Elle reposait sur une échelle mesurée à travers la virtualisation. Le
+>    chemin de mise à l'échelle du sprite est au contraire exercé en permanence, dès le
+>    premier lancement — ce qui vaut mieux qu'un risque dormant.
+> 2. **L'appel de conscience DPI doit être la première instruction de `main`**, et non
+>    laissé à Tauri. Tauri ne la fixe qu'à la création de sa boucle d'événements, alors
+>    que la sonde système sert avant (diagnostic) et après (boucle 60 Hz) : sans appel
+>    explicite, les deux ne verraient pas le même bureau. C'est la pire forme du bug,
+>    reproductible seulement à moitié.
+>
+> Ce que le spike a établi par ailleurs n'est pas touché : les sept propriétés portent
+> sur des styles de fenêtre et sur la fluidité, qu'une virtualisation d'échelle ne remet
+> pas en cause. Seules les **valeurs numériques** de la topologie ci-dessus sont à lire
+> comme logiques et non physiques.
 
 ### Les sept propriétés
 
@@ -342,4 +372,5 @@ tient. Le design reste valable à 100 % : ni §3.1 (toute la logique en Rust) ni
 | ⚠️ | Ne **jamais** supposer `x ≥ 0` sur le bureau virtuel, bien que ce soit vrai sur cette machine |
 | ⚠️ | **Épingler `windows = "0.61"`**, la version dont dépend Tauri 2.11.5 — sinon les `HWND` sont deux types distincts |
 | ✅ | `hwnd()`, `Get/SetWindowLongPtrW`, `GWL_EXSTYLE` et les constantes de style sont **tous vérifiés dans les sources** : l'étape 1 n'a plus d'incertitude d'API à lever |
-| ⬜ | **Le multi-DPI reste non vérifié** — les deux écrans sont à l'échelle 1. À traiter comme un risque ouvert, pas comme un acquis. Il ne se manifestera qu'à l'étape 4 (fenêtres) ou sur une autre machine. **C'est la seule inconnue que l'étape 0 laisse ouverte** |
+| ⚠️ | **Déclarer `PER_MONITOR_AWARE_V2` en première instruction de `main`** — sinon toutes les coordonnées sont virtualisées (voir la correction plus haut). Fait à la Tâche 2 de l'étape 1a |
+| ✅ | **Le multi-DPI n'est plus une inconnue dormante** : cet écran est à 125 %, donc la mise à l'échelle du sprite est exercée dès le premier lancement. Reste non éprouvé : **deux écrans d'échelles différentes** — `FakeProbe::ecran_a_gauche_hidpi()` couvre l'hypothèse côté tests |

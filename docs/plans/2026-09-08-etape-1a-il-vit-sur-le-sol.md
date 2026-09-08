@@ -1227,13 +1227,53 @@ mod tests {
 use super::{MouseState, ScreenInfo, SystemProbe};
 use crate::geom::{Point, Rect};
 
-use windows::Win32::Foundation::{BOOL, LPARAM, POINT, RECT};
+// `BOOL` ne vit PAS dans `Win32::Foundation` : c'est un type de
+// `windows-result`, réexporté par `windows::core`. Le chercher dans
+// Foundation avec les autres types win32 est l'erreur naturelle, et elle
+// donne un `unresolved import` qui ne dit pas où regarder.
+// `BOOL(pub i32)`, avec une méthode `.as_bool()`.
+use windows::core::BOOL;
+use windows::Win32::Foundation::{LPARAM, POINT, RECT};
 use windows::Win32::Graphics::Gdi::{
     EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO,
 };
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
 use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+
+/// Déclare le processus **conscient du DPI par moniteur (v2)**.
+///
+/// ⚠️ **À appeler tout au début de `main`, avant absolument tout le reste.**
+///
+/// Sans cet appel, Windows considère le processus comme « non conscient du
+/// DPI » et lui **ment** : sur un écran à 125 %, `GetMonitorInfoW` rend
+/// 1536×816 au lieu de 1920×1020, et `GetDpiForMonitor` rend 96 ppp au lieu
+/// de 120. On travaillerait alors en pixels *logiques* virtualisés en croyant
+/// être en pixels physiques — exactement ce que la spec §3.4 interdit, et
+/// qu'elle annonce comme « un enfer à diagnostiquer ».
+///
+/// Deux raisons de le faire nous-mêmes plutôt que de laisser Tauri s'en
+/// charger :
+///
+/// 1. **Tauri ne le fait qu'à la création de sa boucle d'événements.** Notre
+///    sonde est utilisée avant (diagnostic de démarrage) et après (boucle
+///    60 Hz). Sans cet appel, les deux ne verraient pas le même bureau, ce
+///    qui est la pire forme du bug : reproductible seulement à moitié.
+/// 2. Un appel explicite se lit et se vérifie ; une dépendance à l'ordre
+///    d'initialisation d'une bibliothèque, non.
+///
+/// L'appel échoue si la conscience DPI est **déjà** fixée (Tauri est passé
+/// avant, ou un manifeste la déclare). C'est sans conséquence : on voulait
+/// justement ce réglage. D'où le `let _ =`.
+pub fn activer_conscience_dpi() {
+    use windows::Win32::UI::HiDpi::{
+        SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+    };
+
+    unsafe {
+        let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    }
+}
 
 pub struct Win32Probe;
 
@@ -1422,6 +1462,11 @@ Remplacer le corps de `main` :
 
 ```rust
 fn main() {
+    // AVANT TOUT LE RESTE. Sans cet appel, Windows virtualise les
+    // coordonnées et la sonde rendrait des pixels logiques en croyant rendre
+    // des pixels physiques (spec §3.4). Voir le commentaire de la fonction.
+    probe::win32::activer_conscience_dpi();
+
     let sonde = probe::win32::Win32Probe::new();
     probe::win32::imprimer_diagnostic(&sonde);
     println!("Monde, personnage et fenêtre : Tâches 3 à 11.");
@@ -1433,21 +1478,33 @@ cd src-tauri
 cargo run
 ```
 
-Attendu, sur la machine de développement :
+Attendu : une ligne par écran **actif**, en pixels physiques. Relevé réel du
+2026-09-08 sur cette machine, un seul écran étant alors allumé :
 
 ```
-écran 0x… : zone de travail x=0 y=0 l=1920 h=1032 échelle=1
-écran 0x… : zone de travail x=1920 y=0 l=1920 h=1032 échelle=1
-souris : (…, …) bouton gauche=false
+écran 0x6008c : zone de travail x=0 y=0 l=1920 h=1020 échelle=1.25
+souris : (1205, 500) bouton gauche=false
 ```
 
-**Trois contrôles, chacun correspondant à un piège connu :**
+**Quatre contrôles, chacun correspondant à un piège connu :**
 
 | À vérifier | Pourquoi | Si c'est faux |
 |---|---|---|
-| `h` vaut ~1032 et **non 1080** | c'est `rcWork`, pas `rcMonitor` (piège n° 3) | on a lu `rcMonitor` — corriger le champ |
-| **deux** lignes s'impriment | l'énumération traverse tous les moniteurs | le rappel rend `FALSE` trop tôt, ou `cbSize` n'est pas renseigné |
-| `échelle=1` sur les deux | conforme au relevé de l'étape 0 | ce n'est **pas** un échec : c'est l'inconnue multi-DPI. La consigner |
+| **la largeur est celle du panneau** (1920), pas une valeur divisée | sans `activer_conscience_dpi`, Windows virtualise : on obtient 1536 sur un écran à 125 % | l'appel manque, ou n'est pas la **première** instruction de `main` |
+| **`échelle` vaut le vrai facteur** (1.25 ici), pas 1 | même cause : `GetDpiForMonitor` rend 96 ppp à un processus non conscient | idem |
+| `h` est inférieure à la hauteur du panneau | c'est `rcWork`, pas `rcMonitor` (piège n° 3). Ici 1020 = 1080 − 60, la barre des tâches faisant 48 px logiques × 1,25 | on a lu `rcMonitor` — corriger le champ |
+| **autant de lignes que d'écrans allumés** | l'énumération traverse tous les moniteurs | le rappel rend `FALSE` trop tôt, ou `cbSize` n'est pas renseigné. **Vérifier d'abord combien d'écrans sont réellement actifs** — un écran éteint n'est pas énuméré, et ce n'est pas un bug |
+
+> ℹ️ **Contrôle croisé indépendant**, si le compte d'écrans surprend :
+>
+> ```powershell
+> Add-Type -AssemblyName System.Windows.Forms
+> [System.Windows.Forms.Screen]::AllScreens | ForEach-Object { "$($_.DeviceName) $($_.Bounds) $($_.WorkingArea)" }
+> ```
+>
+> PowerShell n'étant pas conscient du DPI, il rend des pixels **logiques** — la
+> comparaison des deux sorties est d'ailleurs la façon la plus directe de voir la
+> virtualisation à l'œuvre.
 
 Bouger la souris et relancer doit changer les coordonnées ; maintenir le bouton gauche
 pendant le lancement doit donner `bouton gauche=true`.
