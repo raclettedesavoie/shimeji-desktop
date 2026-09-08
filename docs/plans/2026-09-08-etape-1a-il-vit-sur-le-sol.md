@@ -3837,7 +3837,21 @@ impl Character {
     /// même nom, une version naïve redémarrerait l'animation à chaque image
     /// et le personnage resterait figé sur sa première frame. Bug typique,
     /// et difficile à voir puisque « ça affiche bien quelque chose ».
+    ///
+    /// **Une pose absente du manifeste est ignorée** : le personnage garde
+    /// celle qu'il avait. C'est la couverture partielle appliquée aux
+    /// RÉFLEXES (spec §8.6) — un pack sans `fall` doit quand même pouvoir
+    /// tomber, il le fera dans sa pose courante. Les réflexes sont non
+    /// négociables ; seul le tirage des envies se restreint (`desire.rs`).
+    ///
+    /// Sans ce garde, `ch.pose` désignerait une clé inexistante et
+    /// `frame_courante` se rabattrait sur la frame 1 — le personnage
+    /// changerait d'apparence sans raison visible. C'est le test
+    /// `un_personnage_sans_pose_fall_tombe_quand_meme` qui l'exige.
     pub fn set_pose(&mut self, nom: &str, maintenant: Duration) {
+        if !self.manifest.has_pose(nom) {
+            return;
+        }
         if self.pose != nom {
             self.pose = nom.to_string();
             self.pose_depuis = maintenant;

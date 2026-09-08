@@ -47,6 +47,119 @@ impl Facing {
     }
 }
 
+use attach::Attachment;
+use manifest::Manifest;
+use crate::geom::Point;
+use std::time::Duration;
+
+/// L'état complet d'un personnage (spec §6.1).
+pub struct Character {
+    pub manifest: Manifest,
+    pub attachment: Attachment,
+    pub facing: Facing,
+
+    /// Le nom de la pose courante — une clé du manifeste.
+    ///
+    /// Une `String` et non un `enum` : le vocabulaire de poses est de la
+    /// DONNÉE (spec §8.2, décision n° 6). Un `enum` obligerait à recompiler
+    /// pour qu'un pack tiers déclare une pose de plus.
+    pub pose: String,
+
+    /// Le moment (temps de l'horloge injectée) où la pose courante a
+    /// commencé. C'est de là que `frame_courante` déduit l'image à afficher.
+    pub pose_depuis: Duration,
+
+    /// **La dernière position dérivée**, mise à jour à chaque image.
+    ///
+    /// ⚠️ **Ce n'est pas une entorse à la décision n° 1.** La source de
+    /// vérité reste `attachment` ; ce champ n'est qu'un *cache de la dernière
+    /// valeur calculée*, et il ne sert qu'à **un** endroit : amorcer une
+    /// chute quand la plateforme vient de disparaître. À cet instant précis,
+    /// `world_position` rend `None` — il n'y a plus rien dont dériver — et il
+    /// faut bien un point d'où commencer à tomber.
+    ///
+    /// Ne jamais le lire ailleurs : toute lecture supplémentaire serait le
+    /// premier pas vers la position stockée, et ramènerait les quatre bugs
+    /// que la décision n° 1 supprime.
+    pub pos_connue: Point,
+
+    /// L'intention en cours. `None` = il faut en tirer une (couche 3).
+    pub intention: Option<crate::behavior::intention::ActiveIntention>,
+}
+
+impl Character {
+    pub fn new(manifest: Manifest, attachment: Attachment, pos_connue: Point) -> Character {
+        // Calculée AVANT la construction : le module `manifest` et le
+        // paramètre `manifest` sont homonymes, et lire `manifest::POSE_STAND`
+        // au milieu de l'initialisation d'un champ `manifest` est pénible.
+        let pose = manifest::POSE_STAND.to_string();
+
+        Character {
+            manifest,
+            attachment,
+            facing: Facing::Right,
+            pose,
+            pose_depuis: Duration::ZERO,
+            pos_connue,
+            intention: None,
+        }
+    }
+
+    /// Change de pose — **et ne remet le chronomètre à zéro que si la pose
+    /// change réellement**.
+    ///
+    /// C'est le détail qui fait toute la différence : appelée à 60 Hz avec le
+    /// même nom, une version naïve redémarrerait l'animation à chaque image
+    /// et le personnage resterait figé sur sa première frame. Bug typique,
+    /// et difficile à voir puisque « ça affiche bien quelque chose ».
+    ///
+    /// **Une pose absente du manifeste est ignorée** : le personnage garde
+    /// celle qu'il avait. C'est la couverture partielle appliquée aux
+    /// RÉFLEXES (spec §8.6) — un pack sans `fall` doit quand même pouvoir
+    /// tomber, il le fera dans sa pose courante. Les réflexes sont non
+    /// négociables ; seul le tirage des envies se restreint (`desire.rs`).
+    ///
+    /// Sans ce garde, `ch.pose` désignerait une clé inexistante et
+    /// `frame_courante` se rabattrait sur la frame 1 — le personnage
+    /// changerait d'apparence sans raison visible.
+    pub fn set_pose(&mut self, nom: &str, maintenant: Duration) {
+        if !self.manifest.has_pose(nom) {
+            return;
+        }
+        if self.pose != nom {
+            self.pose = nom.to_string();
+            self.pose_depuis = maintenant;
+        }
+    }
+
+    /// L'image à afficher maintenant.
+    ///
+    /// Si la pose courante a disparu du manifeste (personnage rechargé à
+    /// chaud au plan 1b avec un JSON amputé), on rend la frame 1 plutôt que
+    /// de paniquer : un personnage figé sur une mauvaise image se voit et se
+    /// corrige, un plantage perd la session.
+    pub fn frame_courante(&self, maintenant: Duration) -> u32 {
+        match self.manifest.pose(&self.pose) {
+            Some(p) => p.frame_a(maintenant.saturating_sub(self.pose_depuis)),
+            None => 1,
+        }
+    }
+
+    /// La séquence de la pose courante est-elle arrivée à son terme ?
+    ///
+    /// Toujours `false` pour une pose en boucle : une boucle ne se termine
+    /// pas. Sert à enchaîner après un atterrissage (la pose `land` finie, on
+    /// repasse à `stand`).
+    pub fn pose_terminee(&self, maintenant: Duration) -> bool {
+        match self.manifest.pose(&self.pose) {
+            Some(p) if !p.looping => {
+                maintenant.saturating_sub(self.pose_depuis) >= p.duree_totale()
+            }
+            _ => false,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
