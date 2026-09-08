@@ -447,6 +447,8 @@ avant d'écrire une ligne de physique, pas après.
 | `docs/specs/2026-09-08-design.md` | le design complet — le *pourquoi* de chaque décision |
 | `docs/plans/2026-09-08-etape-0-spike-overlay.md` | le plan de l'étape 0 ; **annexe A = structure de fichiers verrouillée pour l'étape 1** |
 | `docs/specs/2026-09-08-spike-0-resultat.md` | chaîne d'outils, pièges rencontrés, signatures d'API vérifiées, **et la grille des 7 vérifications à remplir** |
+| `docs/conception/2026-09-08-journal-decisions.md` | **pourquoi** chaque décision, et ce qu'elle a écarté — à lire avant d'en défaire une |
+| `docs/conception/2026-09-08-discussion.md` | la discussion de conception intégrale, verbatim |
 | `spike/` | le spike, **jetable** — ne pas le faire évoluer vers l'application |
 | `characters/blob/img/` | les 46 frames du personnage de test |
 
