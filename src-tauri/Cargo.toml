@@ -1,0 +1,47 @@
+[package]
+name = "shimeji-desktop"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Un SEUL binaire, délibérément. Le mode simulation (Tâche 9) est une
+# sous-commande (`--sim`) et non une seconde cible : deux cibles binaires
+# d'un même paquet ne partagent du code que par une cible `lib`, et ajouter
+# un `lib.rs` pour cela seul réorganiserait tout le projet.
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+
+# `derive` engendre le code de (dé)sérialisation à la compilation, à partir
+# des annotations sur les structs — c'est ce qui évite d'écrire le parsing
+# de mascot.json à la main (Tâche 4).
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Épinglé en 0.61 : c'est la version dont dépend Tauri 2.11.5, et deux versions
+# majeures de cette crate donnent deux types `HWND` DISTINCTS. Prendre 0.62
+# ferait que le HWND rendu par `window.hwnd()` ne serait pas celui qu'attend
+# notre `SetWindowLongPtrW` (contrainte globale, résultat de l'étape 0).
+#
+# Les `features` sont à activer une par une : la crate `windows` couvre toute
+# l'API Windows et ne compile que ce qu'on demande.
+[dependencies.windows]
+version = "0.61"
+features = [
+    "Win32_Foundation",                 # HWND, RECT, POINT, BOOL
+    "Win32_Graphics_Gdi",               # EnumDisplayMonitors, MONITORINFO, HMONITOR
+    "Win32_UI_WindowsAndMessaging",     # Get/SetWindowLongPtrW, GWL_EXSTYLE, GetCursorPos
+    "Win32_UI_Input_KeyboardAndMouse",  # GetAsyncKeyState, VK_LBUTTON
+    "Win32_UI_HiDpi",                   # GetDpiForMonitor, MDT_EFFECTIVE_DPI
+]
+
+# En release, on veut un exe autonome et petit.
+[profile.release]
+opt-level = "z"     # optimiser la taille : l'exe est distribué, pas un calculateur
+lto = true          # optimisation inter-modules
+codegen-units = 1   # laisse plus de latitude à LTO, au prix du temps de compilation
+strip = true        # retire les symboles de debug
+panic = "abort"     # pas de déroulement de pile : plus petit, et on n'attrape aucun panic

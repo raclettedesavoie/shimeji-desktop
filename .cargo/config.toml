@@ -1,0 +1,9 @@
+# Lie statiquement le runtime Visual C++ pour que l'exe soit totalement
+# autonome (spec §4). Sans ça, la machine cible doit avoir le redistribuable
+# VC++ installé — une dépendance d'exécution qu'on ne veut pas.
+#
+# Ce fichier est à la RACINE du dépôt, pas dans src-tauri/ : cargo remonte
+# l'arborescence pour le trouver, et le mettre à la racine le rend valable
+# pour tous les paquets qu'on ajouterait plus tard.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
