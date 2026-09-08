@@ -1,0 +1,16 @@
+# Rust / Tauri
+target/
+src-tauri/target/
+**/*.rs.bk
+*.pdb
+
+# Build output
+dist/
+
+# Config générée à l'exécution (les valeurs par défaut sont dans le code)
+config.json
+settings.json
+
+# Windows
+Thumbs.db
+desktop.ini
