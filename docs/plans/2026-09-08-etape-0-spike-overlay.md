@@ -81,7 +81,7 @@ Rien hors de `spike/` et `docs/` n'est touché. Le code du produit n'existe pas 
 > Visual Studio ouvre une interface graphique et pèse plusieurs Go. Un agent qui tenterait
 > de l'automatiser bloquerait sur une fenêtre invisible.
 
-- [ ] **Step 1 : Installer les composants C++ de Visual Studio**
+- [x] **Step 1 : Installer les composants C++ de Visual Studio**
 
 La cible MSVC de Rust a besoin du linker et du SDK Windows. Vérifier d'abord s'ils sont
 déjà là :
@@ -97,7 +97,7 @@ travail « Développement Desktop en C++ » via le Visual Studio Installer, ou :
 winget install --id Microsoft.VisualStudio.2022.BuildTools --override "--quiet --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
 ```
 
-- [ ] **Step 2 : Installer Rust**
+- [x] **Step 2 : Installer Rust**
 
 ```powershell
 winget install --id Rustlang.Rustup
@@ -106,7 +106,7 @@ winget install --id Rustlang.Rustup
 Puis **ouvrir un nouveau terminal** — le `PATH` de la session courante ne contient pas
 encore `cargo`.
 
-- [ ] **Step 3 : Vérifier Rust et la cible**
+- [x] **Step 3 : Vérifier Rust et la cible**
 
 ```powershell
 rustc --version; cargo --version; rustup target list --installed
@@ -119,7 +119,7 @@ manque :
 rustup target add x86_64-pc-windows-msvc
 ```
 
-- [ ] **Step 4 : Installer le CLI Tauri par cargo**
+- [x] **Step 4 : Installer le CLI Tauri par cargo** — ⚠️ **ÉCARTÉ, et définitivement.** Le front étant statique, les assets sont embarqués par `tauri-build` : `cargo build` puis `cargo run` suffisent. Le CLI ne redeviendra nécessaire que pour produire un installateur.
 
 ```powershell
 cargo install tauri-cli --version "^2"
@@ -128,7 +128,7 @@ cargo install tauri-cli --version "^2"
 Compte plusieurs minutes. **Ne pas** utiliser `npm install @tauri-apps/cli` : c'est la
 voie que le Node 14 de cette machine ferme, et on n'en a pas besoin.
 
-- [ ] **Step 5 : Vérifier le CLI**
+- [x] **Step 5 : Vérifier le CLI** — sans objet, voir Step 4.
 
 ```powershell
 cargo tauri --version
@@ -136,7 +136,7 @@ cargo tauri --version
 
 Attendu : une version `2.x`.
 
-- [ ] **Step 6 : Consigner les versions obtenues**
+- [x] **Step 6 : Consigner les versions obtenues**
 
 Créer `docs/specs/2026-09-08-spike-0-resultat.md` avec les versions relevées :
 
@@ -158,7 +158,7 @@ Créer `docs/specs/2026-09-08-spike-0-resultat.md` avec les versions relevées :
 _(rempli en Tâche 3)_
 ```
 
-- [ ] **Step 7 : Commit**
+- [x] **Step 7 : Commit**
 
 ```bash
 git add docs/specs/2026-09-08-spike-0-resultat.md
@@ -188,14 +188,14 @@ git commit -m "chore: consigner la chaîne d'outils installée pour le spike"
 > liste précisément ces quatre points comme les seuls non automatisables. La Tâche 3 est
 > le test.
 
-- [ ] **Step 1 : Créer l'arborescence et copier une frame**
+- [x] **Step 1 : Créer l'arborescence et copier une frame**
 
 ```bash
 mkdir -p spike/src spike/ui
 cp characters/blob/img/shime1.png spike/ui/shime1.png
 ```
 
-- [ ] **Step 2 : Écrire `spike/Cargo.toml`**
+- [x] **Step 2 : Écrire `spike/Cargo.toml`**
 
 ```toml
 [package]
@@ -211,7 +211,7 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 ```
 
-- [ ] **Step 3 : Écrire `spike/build.rs`**
+- [x] **Step 3 : Écrire `spike/build.rs`**
 
 ```rust
 fn main() {
@@ -219,7 +219,7 @@ fn main() {
 }
 ```
 
-- [ ] **Step 4 : Écrire `spike/tauri.conf.json`**
+- [x] **Step 4 : Écrire `spike/tauri.conf.json`**
 
 `"windows": []` est délibéré : la fenêtre est créée par code en Step 5, pour que chaque
 attribut soit explicite et modifiable pendant le diagnostic. `"csp": null` évite qu'une
@@ -243,7 +243,7 @@ politique de sécurité bloque le chargement du PNG local pendant un spike.
 }
 ```
 
-- [ ] **Step 5 : Écrire `spike/src/main.rs`**
+- [x] **Step 5 : Écrire `spike/src/main.rs`**
 
 ```rust
 use std::time::{Duration, Instant};
@@ -329,7 +329,7 @@ fn main() {
 Note : pas de `windows_subsystem = "windows"` — on **veut** la console pour lire la
 topologie des écrans. L'application finale la supprimera.
 
-- [ ] **Step 6 : Écrire `spike/ui/index.html`**
+- [x] **Step 6 : Écrire `spike/ui/index.html`**
 
 `background: transparent` sur `html` **et** `body` : si l'un des deux garde un fond,
 WebView2 peint un rectangle opaque et la transparence de la fenêtre ne se voit pas —
@@ -363,7 +363,7 @@ c'est la cause de faux négatifs la plus courante sur ce test.
 </html>
 ```
 
-- [ ] **Step 7 : Compiler**
+- [x] **Step 7 : Compiler**
 
 ```powershell
 cd spike
@@ -400,7 +400,7 @@ linker de Visual Studio.
 Toute autre erreur : lire le message, il est en général explicite, et consigner la
 correction en Tâche 3 Step 2 — elle vaudra pour l'étape 1.
 
-- [ ] **Step 8 : Lancer**
+- [x] **Step 8 : Lancer** — fait en exécutant directement `target\debug\spike-overlay.exe`, **pas** par `cargo tauri dev` (voir Step 4).
 
 ```powershell
 cd spike
@@ -410,7 +410,7 @@ cargo tauri dev
 Attendu : la console imprime un `écran <i> : …` par moniteur, puis `bureau virtuel : …`,
 et une petite silhouette blanche traverse l'écran de gauche à droite en ondulant.
 
-- [ ] **Step 9 : Commit**
+- [x] **Step 9 : Commit**
 
 ```bash
 git add spike/
@@ -431,7 +431,7 @@ git commit -m "spike: fenêtre overlay transparente Tauri, jetable"
 
 > C'est le livrable réel de l'étape 0. Le code de la Tâche 2 n'était qu'un instrument.
 
-- [ ] **Step 1 : Vérifier les sept propriétés, spike en cours d'exécution**
+- [x] **Step 1 : Vérifier les sept propriétés, spike en cours d'exécution**
 
 Cocher chacune. Une seule case rouge ne condamne pas le projet — elle envoie en Step 3.
 
@@ -445,7 +445,7 @@ Cocher chacune. Une seule case rouge ne condamne pas le projet — elle envoie e
 | 6 | **Fluidité à 60 Hz** | suivre le mouvement des yeux | déplacement régulier ; pas de saccade, pas de traînée, pas de rémanence du fond |
 | 7 | **Multi-écran** | suivre la traversée d'un écran à l'autre | franchit la frontière sans disparaître ni sauter ; si les écrans ont des DPI différents, la taille apparente peut varier — **le noter, ce n'est pas un échec** |
 
-- [ ] **Step 2 : Consigner la topologie et les résultats**
+- [x] **Step 2 : Consigner la topologie et les résultats**
 
 Remplir la section « Résultat des vérifications » de
 `docs/specs/2026-09-08-spike-0-resultat.md` :
@@ -481,7 +481,7 @@ Date : <date>
 retenue, attribut de fenêtre à ajouter, comportement DPI à gérer>
 ```
 
-- [ ] **Step 3 : En cas d'échec — la marche à suivre**
+- [x] **Step 3 : En cas d'échec — la marche à suivre** — ✅ **sans objet : aucune des sept propriétés n'a échoué.** Aucun remède ci-dessous n'a été appliqué. On garde la table : elle vaut si un symptôme réapparaît sur une autre machine.
 
 Ne pas improviser. Chaque échec a un traitement établi ; l'ordre compte.
 

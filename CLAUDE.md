@@ -440,33 +440,60 @@ avant d'écrire une ligne de physique, pas après.
 
 ## État actuel
 
-**L'application n'existe pas encore. Le spike de l'étape 0 existe et compile.**
+**L'étape 0 est terminée : les 7 propriétés sont vertes, la stack Tauri est validée.**
+L'application, elle, n'existe pas encore — aucune ligne de physique n'est écrite.
 
 | Où | Contenu |
 |---|---|
 | `docs/specs/2026-09-08-design.md` | le design complet — le *pourquoi* de chaque décision |
-| `docs/plans/2026-09-08-etape-0-spike-overlay.md` | le plan de l'étape 0 ; **annexe A = structure de fichiers verrouillée pour l'étape 1** |
-| `docs/specs/2026-09-08-spike-0-resultat.md` | chaîne d'outils, pièges rencontrés, signatures d'API vérifiées, **et la grille des 7 vérifications à remplir** |
+| `docs/plans/2026-09-08-etape-0-spike-overlay.md` | le plan de l'étape 0, **soldé** ; **annexe A = structure de fichiers verrouillée pour l'étape 1** |
+| `docs/specs/2026-09-08-spike-0-resultat.md` | **le résultat de l'étape 0** : grille remplie, décision de stack, API vérifiées, et les 2 découvertes à appliquer |
 | `docs/conception/2026-09-08-journal-decisions.md` | **pourquoi** chaque décision, et ce qu'elle a écarté — à lire avant d'en défaire une |
 | `docs/conception/2026-09-08-discussion.md` | la discussion de conception intégrale, verbatim |
 | `spike/` | le spike, **jetable** — ne pas le faire évoluer vers l'application |
 | `characters/blob/img/` | les 46 frames du personnage de test |
 
+### Ce que l'étape 0 a tranché (2026-09-08)
+
+Les sept propriétés sont vertes. Les trois dont l'absence aurait renvoyé la stack vers
+Electron — transparence réelle, premier plan, clics traversants — sont acquises **et**
+expliquées par des styles étendus Win32 relevés, pas seulement constatées à l'œil. Aucun
+remède du plan n'a eu à être appliqué. Le design reste valable à 100 %.
+
+Quatre conséquences à respecter en écrivant l'étape 1 :
+
+1. **60 Hz est fluide.** La cadence visée est la cadence retenue — le repli « 30 Hz +
+   interpolation » de la spec §12 est **abandonné**, ne pas le réintroduire.
+2. **Poser `WS_EX_NOACTIVATE` dès la création de la fenêtre.** Tauri ne le pose pas, et le
+   focus n'est aujourd'hui préservé que parce que la fenêtre est inatteignable au clic.
+   L'étape 1 réactive les clics dans la hitbox (§3.3) : sans ce style, **attraper le
+   personnage volerait le focus de l'éditeur** — exactement ce que « il ne gêne jamais »
+   interdit.
+3. **Poser `WS_EX_TOOLWINDOW` au même endroit** — l'exclusion d'Alt+Tab observée ne repose
+   aujourd'hui que sur une heuristique de Windows 11, `skip_taskbar` ne couvrant que la
+   barre des tâches.
+4. **Épingler `windows = "0.61"`**, la version dont dépend Tauri 2.11.5 : deux versions
+   majeures de cette crate donnent deux types `HWND` **distincts**, et l'erreur de
+   compilation parle alors de deux types de même nom.
+
+La seule inconnue laissée ouverte est le **multi-DPI** : les deux écrans de cette machine
+sont à l'échelle 1, le spike ne pouvait donc pas l'éprouver. C'est un risque ouvert, pas
+un acquis ; il ne se manifestera qu'à l'étape 4 ou sur une autre machine.
+
 ### La prochaine action
 
-**Lancer le spike et remplir la grille des 7 propriétés** (transparence, premier plan,
-hors taskbar, clics traversants, pas de vol de focus, fluidité 60 Hz, multi-écran) dans
-`docs/specs/2026-09-08-spike-0-resultat.md`. Le remède de chaque échec possible y est
-déjà écrit, ainsi que dans le plan, Tâche 3 Step 3.
+**Écrire le plan de l'étape 1** (« il vit sur le sol ») dans `docs/plans/`. Toutes ses
+entrées sont réunies : structure de fichiers verrouillée (plan de l'étape 0, annexe A),
+cadence décidée, attributs de fenêtre connus, signatures d'API vérifiées dans les sources.
 
-> **Ne pas échafauder l'application avant que cette grille soit remplie.** Un résultat
-> négatif sur la transparence, le premier plan ou les clics traversants renverrait la
-> stack vers Electron — le design resterait alors valable à ~90 %, seuls §3.1 (la logique
-> repasserait en JS) et §4 (distribution) changeraient.
+> **Trois fichiers sont non négociables dans la première tâche de ce plan** : `clock.rs`,
+> `rng.rs` et `probe/mod.rs`. Ce sont les trois contraintes de testabilité de la spec
+> §10.2, et elles ne se rattrapent pas après coup — un `Instant::now()` ou un
+> `rand::random()` appelé directement rend intestable tout ce qui en dépend.
 
-**Le plan de l'étape 1 s'écrit après** : la fluidité réelle à 60 Hz, le comportement
-multi-DPI et les attributs de fenêtre nécessaires en conditionnent plusieurs choix. La
-structure de fichiers, elle, est déjà arrêtée (annexe A) — il n'y a pas à la rediscuter.
+Rappel de périmètre : l'étape 1 **n'a pas** de plateformes de fenêtres. Le monde n'expose
+que le sol de chaque écran, donc **pas de soustraction d'intervalles 1D** et **pas de
+filtrage de fenêtres** — ces deux morceaux appartiennent à l'étape 4. YAGNI.
 
 ### Ce que le spike a déjà établi
 
@@ -474,8 +501,12 @@ structure de fichiers, elle, est déjà arrêtée (annexe A) — il n'y a pas à
   plutôt que de déplacer une `WebviewWindow` dans un thread : `WebviewWindow: Send` n'est
   pas garanti explicitement, et ce motif gère en prime la fenêtre fermée.
 - Les appels `available_monitors`, `shadow`, `set_ignore_cursor_events`, `set_position`,
-  `get_webview_window` et `handle()` existent tels qu'employés dans **tauri 2.11.5**
-  (vérifiés dans les sources, emplacements consignés).
+  `get_webview_window`, `handle()` et **`hwnd()`** existent tels qu'employés dans
+  **tauri 2.11.5** (vérifiés dans les sources, emplacements consignés).
+- Côté Win32, `GetWindowLongPtrW` / `SetWindowLongPtrW`, `GWL_EXSTYLE` et les constantes
+  `WS_EX_*` sont vérifiés dans **windows 0.61.3**, *feature*
+  `Win32_UI_WindowsAndMessaging`. Attention : `WINDOW_EX_STYLE` est un *newtype*, il faut
+  `.0` puis `as isize` pour combiner les bits — détail et code dans le résultat du spike.
 - La fenêtre de **128×128** correspond exactement à la taille des frames Shimeji.
 
 Le projet vient d'un prototype d'extension VSCode (`../op`) où le personnage marchait en
