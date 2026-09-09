@@ -532,6 +532,37 @@ Développer contre `blob` **découple « le moteur marche » de « j'ai les bons
 > ⚠️ L'art de ce mascotte n'est pas de nous. Sans importance en usage privé ; à vérifier
 > avant toute publication du dépôt.
 
+### Les packs installés, et leur statut
+
+**Aucun sprite de ce dépôt n'est de nous.** Le dépôt ne peut donc pas être publié en
+l'état : il faudrait retirer `characters/`, ou n'y laisser qu'un personnage dont l'art
+nous appartient.
+
+| Pack | Origine | Art |
+|---|---|---|
+| `blob` | la mascotte par défaut de Shimeji-ee | pas de nous |
+| `luffy` | catalogue [shimejis.xyz](https://shimejis.xyz/directory), slug `one-piece-luffy-01` — [One Piece Shimeji Pack](http://dreamscenenime.blogspot.nl/2016/02/one-piece-shimeji-pack.html) de 2016, artiste non crédité | pas de nous, **et personnage sous droits** |
+
+### Ajouter un pack depuis shimejis.xyz
+
+C'est un **téléchargement, pas une extraction**. L'extension Chrome ne contient aucun
+sprite : elle les tire d'un CDN qui sert les frames individuelles, déjà en 128×128 et
+déjà numérotées — soit exactement l'arborescence qu'attend `characters/`.
+
+```
+https://sprites.shimejis.xyz/directory/<slug>/img/shime1.png … shime46.png
+```
+
+Le slug se trouve dans le HTML de `https://shimejis.xyz/directory`.
+
+> ⚠️ **Mesurer l'ancre et la hitbox — ne pas recopier celles de `blob`.** La
+> numérotation des poses est un standard de fait et se transpose telle quelle ; les
+> **proportions du dessin, non**. Luffy est un chibi dont le chapeau touche le bord haut
+> de la boîte : le `y = 20` de la hitbox de `blob` l'aurait amputé. La mesure qui a
+> tranché est consignée dans le champ `_hitbox` de `characters/luffy/mascot.json`.
+>
+> C'est la même leçon qu'à l'étape 1a, où les quatre réglages faits à l'œil étaient faux.
+
 ---
 
 ## Ordre de construction
@@ -588,6 +619,8 @@ recompiler. **140 tests**, exe release de **2,7 Mo**, **12 % d'un cœur** en mar
 | `docs/plans/2026-09-08-etape-1a-il-vit-sur-le-sol.md` | le plan de l'étape 1a, **exécuté** — 11 tâches |
 | `docs/plans/2026-09-09-etape-1b-tour-du-proprietaire.md` | le plan de l'étape 1b, **soldé** — tray, config, démarrage auto, rechargement à chaud, CPU |
 | `docs/specs/2026-09-09-frames-shimeji.md` | **la correspondance frames → poses**, tirée des sources de Shimeji-ee — à lire avant de toucher au `mascot.json` |
+| `docs/specs/2026-09-09-etape-2-design.md` | le design de l'étape 2 : les cinq signaux, le biais, le sommeil, l'interruption |
+| `docs/plans/2026-09-09-etape-2-il-reagit.md` | **le plan à exécuter** : 7 tâches, 71 étapes |
 | `docs/conception/2026-09-08-journal-decisions.md` | **pourquoi** chaque décision, et ce qu'elle a écarté — à lire avant d'en défaire une |
 | `docs/conception/2026-09-08-discussion.md` | la discussion de conception intégrale, verbatim |
 | `docs/spike-etape-0/` | le spike **archivé et gelé** + la sonde Win32 rejouable — ne pas le faire évoluer vers l'application |
@@ -703,8 +736,11 @@ Trois choses apprises en exécutant, qui valent plus que le code :
 
 ### La prochaine action
 
-**Écrire le plan de l'étape 2 — « Il réagit »**, dans `docs/plans/`. Le contenu est
-cadré par l'annexe du plan 1b et par la spec §7 :
+**Exécuter le plan de l'étape 2**, `docs/plans/2026-09-09-etape-2-il-reagit.md` — 7 tâches,
+dans l'ordre, chacune se fermant sur un commit. Son design est dans
+`docs/specs/2026-09-09-etape-2-design.md`, à lire d'abord : le plan argumente depuis lui.
+
+Le contenu, cadré par l'annexe du plan 1b et par la spec §7 :
 
 | Contenu | Fichiers |
 |---|---|
