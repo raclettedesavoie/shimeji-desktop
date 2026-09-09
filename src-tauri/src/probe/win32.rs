@@ -1,9 +1,11 @@
 //! L'implémentation réelle de `SystemProbe`, par la crate `windows`.
 //!
-//! Responsabilité unique : traduire trois appels Win32 en types du projet.
-//! **Aucune logique** ici — pas de filtrage, pas de décision. Tout ce qui
-//! ressemble à une règle appartient à `world.rs` ou au comportement, où c'est
-//! testable avec `FakeProbe`.
+//! Responsabilité unique : traduire des appels Win32 en types du projet —
+//! la topologie des écrans, la souris, et depuis l'étape 2 les cinq signaux
+//! lents (inactivité, appli active, heure, batterie, verrouillage), soit huit
+//! appels système en tout. **Aucune logique** ici — pas de filtrage, pas de
+//! décision. Tout ce qui ressemble à une règle appartient à `world.rs`,
+//! `signals.rs` ou au comportement, où c'est testable avec `FakeProbe`.
 //!
 //! Signatures vérifiées dans les sources de windows 0.61.3 :
 //!   EnumDisplayMonitors  Win32/Graphics/Gdi/mod.rs:559
@@ -11,6 +13,9 @@
 //!   GetDpiForMonitor     Win32/UI/HiDpi/mod.rs:39
 //!   GetCursorPos         Win32/UI/WindowsAndMessaging/mod.rs:825
 //!   GetAsyncKeyState     Win32/UI/Input/KeyboardAndMouse/mod.rs:28
+//!
+//! Les cinq appels de l'étape 2 (signaux) sont documentés à leur emplacement,
+//! plus bas dans ce fichier.
 
 use super::{MouseState, ScreenInfo, SystemProbe};
 use crate::geom::{Point, Rect};
@@ -159,7 +164,7 @@ unsafe extern "system" fn collecte_moniteur(
 use windows::Win32::System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
 use windows::Win32::System::RemoteDesktop::{
     WTSFreeMemory, WTSQuerySessionInformationW, WTSSessionInfoEx, WTSINFOEXW,
-    WTS_SESSIONSTATE_LOCK,
+    WTS_CURRENT_SESSION, WTS_SESSIONSTATE_LOCK,
 };
 use windows::Win32::System::SystemInformation::{GetLocalTime, GetTickCount};
 use windows::Win32::System::Threading::{
@@ -169,13 +174,10 @@ use windows::Win32::System::Threading::{
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
 use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
 
-/// La session courante, pour `WTSQuerySessionInformationW`.
-///
-/// ⚠️ **`WTS_CURRENT_SESSION` n'existe pas dans la crate `windows`** — vérifié
-/// dans les sources. La valeur est `(DWORD)-1` dans `wtsapi32.h`, donc
-/// `u32::MAX`. On la définit ici, avec ce commentaire, plutôt que d'écrire un
-/// `0xFFFFFFFF` nu que personne ne pourrait relier à sa source.
-const SESSION_COURANTE: u32 = u32::MAX;
+// `WTS_CURRENT_SESSION` vaut `u32::MAX` (4294967295), parce que `wtsapi32.h`
+// la définit comme `(DWORD)-1` : un entier qui ressemble à une erreur est en
+// réalité la façon dont l'API désigne « la session de l'appelant » sans que
+// celui-ci ait besoin de connaître son propre identifiant de session.
 
 /// Depuis combien de temps l'utilisateur n'a touché à rien.
 ///
@@ -316,7 +318,7 @@ fn session_verrouillee() -> bool {
     let appel = unsafe {
         WTSQuerySessionInformationW(
             None,
-            SESSION_COURANTE,
+            WTS_CURRENT_SESSION,
             WTSSessionInfoEx,
             &mut tampon,
             &mut octets,
