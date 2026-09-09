@@ -497,7 +497,9 @@ L'application, elle, n'existe pas encore — aucune ligne de physique n'est écr
 | `docs/specs/2026-09-08-design.md` | le design complet — le *pourquoi* de chaque décision |
 | `docs/plans/2026-09-08-etape-0-spike-overlay.md` | le plan de l'étape 0, **soldé** ; **annexe A = structure de fichiers verrouillée pour l'étape 1** |
 | `docs/specs/2026-09-08-spike-0-resultat.md` | **le résultat de l'étape 0** : grille remplie, décision de stack, API vérifiées, et les 2 découvertes à appliquer |
-| `docs/plans/2026-09-08-etape-1a-il-vit-sur-le-sol.md` | **le plan à exécuter** : 11 tâches, du squelette au personnage attrapable qui marche sur les deux écrans |
+| `docs/plans/2026-09-08-etape-1a-il-vit-sur-le-sol.md` | le plan de l'étape 1a, **exécuté** — 11 tâches |
+| `docs/plans/2026-09-09-etape-1b-tour-du-proprietaire.md` | **le plan à exécuter** : tray, config, démarrage auto, rechargement à chaud, CPU |
+| `docs/specs/2026-09-09-frames-shimeji.md` | **la correspondance frames → poses**, tirée des sources de Shimeji-ee — à lire avant de toucher au `mascot.json` |
 | `docs/conception/2026-09-08-journal-decisions.md` | **pourquoi** chaque décision, et ce qu'elle a écarté — à lire avant d'en défaire une |
 | `docs/conception/2026-09-08-discussion.md` | la discussion de conception intégrale, verbatim |
 | `docs/spike-etape-0/` | le spike **archivé et gelé** + la sonde Win32 rejouable — ne pas le faire évoluer vers l'application |
@@ -555,39 +557,53 @@ l'échelle du sprite étant exercée dès le premier lancement. Reste non éprou
 écrans d'échelles différentes** — `FakeProbe::ecran_a_gauche_hidpi()` couvre l'hypothèse
 côté tests.
 
+### L'étape 1a est faite (2026-09-09)
+
+Les 11 tâches du plan 1a sont exécutées, **126 tests**. Le personnage marche, court,
+s'arrête, fait demi-tour, circule sur les deux écrans, s'attrape à la souris, **se lance**,
+tombe et atterrit.
+
+Quatre passes de correction ont suivi, toutes déclenchées par une observation à l'œil, et
+toutes tranchées en lisant les **sources de Shimeji-ee** (dans `Downloads/shimejieesrc (2)`)
+plutôt qu'en réglant à l'œil :
+
+| Ce qui était faux | La vérité, et sa source |
+|---|---|
+| il marchait **à reculons** | les sprites sont dessinés vers la **gauche** — `Walk` a `Velocity="-2,0"` |
+| `walk`, `run`, `sit`, `fall`, `land` : mauvaises frames | `conf/actions.xml`, relevé complet dans `docs/specs/2026-09-09-frames-shimeji.md` |
+| ancre `[64,120]` | `[64,128]` — il était enfoncé de 8 px sous le sol |
+| chute **2× trop rapide** | `Fall.java` a un **frottement de l'air** (`RESISTANCEY = 0,1`), vitesse limite 500 px/s |
+| balancier = une animation | c'est un **ressort amorti** (`Dragged.java`), dont le retard choisit la frame |
+| il tombait à la verticale | l'action `Thrown` **lance** avec `cursor.dx/dy` lissé |
+| lancé à droite, il tombait tête à gauche | `Fall.java` : l'orientation suit la vitesse horizontale |
+
+> **La leçon, à retenir pour les étapes suivantes :** tout ce qui avait été « réglé à
+> l'œil » s'est révélé faux, et la spec §8.5 l'annonçait elle-même (« un point de
+> départ »). Avant d'inventer une constante d'animation ou de physique, **la chercher
+> dans le source**.
+
 ### La prochaine action
 
-**Exécuter le plan de l'étape 1a**, `docs/plans/2026-09-08-etape-1a-il-vit-sur-le-sol.md`,
-tâche par tâche dans l'ordre. Chaque tâche s'ouvre sur un test qui échoue et se ferme sur
-un commit ; les onze produisent un personnage qui marche, court, s'arrête, fait demi-tour,
-circule sur les deux écrans, et qu'on peut attraper et lâcher.
+**Exécuter le plan de l'étape 1b**, `docs/plans/2026-09-09-etape-1b-tour-du-proprietaire.md`
+— 6 tâches, dans l'ordre, chacune se fermant sur un commit.
 
-L'étape 1 a été **coupée en deux plans**, ses deux moitiés étant de nature trop
-différente :
+> ⚠️ **Tant que la Tâche 1 de 1b n'est pas faite, l'application ne se ferme que par
+> `Stop-Process -Name shimeji-desktop`.** La fenêtre est sans bordure, non focalisable,
+> hors taskbar et hors Alt+Tab : c'est voulu, et ça se retourne contre soi au moment de
+> quitter. C'est pour ça que le tray vient en premier dans ce plan, avant la config qui
+> est pourtant plus structurante.
 
-| | Périmètre |
-|---|---|
-| **1a** *(écrit)* | le personnage : géométrie, monde, accroche, chute, comportement, fenêtre, rendu, hit-testing, mode simulation |
-| **1b** *(à écrire après 1a)* | le tour du propriétaire : tray et « Quitter », `config.json`, démarrage automatique, rechargement à chaud |
+La **Tâche 6 de 1b** porte la mesure du `release` et les deux optimisations de CPU
+identifiées — dans cet ordre, la mesure d'abord. On a déjà fait l'expérience de l'inverse
+à l'étape 1a, en accusant `set_size` à tort.
 
-> ⚠️ **Tant que 1b n'existe pas, l'application ne se ferme que par `Ctrl+C`** dans le
-> terminal, ou `Stop-Process -Name shimeji-desktop`. La fenêtre est sans bordure, non
-> focalisable, hors taskbar et hors Alt+Tab : c'est voulu, et ça se retourne contre soi au
-> moment de quitter.
-
-> **Trois fichiers sont non négociables, et le plan les place en Tâches 1 et 2** :
-> `clock.rs`, `rng.rs` et `probe/mod.rs`. Ce sont les trois contraintes de testabilité de
-> la spec §10.2, et elles ne se rattrapent pas après coup — un `Instant::now()` ou un
-> `rand::random()` appelé directement rend intestable tout ce qui en dépend.
-
-Rappel de périmètre : l'étape 1 **n'a pas** de plateformes de fenêtres. Le monde n'expose
+Rappel de périmètre : ni 1a ni 1b **n'ont** de plateformes de fenêtres. Le monde n'expose
 que le sol de chaque écran, donc **pas de soustraction d'intervalles 1D** et **pas de
 filtrage de fenêtres** — ces deux morceaux appartiennent à l'étape 4. YAGNI.
 
-**Le seul point du plan dont l'API n'a pas pu être vérifiée dans les sources** est le pont
-d'événements de `ui/pet.js` (`window.__TAURI_INTERNALS__`, une interface interne). Deux
-replis sont écrits, et la Tâche 10 Step 7 les met à l'épreuve avant que le reste n'en
-dépende.
+> **Une inconnue de contenu attend l'étape 2 :** Shimeji-ee **n'a aucune animation de
+> sommeil**, alors que l'étape 2 promet « il s'endort quand on part ». Les trois issues
+> possibles et la recommandation sont dans `docs/specs/2026-09-09-frames-shimeji.md`.
 
 ### Ce que le spike a déjà établi
 
