@@ -5818,22 +5818,22 @@ mod tests {
 
     #[test]
     fn la_simulation_est_reproductible_a_graine_fixe() {
+        // `Resume` dérive `PartialEq` : on compare tout d'un coup, ce qui
+        // attrape aussi les champs qu'on ajouterait plus tard.
         let a = executer(5, 999, blob()).unwrap();
         let b = executer(5, 999, blob()).unwrap();
-
-        assert_eq!(a.images, b.images);
-        assert_eq!(a.intentions_tirees, b.intentions_tirees);
-        assert_eq!(a.poses_vues, b.poses_vues);
-        assert_eq!(a.blocage_max, b.blocage_max);
+        assert_eq!(a, b);
     }
 
     #[test]
     fn deux_graines_donnent_deux_histoires() {
         // Sinon l'aléatoire ne sert à rien, et « jamais prévisible » est
-        // faux.
+        // faux. On compare la SIGNATURE et non les compteurs : deux
+        // histoires différentes peuvent tirer autant d'intentions, et le
+        // test serait alors capricieux.
         let a = executer(5, 1, blob()).unwrap();
         let b = executer(5, 2, blob()).unwrap();
-        assert_ne!(a.intentions_tirees, b.intentions_tirees);
+        assert_ne!(a.signature, b.signature);
     }
 
     #[test]
@@ -5892,10 +5892,19 @@ pub struct Resume {
     /// rattrapages.
     pub reflexes: u64,
     pub poses_vues: BTreeSet<String>,
-    /// La plus longue période sans changer ni d'intention ni de position.
-    /// **C'est le chiffre qui compte** : il doit rester sous le délai
-    /// d'abandon (décision n° 4).
+    /// La plus longue période pendant laquelle **rien n'a bougé et aucune
+    /// décision n'a été prise**. **C'est le chiffre qui compte** : il doit
+    /// rester sous le délai d'abandon (décision n° 4).
     pub blocage_max: Duration,
+
+    /// Empreinte de la suite des intentions tirées.
+    ///
+    /// Sert à comparer deux exécutions : à graine égale elle est identique,
+    /// à graine différente elle diffère presque sûrement. Comparer les
+    /// simples compteurs ne suffirait pas — deux histoires différentes
+    /// peuvent tirer le même nombre d'intentions, ce qui rendrait le test
+    /// « deux graines, deux histoires » capricieux.
+    pub signature: u64,
 }
 
 /// Déroule `minutes` de comportement et rend le résumé.
@@ -5952,14 +5961,24 @@ pub fn executer(minutes: u32, graine: u32, dossier: &Path) -> Result<Resume, Str
         reflexes: 0,
         poses_vues: BTreeSet::new(),
         blocage_max: Duration::ZERO,
+        signature: 0,
     };
 
     // Pour la détection de blocage : ce qu'on observait au dernier
     // changement, et quand.
-    let mut derniere_empreinte = (String::new(), 0i64);
+    let mut derniere_empreinte = (String::new(), 0i64, 0u64);
     let mut depuis_changement = Duration::ZERO;
 
-    let mut intention_precedente = None;
+    // On identifie une intention par `(type, depuis)` et non par son seul
+    // type : `depuis` est l'instant où elle a commencé, donc deux Flâner
+    // consécutifs sont bien deux intentions distinctes.
+    //
+    // ⚠️ Comparer les seuls types sous-compte d'un facteur ~5 : cinq tirages
+    // sur six donnent Flâner, et un Flâner qui expire et redonne Flâner
+    // passe alors totalement inaperçu. Le chiffre affiché serait faux —
+    // mesuré : 35 intentions annoncées au lieu de 100 sur 30 minutes, soit
+    // 51 s par intention là où le délai d'abandon en garantit 20 au plus.
+    let mut intention_precedente: Option<(behavior::intention::Intention, Duration)> = None;
 
     for i in 0..total_images {
         let maintenant = Duration::from_secs_f64(i as f64 * DT as f64);
@@ -5970,11 +5989,23 @@ pub fn executer(minutes: u32, graine: u32, dossier: &Path) -> Result<Resume, Str
             resume.reflexes += 1;
         }
 
-        // Une intention tirée = l'intention a changé d'identité.
-        let intention_actuelle = ch.intention.map(|ai| ai.kind);
+        // Une intention tirée = l'identité `(type, depuis)` a changé.
+        let intention_actuelle = ch.intention.map(|ai| (ai.kind, ai.depuis));
         if intention_actuelle != intention_precedente {
-            if intention_actuelle.is_some() {
+            if let Some((kind, _)) = intention_actuelle {
                 resume.intentions_tirees += 1;
+
+                // Une empreinte de la SUITE, pas seulement du compte.
+                // Mélange multiplicatif banal, sans prétention
+                // cryptographique — il ne sert qu'à comparer deux traces.
+                let jeton = match kind {
+                    behavior::intention::Intention::Flaner => 1u64,
+                    behavior::intention::Intention::SeReposer => 2u64,
+                };
+                resume.signature = resume
+                    .signature
+                    .wrapping_mul(0x100_0000_01b3)
+                    .wrapping_add(jeton);
             }
             intention_precedente = intention_actuelle;
         }
@@ -5982,10 +6013,22 @@ pub fn executer(minutes: u32, graine: u32, dossier: &Path) -> Result<Resume, Str
         resume.poses_vues.insert(ch.pose.clone());
 
         // ── Détection de blocage ────────────────────────────────────────
-        // L'empreinte : la pose, plus la position arrondie au pixel. On
-        // arrondit parce qu'un flottant qui bouge de 1e-6 par image
-        // ferait croire à un mouvement.
-        let empreinte = (ch.pose.clone(), ch.pos_connue.x.round() as i64);
+        // L'empreinte : la pose, la position arrondie au pixel, et le
+        // nombre d'intentions tirées.
+        //
+        // · On arrondit la position parce qu'un flottant qui bouge de 1e-6
+        //   par image ferait croire à un mouvement.
+        // · Le compteur d'intentions est **indispensable** : deux repos
+        //   tirés de suite laissent la pose et la position identiques
+        //   pendant jusqu'à 30 s, alors que rien n'est bloqué — c'est une
+        //   SUITE DE CHOIX. Sans ce troisième terme, la mesure confondrait
+        //   « il ne se passe rien » et « il a décidé de ne rien faire, deux
+        //   fois », et le test échouerait à peu près une fois sur deux.
+        let empreinte = (
+            ch.pose.clone(),
+            ch.pos_connue.x.round() as i64,
+            resume.intentions_tirees,
+        );
         if empreinte != derniere_empreinte {
             derniere_empreinte = empreinte;
             depuis_changement = maintenant;
