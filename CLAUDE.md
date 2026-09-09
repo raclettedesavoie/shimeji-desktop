@@ -144,42 +144,76 @@ les deux styles étendus que son analyse a révélés nécessaires.
 60 Hz — la boucle de `main.rs`, `render.rs`, la sonde — doit être suivie d'une **mesure**,
 pas d'une intuition.
 
+### ⚠️⚠️ La méthodologie AVANT les chiffres — trois hypothèses fausses de suite
+
+**Mesurer sur 10 secondes ne veut rien dire, et c'est le piège central ici.** La
+consommation dépend entièrement de **ce que le personnage est en train de faire** :
+en marche il déplace sa fenêtre à chaque image, à l'arrêt il ne la déplace pas du tout.
+Relevé sur des tranches de 5 s consécutives, le taux de déplacement va de **0 % à 87 %**
+des images. Deux mesures de 10 s sur la même version peuvent donc donner 12 % et 25 %.
+
+> **Trois hypothèses ont été formulées et démenties par la mesure, dans cet ordre.**
+> Les garder ici parce que chacune paraissait évidente :
+>
+> 1. « C'est `set_size` appelé à chaque image. » → **Faux.** Le retirer n'a rien changé
+>    (14,8 % → 14,1 %). Il a été séparé quand même : appeler une API du système 60 fois
+>    par seconde pour une valeur constante est une faute par principe.
+> 2. « Le coût est inhérent à la fenêtre en couche, notre boucle n'y est pour rien. » →
+>    **Faux.** Avec `SHIMEJI_SANS_BOUCLE=1` — la fenêtre créée, aucune animation — la
+>    consommation est de **0 %**. Tout vient de la boucle.
+> 3. « Notre logique 60 Hz est trop lourde. » → **Faux aussi.** `SHIMEJI_CADENCE=1`
+>    montre **58 img/s** et un travail de **100 à 900 µs par image**, soit 1 à 5 % du
+>    budget de 16,7 ms. Le calcul n'est pas le problème.
+>
+> **Ce qui coûte réellement** : chaque `set_position` est dispatché au thread principal
+> de Tauri, qui appelle `SetWindowPos` sur une fenêtre **en couche** — Windows y refait
+> une composition alpha. Le coût est donc proportionnel au **nombre de déplacements**,
+> et c'est le seul levier.
+
+### Le protocole, et les outils
+
+**Toujours 40 à 60 secondes**, pour que marche et arrêt s'équilibrent :
+
 ```powershell
 $p = Get-Process -Name shimeji-desktop
-$c = $p.CPU; Start-Sleep -Seconds 10; $p.Refresh()
-"$([math]::Round((($p.CPU - $c) / 10) * 100, 1)) % d'un coeur"
+$c = $p.CPU; Start-Sleep -Seconds 60; $p.Refresh()
+"$([math]::Round((($p.CPU - $c) / 60) * 100, 1)) % d'un coeur"
 ```
 
-**Chiffres de référence, mesurés le 2026-09-09 en build *debug* :**
+Deux variables d'environnement de diagnostic, **conservées** parce que ce sont elles qui
+ont démenti les hypothèses 2 et 3 :
+
+| Variable | Ce qu'elle donne |
+|---|---|
+| `SHIMEJI_CADENCE=1` | images/s réelles, travail moyen par image, **et le nombre de déplacements sur le nombre d'images** — c'est ce dernier chiffre qui explique tout |
+| `SHIMEJI_SANS_BOUCLE=1` | crée la fenêtre et n'anime rien : sépare le coût de la fenêtre de celui de la boucle |
+| `SHIMEJI_TRACE=1` | trace chaque image servie par le schéma URI (a diagnostiqué le sprite invisible) |
+
+**Chiffres de référence, build *debug*, mesures de 40 à 60 s, le 2026-09-09 :**
 
 | Configuration | CPU |
 |---|---|
-| application complète, `set_position` seul à 60 Hz | **~14 %** |
-| application avec `set_size` en plus à chaque image | ~15 % |
-| **spike de l'étape 0**, qui ne fait *que* déplacer une fenêtre à 60 Hz | **~18 %** |
+| fenêtre seule, **aucune boucle** (`SHIMEJI_SANS_BOUCLE=1`) | **0 %** |
+| `set_position` à chaque image, quoi qu'il arrive | **21 %** |
+| **`set_position` seulement si la position a changé au pixel** | **12,3 %** |
+| exe `release` (2,6 Mo) | ~même ordre que debug — le coût n'est pas dans notre code |
 
-> **La leçon de ces trois lignes :** le spike consomme **plus** que l'application
-> complète. Le coût est donc **inhérent au déplacement d'une fenêtre en couche à 60 Hz** —
-> la composition alpha que Windows refait à chaque déplacement —, et **non** dans notre
-> physique, notre comportement ou notre rendu. Chercher l'optimisation de ce côté-là
-> serait chercher au mauvais endroit.
->
-> Corollaire méthodologique : **comparer au spike avant d'optimiser quoi que ce soit.**
-> C'est le témoin, et c'est une raison de plus de l'avoir archivé plutôt que supprimé.
+⬜ **Le `release` reste à remesurer** avec ce protocole de 60 s : les relevés faits sur
+10 s avant de comprendre la variance ne sont pas exploitables. Ce qui est acquis : la
+taille de l'exe est de **2,6 Mo**, largement sous les ~10 Mo visés par la spec §4.
 
-⬜ **Non encore mesuré : le build `release`.** Le profil release est réglé pour la taille
-(`opt-level = "z"`, LTO) et non pour la vitesse ; l'écart avec debug reste à établir. À
-faire **avant** de conclure quoi que ce soit sur la consommation du produit livré.
+**Pistes restantes**, par rentabilité décroissante :
 
-Trois pistes d'optimisation identifiées mais **non appliquées**, faute d'avoir mesuré le
-release d'abord — les inscrire ici évite de les redécouvrir :
-
-1. **Ne pas appeler `set_position` quand la position arrondie n'a pas changé.** À l'arrêt
-   (~3 tirages sur 10), ce sont 60 appels par seconde entièrement gratuits à supprimer.
-2. **Descendre la cadence quand rien ne bouge** — 60 Hz est nécessaire au mouvement, pas
-   à l'immobilité.
-3. **Suspendre la boucle quand la session est verrouillée** — déjà prévu comme réflexe à
+1. **Ne rien dessiner quand les personnages sont cachés** — Tâche 6 du plan 1b. Caché,
+   il n'y a rien à afficher, et c'est le gain le plus net qui reste.
+2. **Suspendre la boucle quand la session est verrouillée** — prévu comme réflexe à
    l'étape 2, et c'est aussi une optimisation.
+3. ~~Ne pas appeler `set_position` quand la position n'a pas changé~~ — **appliqué**,
+   21 % → 12,3 %.
+
+> **Ce qu'il ne faut PAS faire :** descendre la cadence sous 60 Hz. L'étape 0 a établi
+> que 60 Hz est fluide sur cette machine, et le travail par image ne représente que 1 à
+> 5 % du budget. Ce serait payer en fluidité ce qui ne coûte rien.
 
 **`cargo run` suffit — pas besoin de `cargo tauri dev`.** Le front étant statique, les
 assets sont embarqués dans le binaire à la compilation. Le CLI Tauri ne devient nécessaire

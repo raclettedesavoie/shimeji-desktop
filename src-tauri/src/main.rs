@@ -239,9 +239,18 @@ fn lancer_application() {
                 depart,
             );
 
-            std::thread::spawn(move || {
-                boucle(handle, label, personnage, monde, echelle_ecran);
-            });
+            // Diagnostic de performance : `SHIMEJI_SANS_BOUCLE=1` crée la
+            // fenêtre et n'anime rien. C'est la seule façon de séparer ce que
+            // coûte NOTRE boucle de ce que coûte l'existence d'une fenêtre
+            // transparente toujours au premier plan — et sans cette mesure,
+            // toute optimisation de la boucle est une croyance.
+            if std::env::var("SHIMEJI_SANS_BOUCLE").is_ok() {
+                println!("SHIMEJI_SANS_BOUCLE : aucune animation, fenêtre seule");
+            } else {
+                std::thread::spawn(move || {
+                    boucle(handle, label, personnage, monde, echelle_ecran);
+                });
+            }
 
             Ok(())
         })
@@ -371,6 +380,21 @@ fn boucle(
     let mut dernier_rendu: Option<render::Rendu> = None;
     let mut derniere_taille: Option<(u32, u32)> = None;
 
+    // La position ENTIÈRE effectivement posée à la dernière image.
+    //
+    // `set_position` ne prend que des entiers : deux positions flottantes qui
+    // s'arrondissent au même pixel produisent exactement le même appel. À
+    // l'arrêt — environ trois tirages d'allure sur dix — la position ne
+    // change pas du tout, et on épargne 60 appels système par seconde.
+    let mut dernier_coin: Option<(i32, i32)> = None;
+
+    // Diagnostic de cadence, voir plus bas.
+    let trace_cadence = std::env::var("SHIMEJI_CADENCE").is_ok();
+    let mut images_depuis_trace: u32 = 0;
+    let mut placements_depuis_trace: u32 = 0;
+    let mut travail_cumule = Duration::ZERO;
+    let mut derniere_trace = Duration::ZERO;
+
     // L'état courant de la traversée des clics. Initialisé à `true` parce
     // que c'est ce que `setup` a posé juste avant de lancer ce thread.
     let mut clics_traversent = true;
@@ -485,9 +509,18 @@ fn boucle(
                     ch.facing,
                 );
 
-                if render::placer(&handle, &label, coin).is_err() {
-                    // Fenêtre fermée : plus rien à faire dans ce thread.
-                    return;
+                // Arrondi ici et non dans `placer` : c'est cet entier qu'on
+                // compare, et le calculer deux fois serait deux occasions de
+                // divergence.
+                let coin_entier = (coin.x.round() as i32, coin.y.round() as i32);
+
+                if dernier_coin != Some(coin_entier) {
+                    if render::placer(&handle, &label, coin).is_err() {
+                        // Fenêtre fermée : plus rien à faire dans ce thread.
+                        return;
+                    }
+                    dernier_coin = Some(coin_entier);
+                    placements_depuis_trace += 1;
                 }
             }
         }
@@ -513,6 +546,33 @@ fn boucle(
                 return;
             }
             dernier_rendu = Some(rendu);
+        }
+
+        // ── Diagnostic de cadence ───────────────────────────────────────
+        // `SHIMEJI_CADENCE=1` imprime toutes les 5 s les images par seconde
+        // réellement atteintes et le temps de travail par image. C'est la
+        // seule façon de savoir si la boucle DORT ou si elle tourne à plat :
+        // quand le travail dépasse la période, `checked_sub` rend `None` et
+        // il n'y a aucun sommeil du tout.
+        if trace_cadence {
+            images_depuis_trace += 1;
+            travail_cumule += debut.elapsed();
+            if maintenant.saturating_sub(derniere_trace) >= Duration::from_secs(5) {
+                let secondes = maintenant.saturating_sub(derniere_trace).as_secs_f64();
+                let moyenne_us = travail_cumule.as_micros() as f64 / images_depuis_trace as f64;
+                println!(
+                    "cadence : {:.1} img/s, travail moyen {:.0} µs, {} placements sur {} images ({:.0} %)",
+                    images_depuis_trace as f64 / secondes,
+                    moyenne_us,
+                    placements_depuis_trace,
+                    images_depuis_trace,
+                    placements_depuis_trace as f64 * 100.0 / images_depuis_trace as f64
+                );
+                placements_depuis_trace = 0;
+                images_depuis_trace = 0;
+                travail_cumule = Duration::ZERO;
+                derniere_trace = maintenant;
+            }
         }
 
         // ── Tenir la cadence ────────────────────────────────────────────

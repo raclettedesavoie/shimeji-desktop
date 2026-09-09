@@ -1748,7 +1748,31 @@ teste un nouveau timing alors qu'on regarde l'ancien."
 > retirer la console et optimiser touchent tous deux la boucle, et la mesure
 > finale doit porter sur le résultat des deux.
 
-- [ ] **Step 1 : Mesurer le `release` AVANT de toucher à quoi que ce soit**
+> ### ⚠️ Steps 1 et 2 déjà faits, hors plan, le 2026-09-09
+>
+> La mesure et l'optimisation n° 1 ont été réalisées avant l'exécution de ce
+> plan, à la demande de l'auteur. **Trois hypothèses fausses de suite** en
+> sont sorties, et la méthodologie qui les a démenties est consignée dans
+> `CLAUDE.md`, section « La méthodologie AVANT les chiffres ».
+>
+> L'acquis :
+>
+> | | CPU |
+> |---|---|
+> | fenêtre seule, aucune boucle | **0 %** |
+> | `set_position` à chaque image | **21 %** |
+> | `set_position` seulement si la position a changé | **12,3 %** |
+>
+> Et la leçon : **mesurer sur 10 s ne veut rien dire.** Le taux de
+> déplacement varie de 0 % à 87 % des images selon ce que fait le personnage,
+> donc deux mesures courtes sur la même version donnent 12 % et 25 %.
+> Toujours 40 à 60 secondes.
+>
+> **Il reste donc à faire, dans cette tâche :** le Step 3 (ne rien dessiner
+> quand c'est caché — le plus gros gain restant), le Step 4 (retirer la
+> console) et une remesure propre du `release` sur 60 s.
+
+- [ ] **Step 1 : ~~Mesurer le `release` AVANT de toucher à quoi que ce soit~~ — remesurer sur 60 s**
 
 ```powershell
 cd src-tauri
@@ -1763,10 +1787,10 @@ $c = $p.CPU; Start-Sleep -Seconds 10; $p.Refresh()
 **Consigner le chiffre.** Sans cette mesure, toute optimisation qui suit est
 une croyance. La compilation est longue — LTO et `codegen-units = 1`.
 
-- [ ] **Step 2 : N'appeler `set_position` que si la position a changé**
+- [x] **Step 2 : N'appeler `set_position` que si la position a changé** — **FAIT**, 21 % → 12,3 %.
 
-C'est la piste n° 1 de `CLAUDE.md`. À l'arrêt (~3 tirages sur 10), ce sont
-60 appels système par seconde entièrement gratuits.
+C'était la piste n° 1 de `CLAUDE.md`. Le code ci-dessous est en place ; il est
+gardé ici pour que le plan reste lisible d'un bout à l'autre.
 
 ```rust
     // Position entière effectivement posée à la dernière image.
