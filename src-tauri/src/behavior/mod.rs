@@ -26,7 +26,8 @@ pub struct Entrees {
 
     pub bouton_gauche: bool,
 
-    /// Le facteur d'échelle de l'écran où se trouve le personnage.
+    /// Le facteur d'échelle d'affichage : celui du moniteur, **multiplié par
+    /// le réglage `echelle` de l'utilisateur**.
     ///
     /// Les réflexes en ont besoin pour **une seule chose** : convertir une
     /// position d'une ancre à l'autre quand la pose change au relâchement
@@ -36,7 +37,7 @@ pub struct Entrees {
     ///
     /// C'est le seul endroit où le comportement touche à l'échelle, et c'est
     /// légitime : c'est une donnée de l'environnement, comme la souris.
-    pub echelle_ecran: f32,
+    pub echelle_affichage: f32,
 
     /// Le curseur est-il dans la **hitbox de la pose courante** ?
     ///
@@ -59,6 +60,7 @@ pub fn pas(
     world: &crate::world::World,
     e: &Entrees,
     table: &desire::TableEnvies,
+    reglages: &crate::config::Reglages,
     maintenant: std::time::Duration,
     dt: f32,
     rng: &mut dyn crate::rng::Rng,
@@ -72,7 +74,7 @@ pub fn pas(
     }
 
     // ── Couche 2 : poursuivre l'intention en cours ──────────────────────
-    match intention::poursuivre(ch, world, maintenant, dt, rng) {
+    match intention::poursuivre(ch, world, reglages, maintenant, dt, rng) {
         intention::Issue::EnCours => return r,
         // Finie ou échouée : on passe à la couche 3.
         intention::Issue::Finie | intention::Issue::Echouee => {}

@@ -183,7 +183,7 @@ pub fn appliquer(
                     avant,
                     apres,
                     &ch.manifest,
-                    e.echelle_ecran,
+                    e.echelle_affichage,
                     ch.facing,
                 ),
                 // L'une des deux poses manque (couverture partielle) : on ne
@@ -368,7 +368,7 @@ mod tests {
     fn entrees_neutres() -> Entrees {
         Entrees {
             souris: Point::new(0.0, 0.0),
-            echelle_ecran: 1.0,
+            echelle_affichage: 1.0,
             bouton_gauche: false,
             curseur_sur_le_personnage: false,
         }
@@ -450,7 +450,7 @@ mod tests {
 
         let e = Entrees {
             souris: Point::new(300.0, 1000.0),
-            echelle_ecran: 1.0,
+            echelle_affichage: 1.0,
             bouton_gauche: true,
             curseur_sur_le_personnage: true,
         };
@@ -474,7 +474,7 @@ mod tests {
 
         let e = Entrees {
             souris: Point::new(800.0, 300.0),
-            echelle_ecran: 1.0,
+            echelle_affichage: 1.0,
             bouton_gauche: true,
             curseur_sur_le_personnage: true,
         };
@@ -497,7 +497,7 @@ mod tests {
             x += vitesse * DT;
             let e = Entrees {
                 souris: Point::new(x, 300.0),
-                echelle_ecran: 1.0,
+                echelle_affichage: 1.0,
                 bouton_gauche: true,
                 curseur_sur_le_personnage: true,
             };
@@ -579,7 +579,7 @@ mod tests {
         for _ in 0..120 {
             let e = Entrees {
                 souris: Point::new(x_final, 300.0),
-                echelle_ecran: 1.0,
+                echelle_affichage: 1.0,
                 bouton_gauche: true,
                 curseur_sur_le_personnage: true,
             };
@@ -610,7 +610,7 @@ mod tests {
 
         let e = Entrees {
             souris: Point::new(640.0, 480.0),
-            echelle_ecran: 1.0,
+            echelle_affichage: 1.0,
             bouton_gauche: true,
             curseur_sur_le_personnage: true,
         };
@@ -630,7 +630,7 @@ mod tests {
         let mut ch = perso_pose_sur_le_sol(&m);
         let e = Entrees {
             souris: Point::new(50.0, 50.0),
-            echelle_ecran: 1.0,
+            echelle_affichage: 1.0,
             bouton_gauche: true,
             curseur_sur_le_personnage: false,
         };
@@ -654,7 +654,7 @@ mod tests {
 
         let e = Entrees {
             souris: Point::new(300.0, 1000.0),
-            echelle_ecran: 1.0,
+            echelle_affichage: 1.0,
             bouton_gauche: true,
             curseur_sur_le_personnage: true,
         };
@@ -691,7 +691,7 @@ mod tests {
 
         let e = Entrees {
             souris: Point::new(1200.0, 400.0),
-            echelle_ecran: 1.0,
+            echelle_affichage: 1.0,
             bouton_gauche: false,
             curseur_sur_le_personnage: true,
         };
@@ -734,7 +734,7 @@ mod tests {
         let x_final = 800.0 + 600.0 * 0.5;
         let e = Entrees {
             souris: Point::new(x_final, 300.0),
-            echelle_ecran: 1.0,
+            echelle_affichage: 1.0,
             bouton_gauche: false,
             curseur_sur_le_personnage: true,
         };
@@ -769,7 +769,7 @@ mod tests {
             let x_final = 800.0 + vitesse * 0.5;
             let e = Entrees {
                 souris: Point::new(x_final, 300.0),
-                echelle_ecran: 1.0,
+                echelle_affichage: 1.0,
                 bouton_gauche: false,
                 curseur_sur_le_personnage: true,
             };
@@ -812,7 +812,7 @@ mod tests {
 
         let e = Entrees {
             souris: Point::new(800.0, 300.0),
-            echelle_ecran: 1.0,
+            echelle_affichage: 1.0,
             bouton_gauche: false,
             curseur_sur_le_personnage: true,
         };
@@ -835,7 +835,7 @@ mod tests {
 
         let e = Entrees {
             souris: Point::new(800.0, 300.0),
-            echelle_ecran: 1.0,
+            echelle_affichage: 1.0,
             bouton_gauche: true,
             curseur_sur_le_personnage: false, // il a glissé sous le curseur
         };

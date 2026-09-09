@@ -272,7 +272,14 @@ impl Manifest {
     pub fn load(dir: &Path) -> Result<Manifest, ManifestError> {
         let chemin = dir.join("mascot.json");
 
-        let texte = std::fs::read_to_string(&chemin).map_err(|e| {
+        // `config::lire_json` et non `fs::read_to_string` : elle retire le
+        // BOM que le Bloc-notes et PowerShell écrivent par défaut sur
+        // Windows, et que `serde_json` refuse avec un message trompeur.
+        //
+        // Le manifeste est encore plus exposé que `config.json` : il est
+        // *fait* pour être édité à la main, c'est le bénéfice annoncé du
+        // format (spec §8.5).
+        let texte = crate::config::lire_json(&chemin).map_err(|e| {
             // `map_err` : on remplace l'erreur d'E/S par la nôtre, en gardant
             // son message. C'est ce qui permet de dire QUEL fichier manque.
             ManifestError::FichierIllisible {
@@ -456,6 +463,16 @@ mod tests {
             Err(ManifestError::AucunePoseJouable) => {}
             autre => panic!("attendu AucunePoseJouable, obtenu {autre:?}"),
         }
+    }
+
+    #[test]
+    fn un_manifeste_avec_bom_se_charge() {
+        // Même piège que pour `config.json`, et plus probable encore : le
+        // manifeste est fait pour être édité à la main.
+        let avec_bom = format!("{}{}", '\u{feff}', MINIMAL);
+        let d = dossier_de_test(&avec_bom, &[1, 2, 3]);
+        let m = Manifest::load(&d).expect("un BOM ne doit pas empêcher le chargement");
+        assert_eq!(m.id, "t");
     }
 
     #[test]

@@ -50,25 +50,39 @@ pub struct TableEnvies {
 }
 
 impl TableEnvies {
-    /// Les valeurs de départ de la spec §7.2, restreintes aux deux intentions
-    /// de l'étape 1a.
+    /// Les valeurs de départ de la spec §7.2.
     ///
-    /// Les quatre autres lignes de la spec — manger, aller à la fenêtre
-    /// active, aller voir l'autre personnage, s'amuser — arrivent aux étapes
-    /// 2, 3 et 5. **Ce seront littéralement des lignes de plus dans ce
-    /// `vec!`.**
+    /// **Délègue à `depuis_config`** plutôt que de recopier les poids : deux
+    /// listes de nombres finiraient par diverger à la première modification,
+    /// et un test le vérifie.
     pub fn defaut() -> TableEnvies {
+        Self::depuis_config(&crate::config::Config::default())
+    }
+
+    /// La table telle que l'utilisateur l'a réglée (décision n° 5).
+    ///
+    /// Restreinte aux deux intentions de l'étape 1a. Les quatre autres lignes
+    /// de la spec §7.2 — manger, aller à la fenêtre active, aller voir
+    /// l'autre personnage, s'amuser — arrivent aux étapes 2, 3 et 5. **Ce
+    /// seront littéralement des lignes de plus dans ce `vec!`.**
+    ///
+    /// **Les `poses_requises` ne viennent PAS de la config**, et c'est
+    /// délibéré : ce ne sont pas des préférences mais des faits — flâner
+    /// exige de savoir marcher. Les laisser configurer permettrait de
+    /// demander une intention injouable, ce que la couverture partielle
+    /// (spec §8.6) est justement là pour rendre impossible.
+    pub fn depuis_config(config: &crate::config::Config) -> TableEnvies {
         TableEnvies {
             entrees: vec![
                 EntreeEnvie {
                     intention: Intention::Flaner,
-                    base: 5.0,
+                    base: config.envies.flaner,
                     // Flâner sans savoir marcher n'a pas de sens.
                     poses_requises: &[POSE_WALK],
                 },
                 EntreeEnvie {
                     intention: Intention::SeReposer,
-                    base: 1.0,
+                    base: config.envies.se_reposer,
                     poses_requises: &[POSE_SIT],
                 },
             ],
@@ -244,6 +258,51 @@ mod tests {
                 table.tirer_avec(&m, &mut rng, mult),
                 Some(Intention::Flaner)
             );
+        }
+    }
+
+    #[test]
+    fn la_table_suit_les_poids_de_la_config() {
+        // Le test qui prouve qu'on règle le caractère sans recompiler.
+        let m = manifeste_avec(&["stand", "walk", "sit"]);
+
+        let c = crate::config::Config {
+            envies: crate::config::Envies {
+                flaner: 1.0,
+                se_reposer: 9.0,
+            },
+            ..crate::config::Config::default()
+        };
+
+        let table = TableEnvies::depuis_config(&c);
+        let mut rng = XorShift32::seeded(42);
+
+        let (mut flaner, mut reposer) = (0, 0);
+        for _ in 0..10_000 {
+            match table.tirer(&m, &mut rng) {
+                Some(Intention::Flaner) => flaner += 1,
+                Some(Intention::SeReposer) => reposer += 1,
+                None => {}
+            }
+        }
+
+        // Rapport inversé par rapport au défaut : il se repose maintenant
+        // neuf fois sur dix.
+        assert!(reposer > flaner * 5, "reposer {reposer}, flâner {flaner}");
+    }
+
+    #[test]
+    fn la_table_par_defaut_est_celle_de_la_config_par_defaut() {
+        // Deux chemins vers les mêmes poids : ils ne doivent pas diverger par
+        // inadvertance. `defaut()` doit être exactement
+        // `depuis_config(&Config::default())`.
+        let a = TableEnvies::defaut();
+        let b = TableEnvies::depuis_config(&crate::config::Config::default());
+
+        assert_eq!(a.entrees.len(), b.entrees.len());
+        for (ea, eb) in a.entrees.iter().zip(b.entrees.iter()) {
+            assert_eq!(ea.intention, eb.intention);
+            assert_eq!(ea.base, eb.base);
         }
     }
 

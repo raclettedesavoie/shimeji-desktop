@@ -19,7 +19,7 @@
 
 use crate::character::attach::Attachment;
 use crate::character::manifest::{POSE_RUN, POSE_SIT, POSE_STAND, POSE_WALK};
-use crate::character::physics::{VITESSE_COURSE, VITESSE_MARCHE};
+use crate::config::Reglages;
 use crate::character::Character;
 use crate::geom::Face;
 use crate::rng::Rng;
@@ -53,15 +53,21 @@ pub enum Allure {
     Course,
 }
 
-impl Allure {
-    fn vitesse(&self) -> f32 {
-        match self {
-            Allure::Arret => 0.0,
-            Allure::Marche => VITESSE_MARCHE,
-            Allure::Course => VITESSE_COURSE,
-        }
+/// La vitesse d'une allure, d'après les réglages de l'utilisateur.
+///
+/// Fonction libre et non méthode de `Allure` : la vitesse n'est plus une
+/// propriété intrinsèque de l'allure, elle dépend de la configuration.
+/// Garder la méthode obligerait à donner à `Allure` une référence aux
+/// réglages, ce qui n'a pas de sens pour une étiquette.
+fn vitesse_de(allure: Allure, reglages: &Reglages) -> f32 {
+    match allure {
+        Allure::Arret => 0.0,
+        Allure::Marche => reglages.vitesse_marche,
+        Allure::Course => reglages.vitesse_course,
     }
+}
 
+impl Allure {
     fn pose(&self) -> &'static str {
         match self {
             Allure::Arret => POSE_STAND,
@@ -137,6 +143,7 @@ pub enum Issue {
 pub fn poursuivre(
     ch: &mut Character,
     world: &World,
+    reglages: &Reglages,
     maintenant: Duration,
     dt: f32,
     rng: &mut dyn Rng,
@@ -156,7 +163,7 @@ pub fn poursuivre(
 
     match ai.kind {
         Intention::Flaner => {
-            let issue = flaner(ch, world, &mut ai, maintenant, dt, rng);
+            let issue = flaner(ch, world, reglages, &mut ai, maintenant, dt, rng);
             // On réécrit l'intention : `ai` est une COPIE (le type est
             // `Copy`), donc modifier `ai.etat` ne touche pas `ch.intention`
             // tant qu'on ne le réaffecte pas. Oublier cette ligne donnerait
@@ -184,6 +191,7 @@ pub fn poursuivre(
 fn flaner(
     ch: &mut Character,
     world: &World,
+    reglages: &Reglages,
     ai: &mut ActiveIntention,
     maintenant: Duration,
     dt: f32,
@@ -203,30 +211,38 @@ fn flaner(
 
     // ── Renouveler l'allure quand la précédente a expiré ────────────────
     if maintenant >= jusqu_a {
-        // Poids : il s'arrête souvent, marche beaucoup, court rarement.
-        // C'est ce dosage qui donne l'impression de flânerie plutôt que
-        // d'agitation. Passera dans `config.json` au plan 1b.
-        let poids = [3.0, 6.0, 1.0];
+        // Poids, durées et chance de demi-tour viennent maintenant des
+        // réglages (décision n° 5 : « les poids vivent dans la config, on
+        // règle son caractère sans recompiler »).
+        //
+        // Le dosage par défaut — il s'arrête souvent, marche beaucoup, court
+        // rarement — est ce qui donne l'impression de flânerie plutôt que
+        // d'agitation.
+        let a = &reglages.allures;
+        let poids = [a.poids_arret, a.poids_marche, a.poids_course];
+
         allure = match rng.weighted(&poids) {
             Some(0) => Allure::Arret,
             Some(2) => Allure::Course,
-            // `Some(1)` et le cas `None` (impossible ici, les poids sont
-            // constants et non nuls) tombent sur la marche.
+            // `Some(1)` tombe sur la marche, et le cas `None` aussi — il
+            // n'arrive que si l'utilisateur a mis les trois poids à zéro,
+            // auquel cas marcher est le repli le moins surprenant.
             _ => Allure::Marche,
         };
 
-        // Une durée aléatoire, plus courte pour la course : un pet qui court
-        // dix secondes d'affilée a l'air pressé, pas vivant.
-        let (min, max) = match allure {
-            Allure::Arret => (0.8, 3.0),
-            Allure::Marche => (1.5, 5.0),
-            Allure::Course => (0.6, 1.8),
+        // Une durée aléatoire, plus courte pour la course par défaut : un pet
+        // qui court dix secondes d'affilée a l'air pressé, pas vivant.
+        let plage = match allure {
+            Allure::Arret => a.duree_arret,
+            Allure::Marche => a.duree_marche,
+            Allure::Course => a.duree_course,
         };
-        jusqu_a = maintenant + Duration::from_secs_f32(rng.range(min, max));
+        jusqu_a = maintenant + Duration::from_secs_f32(rng.range(plage[0], plage[1]));
 
         // Un demi-tour de temps en temps, sans raison : c'est ce qui empêche
-        // de deviner la suite.
-        if rng.unit_f32() < 0.25 {
+        // de deviner la suite. C'est LE réglage qui décide si le personnage
+        // paraît décidé ou indécis.
+        if rng.unit_f32() < a.chance_demi_tour {
             ch.facing = ch.facing.inverse();
         }
     }
@@ -245,7 +261,7 @@ fn flaner(
 
     // ── Le déplacement, et ce qui arrive au bord ────────────────────────
     if allure != Allure::Arret {
-        avancer(ch, world, allure.vitesse() * ch.facing.signe() * dt);
+        avancer(ch, world, vitesse_de(allure, reglages) * ch.facing.signe() * dt);
     }
 
     ai.etat = EtatIntention::Flanerie { allure, jusqu_a };
@@ -422,6 +438,13 @@ mod tests {
 
     const DT: f32 = 1.0 / 60.0;
 
+    /// Les réglages par défaut. Construits ici et non lus depuis le disque :
+    /// un test qui lirait le `config.json` de la machine ne serait plus
+    /// reproductible.
+    fn reglages() -> Reglages {
+        Reglages::depuis(&crate::config::Config::default())
+    }
+
     fn manifeste() -> Manifest {
         let json = r#"{
             "id": "t", "name": "T", "frameSize": [128,128], "scale": 1,
@@ -480,7 +503,7 @@ mod tests {
         // 3 secondes : assez pour qu'au moins une allure de marche soit
         // tirée, quelle que soit la graine.
         for _ in 0..180 {
-            poursuivre(&mut ch, &m, t, DT, &mut rng);
+            poursuivre(&mut ch, &m, &reglages(), t, DT, &mut rng);
             t += Duration::from_micros(16_667);
         }
 
@@ -499,7 +522,7 @@ mod tests {
         let mut vues = std::collections::BTreeSet::new();
         let mut t = Duration::ZERO;
         for _ in 0..1_800 {
-            poursuivre(&mut ch, &m, t, DT, &mut rng);
+            poursuivre(&mut ch, &m, &reglages(), t, DT, &mut rng);
             vues.insert(ch.pose.clone());
             t += Duration::from_micros(16_667);
         }
@@ -540,7 +563,7 @@ mod tests {
 
         let mut t = Duration::ZERO;
         for _ in 0..30 {
-            poursuivre(&mut ch, &m, t, DT, &mut rng);
+            poursuivre(&mut ch, &m, &reglages(), t, DT, &mut rng);
             t += Duration::from_micros(16_667);
         }
 
@@ -575,7 +598,7 @@ mod tests {
         let mut t = Duration::ZERO;
         let mut passe = false;
         for _ in 0..60 {
-            poursuivre(&mut ch, &m, t, DT, &mut rng);
+            poursuivre(&mut ch, &m, &reglages(), t, DT, &mut rng);
             if plateforme_de(&ch) != premier {
                 passe = true;
                 break;
@@ -602,17 +625,17 @@ mod tests {
         ));
 
         // Première image : il s'assoit.
-        let issue = poursuivre(&mut ch, &m, Duration::ZERO, DT, &mut rng);
+        let issue = poursuivre(&mut ch, &m, &reglages(), Duration::ZERO, DT, &mut rng);
         assert_eq!(issue, Issue::EnCours);
         assert_eq!(ch.pose, POSE_SIT);
 
         // Il ne bouge pas pendant le repos.
         let ou = offset_de(&ch);
-        poursuivre(&mut ch, &m, Duration::from_secs(2), DT, &mut rng);
+        poursuivre(&mut ch, &m, &reglages(), Duration::from_secs(2), DT, &mut rng);
         assert_eq!(offset_de(&ch), ou);
 
         // Le repos dure au plus 15 s ; à 16 s il est fini.
-        let issue = poursuivre(&mut ch, &m, Duration::from_secs(16), DT, &mut rng);
+        let issue = poursuivre(&mut ch, &m, &reglages(), Duration::from_secs(16), DT, &mut rng);
         assert_eq!(issue, Issue::Finie);
         assert!(ch.intention.is_none());
     }
@@ -634,6 +657,7 @@ mod tests {
             let avant = poursuivre(
                 &mut ch,
                 &m,
+                &reglages(),
                 DELAI_ABANDON - Duration::from_millis(100),
                 DT,
                 &mut rng,
@@ -646,6 +670,7 @@ mod tests {
             let apres = poursuivre(
                 &mut ch,
                 &m,
+                &reglages(),
                 DELAI_ABANDON + Duration::from_millis(100),
                 DT,
                 &mut rng,
@@ -666,10 +691,10 @@ mod tests {
             Duration::from_secs(100),
         ));
 
-        let issue = poursuivre(&mut ch, &m, Duration::from_secs(110), DT, &mut rng);
+        let issue = poursuivre(&mut ch, &m, &reglages(), Duration::from_secs(110), DT, &mut rng);
         assert_eq!(issue, Issue::EnCours);
 
-        let issue = poursuivre(&mut ch, &m, Duration::from_secs(121), DT, &mut rng);
+        let issue = poursuivre(&mut ch, &m, &reglages(), Duration::from_secs(121), DT, &mut rng);
         assert_eq!(issue, Issue::Echouee);
     }
 
@@ -679,7 +704,7 @@ mod tests {
         let mut ch = perso(&m, 500.0);
         let mut rng = XorShift32::seeded(1);
         assert_eq!(
-            poursuivre(&mut ch, &m, Duration::ZERO, DT, &mut rng),
+            poursuivre(&mut ch, &m, &reglages(), Duration::ZERO, DT, &mut rng),
             Issue::Finie
         );
     }
@@ -712,7 +737,7 @@ mod tests {
         ));
 
         assert_eq!(
-            poursuivre(&mut ch, &m, Duration::ZERO, DT, &mut rng),
+            poursuivre(&mut ch, &m, &reglages(), Duration::ZERO, DT, &mut rng),
             Issue::Echouee
         );
     }

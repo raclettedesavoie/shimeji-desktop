@@ -136,13 +136,13 @@ pub fn window_top_left(
     pos: Point,
     pose: &Pose,
     manifest: &Manifest,
-    scale_ecran: f32,
+    scale_affichage: f32,
     facing: Facing,
 ) -> Point {
     // L'échelle totale : celle du manifeste combinée à celle du moniteur
     // (spec §3.4, §8.5). C'est le SEUL usage légitime du facteur d'échelle —
     // il ne convertit jamais une coordonnée.
-    let echelle = manifest.scale * scale_ecran;
+    let echelle = manifest.scale * scale_affichage;
 
     let largeur_boite = manifest.frame_size[0] as f32;
 
@@ -190,13 +190,13 @@ pub fn position_conservant_le_sprite(
     pose_avant: &Pose,
     pose_apres: &Pose,
     manifest: &Manifest,
-    scale_ecran: f32,
+    scale_affichage: f32,
     facing: Facing,
 ) -> Point {
-    let coin = window_top_left(pos, pose_avant, manifest, scale_ecran, facing);
+    let coin = window_top_left(pos, pose_avant, manifest, scale_affichage, facing);
 
     // L'inverse de `window_top_left`, avec la pose d'arrivée.
-    let echelle = manifest.scale * scale_ecran;
+    let echelle = manifest.scale * scale_affichage;
     let largeur_boite = manifest.frame_size[0] as f32;
     let ancre_x = if facing.flipped() {
         largeur_boite - pose_apres.anchor[0]
@@ -215,8 +215,8 @@ pub fn position_conservant_le_sprite(
 /// Séparée de `window_top_left` parce qu'elle ne change qu'au chargement du
 /// manifeste ou au changement d'écran, alors que le coin change 60 fois par
 /// seconde.
-pub fn window_size(manifest: &Manifest, scale_ecran: f32) -> (u32, u32) {
-    let echelle = manifest.scale * scale_ecran;
+pub fn window_size(manifest: &Manifest, scale_affichage: f32) -> (u32, u32) {
+    let echelle = manifest.scale * scale_affichage;
     (
         (manifest.frame_size[0] as f32 * echelle).round() as u32,
         (manifest.frame_size[1] as f32 * echelle).round() as u32,
@@ -234,11 +234,11 @@ pub fn hitbox_ecran(
     pose_nom: &str,
     pose: &Pose,
     manifest: &Manifest,
-    scale_ecran: f32,
+    scale_affichage: f32,
     facing: Facing,
 ) -> Rect {
-    let echelle = manifest.scale * scale_ecran;
-    let coin = window_top_left(pos, pose, manifest, scale_ecran, facing);
+    let echelle = manifest.scale * scale_affichage;
+    let coin = window_top_left(pos, pose, manifest, scale_affichage, facing);
     let hb = manifest.hitbox_de(pose_nom);
     let largeur_boite = manifest.frame_size[0] as f32;
 

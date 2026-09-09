@@ -14,6 +14,7 @@
 mod behavior;
 mod character;
 mod clock;
+mod config;
 mod geom;
 mod probe;
 mod render;
@@ -60,13 +61,13 @@ fn main() {
             .and_then(|s| s.parse::<u32>().ok())
             .unwrap_or(42);
 
-        let dossier = dossier_personnages().join("blob");
+        let dossier = config::dossier_personnages().join("blob");
         println!(
             "simulation de {minutes} min, graine {graine}, personnage {}",
             dossier.display()
         );
 
-        match sim::executer(minutes, graine, &dossier) {
+        match sim::executer(minutes, graine, &dossier, &config::charger()) {
             Ok(r) => sim::imprimer(&r),
             Err(e) => {
                 eprintln!("simulation impossible : {e}");
@@ -79,55 +80,6 @@ fn main() {
     lancer_application();
 }
 
-/// Où sont les personnages.
-///
-/// Ordre de recherche (spec §8.1) : à côté de l'exe, puis `%APPDATA%`.
-///
-/// **Plus un repli de développement** au milieu : en `cargo run`, l'exe est
-/// dans `src-tauri/target/debug/`, donc « à côté de l'exe » ne trouve rien et
-/// l'on tomberait sur `%APPDATA%`, vide. On remonte donc les dossiers parents
-/// à la recherche d'un `characters/`. Ce repli disparaîtra si un jour il
-/// gêne ; pour l'instant il évite de copier 46 PNG à chaque build.
-///
-/// Le plan 1b déplacera cette fonction dans `config.rs`, qui résout de la
-/// même façon `config.json`.
-fn dossier_personnages() -> std::path::PathBuf {
-    // ── À côté de l'exe ────────────────────────────────────────────────
-    // `if let Ok(...)` : `current_exe` peut échouer sur des systèmes
-    // exotiques. Ce n'est pas une raison de ne pas démarrer.
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let candidat = dir.join("characters");
-            if candidat.is_dir() {
-                return candidat;
-            }
-
-            // ── Repli de développement ─────────────────────────────────
-            // `ancestors()` énumère le dossier puis chacun de ses parents.
-            // On s'arrête à 5 niveaux : assez pour sortir de target/debug/,
-            // pas assez pour partir explorer tout le disque.
-            for parent in dir.ancestors().take(5) {
-                let candidat = parent.join("characters");
-                if candidat.is_dir() {
-                    return candidat;
-                }
-            }
-        }
-    }
-
-    // ── %APPDATA% ──────────────────────────────────────────────────────
-    if let Ok(appdata) = std::env::var("APPDATA") {
-        return std::path::PathBuf::from(appdata)
-            .join("shimeji-desktop")
-            .join("characters");
-    }
-
-    // Dernier recours : le dossier courant. Ça échouera au chargement du
-    // manifeste, avec un message qui nomme le chemin cherché — ce qui est
-    // exactement ce qu'il faut pour diagnostiquer.
-    std::path::PathBuf::from("characters")
-}
-
 /// Le label de la fenêtre d'un personnage. Un seul personnage à l'étape 1a ;
 /// l'étape 3 en instanciera plusieurs, d'où l'index dès maintenant.
 fn label_de(index: usize) -> String {
@@ -135,8 +87,20 @@ fn label_de(index: usize) -> String {
 }
 
 fn lancer_application() {
-    let dossier = dossier_personnages();
+    let dossier = config::dossier_personnages();
     println!("personnages : {}", dossier.display());
+
+    // ── La configuration ────────────────────────────────────────────────
+    // `charger()` ne peut pas échouer : ni l'absence de fichier, ni un
+    // fichier partiel, ni même un JSON cassé n'empêchent le personnage de
+    // vivre (spec §9.3). Un fichier malformé est signalé bruyamment par
+    // `config`, pas ici.
+    let configuration = config::charger();
+    let reglages = config::Reglages::depuis(&configuration);
+    println!(
+        "config : échelle {}, vitesse ×{} (marche {} px/s)",
+        configuration.echelle, configuration.vitesse, reglages.vitesse_marche
+    );
 
     // ── Le manifeste, avant tout le reste ───────────────────────────────
     // Sans personnage, il n'y a rien à afficher : autant échouer tout de
@@ -153,6 +117,11 @@ fn lancer_application() {
         manifeste.name,
         manifeste.poses.len()
     );
+
+    // La table d'envies, réglée par la config (décision n° 5). Construite
+    // une fois : elle ne change qu'au rechargement à chaud (Tâche 5).
+    let table = behavior::desire::TableEnvies::depuis_config(&configuration);
+    let echelle_config = configuration.echelle;
 
     // Le dossier est déplacé dans la fermeture du schéma URI ci-dessous ;
     // on en garde une copie pour la suite.
@@ -188,8 +157,12 @@ fn lancer_application() {
             let offset = sol.rect.face_length(world::Face::Top) / 2.0;
             let depart = sol.rect.point_on(world::Face::Top, offset);
 
-            let echelle_ecran = ecrans[0].scale;
-            let taille = character::attach::window_size(&manifeste, echelle_ecran);
+            // L'échelle d'AFFICHAGE : celle du moniteur, multipliée par le
+            // réglage de l'utilisateur. Les fonctions de `attach` n'ont pas à
+            // savoir que le second existe — elles reçoivent un seul facteur,
+            // et c'est tout ce dont elles ont besoin.
+            let echelle_affichage = ecrans[0].scale * configuration.echelle;
+            let taille = character::attach::window_size(&manifeste, echelle_affichage);
 
             // ── La fenêtre ──────────────────────────────────────────────
             // Exactement la combinaison validée par l'étape 0, plus les deux
@@ -269,7 +242,17 @@ fn lancer_application() {
                 println!("SHIMEJI_SANS_BOUCLE : aucune animation, fenêtre seule");
             } else {
                 std::thread::spawn(move || {
-                    boucle(handle, label, personnage, monde, echelle_ecran, visibilite);
+                    boucle(
+                    handle,
+                    label,
+                    personnage,
+                    monde,
+                    echelle_affichage,
+                    visibilite,
+                    reglages,
+                    table,
+                    echelle_config,
+                );
                 });
             }
 
@@ -364,10 +347,16 @@ fn boucle(
     label: String,
     mut ch: character::Character,
     mut monde: world::World,
-    mut echelle_ecran: f32,
+    mut echelle_affichage: f32,
     visibilite: tray::Visibilite,
+    reglages: config::Reglages,
+    table: behavior::desire::TableEnvies,
+    // Le réglage `echelle` de la config, gardé à part pour le recombiner à
+    // l'échelle du moniteur au recensement — celle-ci peut changer si le
+    // personnage passe sur un écran de DPI différent.
+    echelle_config: f32,
 ) {
-    use behavior::{desire::TableEnvies, Entrees};
+    use behavior::Entrees;
     use std::time::{Duration, Instant};
 
     let sonde = probe::win32::Win32Probe::new();
@@ -382,8 +371,6 @@ fn boucle(
         .map(|d| d.subsec_nanos())
         .unwrap_or(12345);
     let mut rng = rng::XorShift32::seeded(graine);
-
-    let table = TableEnvies::defaut();
 
     const PERIODE: Duration = Duration::from_micros(16_667); // 60 Hz
     const PERIODE_MONDE: Duration = Duration::from_millis(125); // 8 Hz
@@ -435,7 +422,7 @@ fn boucle(
             let ecrans = sonde.screens();
             if !ecrans.is_empty() {
                 monde = world::World::from_screens(&ecrans);
-                echelle_ecran = ecrans[0].scale;
+                echelle_affichage = ecrans[0].scale * echelle_config;
             }
             dernier_recensement = maintenant;
         }
@@ -459,7 +446,7 @@ fn boucle(
                 &ch.pose,
                 pose,
                 &ch.manifest,
-                echelle_ecran,
+                echelle_affichage,
                 ch.facing,
             )
             .contains(m.pos),
@@ -497,7 +484,7 @@ fn boucle(
 
         let entrees = Entrees {
             souris: m.pos,
-            echelle_ecran,
+            echelle_affichage,
             bouton_gauche: m.left_down,
             curseur_sur_le_personnage: sur_le_personnage,
         };
@@ -505,13 +492,13 @@ fn boucle(
         // ── 60 Hz : le comportement ─────────────────────────────────────
         // La MÊME fonction que le mode simulation.
         let dt = PERIODE.as_secs_f32();
-        behavior::pas(&mut ch, &monde, &entrees, &table, maintenant, dt, &mut rng);
+        behavior::pas(&mut ch, &monde, &entrees, &table, &reglages, maintenant, dt, &mut rng);
 
         // ── Sur changement seulement : la taille de la fenêtre ──────────
         // Elle ne dépend que du manifeste et de l'échelle de l'écran.
         // L'appeler à 60 Hz coûtait 8 points de pourcentage de CPU pour
         // rien (voir l'avertissement de `render::placer`).
-        let taille = character::attach::window_size(&ch.manifest, echelle_ecran);
+        let taille = character::attach::window_size(&ch.manifest, echelle_affichage);
         if derniere_taille != Some(taille) {
             if render::dimensionner(&handle, &label, taille).is_err() {
                 return;
@@ -555,7 +542,7 @@ fn boucle(
                     pos,
                     pose,
                     &ch.manifest,
-                    echelle_ecran,
+                    echelle_affichage,
                     ch.facing,
                 );
 

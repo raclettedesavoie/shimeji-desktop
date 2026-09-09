@@ -62,7 +62,12 @@ pub struct Resume {
 /// Rend `Err(String)` et non une erreur typée : le seul appelant est la
 /// ligne de commande, qui va l'imprimer. Un `enum` d'erreurs n'apporterait
 /// rien ici.
-pub fn executer(minutes: u32, graine: u32, dossier: &Path) -> Result<Resume, String> {
+pub fn executer(
+    minutes: u32,
+    graine: u32,
+    dossier: &Path,
+    config: &crate::config::Config,
+) -> Result<Resume, String> {
     // ── Le monde et le personnage ───────────────────────────────────────
     let sonde = FakeProbe::deux_ecrans();
     let monde = World::from_screens(&sonde.screens());
@@ -91,14 +96,18 @@ pub fn executer(minutes: u32, graine: u32, dossier: &Path) -> Result<Resume, Str
     // numéro d'image, ce qui est plus simple et strictement équivalent.
     // `FakeClock` sert aux tests qui doivent faire des sauts dans le temps.
     let mut rng = XorShift32::seeded(graine);
-    let table = TableEnvies::defaut();
+
+    // La table ET les réglages viennent de la config : sinon la simulation
+    // vérifierait un comportement que l'utilisateur n'a pas.
+    let table = TableEnvies::depuis_config(config);
+    let reglages = crate::config::Reglages::depuis(config);
 
     // La souris ne bouge pas et le bouton reste relâché : on simule le
     // comportement autonome, pas l'interaction. L'attrapage est vérifié par
     // les tests de `reflex.rs`, et à l'œil en Tâche 11.
     let entrees = Entrees {
         souris: Point::new(0.0, 0.0),
-        echelle_ecran: 1.0,
+        echelle_affichage: 1.0,
         bouton_gauche: false,
         curseur_sur_le_personnage: false,
     };
@@ -132,7 +141,7 @@ pub fn executer(minutes: u32, graine: u32, dossier: &Path) -> Result<Resume, Str
     for i in 0..total_images {
         let maintenant = Duration::from_secs_f64(i as f64 * DT as f64);
 
-        let r = behavior::pas(&mut ch, &monde, &entrees, &table, maintenant, DT, &mut rng);
+        let r = behavior::pas(&mut ch, &monde, &entrees, &table, &reglages, maintenant, DT, &mut rng);
 
         if r != behavior::reflex::Reflexe::Aucun {
             resume.reflexes += 1;
@@ -240,9 +249,16 @@ mod tests {
         Path::new("../characters/blob")
     }
 
+    /// La config par défaut, construite et non lue depuis le disque : un test
+    /// qui lirait le `config.json` de la machine ne serait plus
+    /// reproductible.
+    fn defauts() -> crate::config::Config {
+        crate::config::Config::default()
+    }
+
     #[test]
     fn une_simulation_courte_produit_un_resume_coherent() {
-        let r = executer(2, 42, blob()).expect("la simulation doit aboutir");
+        let r = executer(2, 42, blob(), &defauts()).expect("la simulation doit aboutir");
 
         // 2 minutes à 60 Hz.
         assert_eq!(r.images, 2 * 60 * 60);
@@ -254,7 +270,7 @@ mod tests {
         // Ce que la spec §10.3 demande de pouvoir vérifier sans écran.
         // 30 minutes : assez pour que les deux intentions sortent, même avec
         // un rapport de poids de 5 contre 1.
-        let r = executer(30, 42, blob()).expect("la simulation doit aboutir");
+        let r = executer(30, 42, blob(), &defauts()).expect("la simulation doit aboutir");
 
         assert!(r.poses_vues.contains("walk"), "il n'a jamais marché");
         assert!(r.poses_vues.contains("run"), "il n'a jamais couru");
@@ -267,7 +283,7 @@ mod tests {
         // **La régression de comportement que rien d'autre ne détecte.**
         // « Bloqué » = ni la pose, ni la position, ni l'intention n'ont
         // changé (voir le commentaire de l'empreinte).
-        let r = executer(30, 42, blob()).expect("la simulation doit aboutir");
+        let r = executer(30, 42, blob(), &defauts()).expect("la simulation doit aboutir");
 
         let limite = crate::behavior::intention::DELAI_ABANDON + Duration::from_secs(1);
         assert!(
@@ -280,8 +296,8 @@ mod tests {
 
     #[test]
     fn la_simulation_est_reproductible_a_graine_fixe() {
-        let a = executer(5, 999, blob()).unwrap();
-        let b = executer(5, 999, blob()).unwrap();
+        let a = executer(5, 999, blob(), &defauts()).unwrap();
+        let b = executer(5, 999, blob(), &defauts()).unwrap();
         assert_eq!(a, b);
     }
 
@@ -290,15 +306,15 @@ mod tests {
         // Sinon l'aléatoire ne sert à rien, et « jamais prévisible » est
         // faux. On compare la SIGNATURE et non les compteurs : deux
         // histoires différentes peuvent tirer autant d'intentions.
-        let a = executer(5, 1, blob()).unwrap();
-        let b = executer(5, 2, blob()).unwrap();
+        let a = executer(5, 1, blob(), &defauts()).unwrap();
+        let b = executer(5, 2, blob(), &defauts()).unwrap();
         assert_ne!(a.signature, b.signature);
     }
 
     #[test]
     fn un_dossier_de_personnage_invalide_donne_une_erreur_lisible() {
         let e =
-            executer(1, 1, Path::new("../characters/inexistant")).expect_err("doit échouer");
+            executer(1, 1, Path::new("../characters/inexistant"), &defauts()).expect_err("doit échouer");
         assert!(e.contains("mascot.json"), "message peu clair : {e}");
     }
 }

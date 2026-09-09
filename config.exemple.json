@@ -1,0 +1,23 @@
+{
+  "personnages": ["blob"],
+
+  "echelle": 1,
+  "vitesse": 1,
+
+  "demarrageAutomatique": false,
+
+  "envies": {
+    "flaner": 5,
+    "seReposer": 1
+  },
+
+  "allures": {
+    "poidsArret": 3,
+    "poidsMarche": 6,
+    "poidsCourse": 1,
+    "dureeArret": [0.8, 3.0],
+    "dureeMarche": [1.5, 5.0],
+    "dureeCourse": [0.6, 1.8],
+    "chanceDemiTour": 0.25
+  }
+}
