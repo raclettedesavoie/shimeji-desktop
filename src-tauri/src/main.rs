@@ -365,6 +365,10 @@ fn boucle(
     let mut dernier_rendu: Option<render::Rendu> = None;
     let mut derniere_taille: Option<(u32, u32)> = None;
 
+    // L'état courant de la traversée des clics. Initialisé à `true` parce
+    // que c'est ce que `setup` a posé juste avant de lancer ce thread.
+    let mut clics_traversent = true;
+
     loop {
         // `Instant` ici et non l'horloge injectée : c'est la CADENCE, pas le
         // temps du comportement. La distinction compte — le comportement doit
@@ -384,18 +388,65 @@ fn boucle(
             dernier_recensement = maintenant;
         }
 
-        // ── 60 Hz : les entrées ─────────────────────────────────────────
+        // ── 60 Hz : les entrées, et le hit-testing (spec §3.3) ──────────
         // La spec §3.3 propose ~30 Hz pour `GetCursorPos`. On le lit à 60 Hz :
         // l'appel est effectivement quasi gratuit, et à 30 Hz le personnage
         // traînerait visiblement derrière le curseur pendant un glisser.
-        //
-        // `curseur_sur_le_personnage` reste `false` : le hit-testing arrive
-        // en Tâche 11.
         let m = sonde.mouse();
+
+        // Le curseur est-il dans la hitbox de la POSE COURANTE — et non dans
+        // la boîte de 128×128 ? Sans cette distinction, le personnage serait
+        // un trou noir de 128 px avalant les clics dans ses zones
+        // transparentes.
+        let sur_le_personnage = match (
+            character::attach::world_position(&ch.attachment, &monde, m.pos),
+            ch.manifest.pose(&ch.pose),
+        ) {
+            (Some(pos), Some(pose)) => character::attach::hitbox_ecran(
+                pos,
+                &ch.pose,
+                pose,
+                &ch.manifest,
+                echelle_ecran,
+                ch.facing,
+            )
+            .contains(m.pos),
+
+            // Position indérivable (plateforme disparue) ou pose absente :
+            // on ne peut pas savoir. `false` est le bon défaut — les clics
+            // continuent de traverser, ce qui ne gêne personne.
+            _ => false,
+        };
+
+        // ── Absorber le clic, mais seulement là où il faut ──────────────
+        //
+        // Pourquoi désactiver la traversée alors que la sonde nous dit déjà
+        // tout ? Parce que si les clics continuaient de traverser, cliquer
+        // sur le personnage cliquerait **aussi** l'icône du bureau derrière
+        // lui. Il faut ABSORBER le clic — c'est à ça que sert le va-et-vient
+        // de `set_ignore_cursor_events` (spec §3.3).
+        //
+        // Pendant un glisser, on garde les clics absorbés même si le sprite
+        // a glissé hors de sa propre hitbox : sinon un déplacement rapide
+        // relâcherait le personnage tout seul.
+        let porte = matches!(ch.attachment, character::attach::Attachment::Dragged);
+        let doit_traverser = !sur_le_personnage && !porte;
+
+        // On n'appelle Win32 que sur CHANGEMENT d'état : appeler
+        // `set_ignore_cursor_events` 60 fois par seconde marcherait, mais
+        // c'est un appel système par image pour rien — et la section
+        // « Mesurer le CPU » de CLAUDE.md dit pourquoi on y regarde.
+        if doit_traverser != clics_traversent {
+            if render::traverser_les_clics(&handle, &label, doit_traverser).is_err() {
+                return;
+            }
+            clics_traversent = doit_traverser;
+        }
+
         let entrees = Entrees {
             souris: m.pos,
             bouton_gauche: m.left_down,
-            curseur_sur_le_personnage: false,
+            curseur_sur_le_personnage: sur_le_personnage,
         };
 
         // ── 60 Hz : le comportement ─────────────────────────────────────

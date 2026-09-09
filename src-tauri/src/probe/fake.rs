@@ -16,6 +16,12 @@ pub struct FakeProbe {
     mouse: Cell<MouseState>,
 }
 
+// `allow(dead_code)` : ces éléments SONT utilisés — par les tests. Mais un
+// build normal ne compile pas `#[cfg(test)]`, donc le compilateur les voit
+// morts et le signale à chaque fois. Ce sont les doubles de test exigés par
+// la spec §10.2 ; ils ont leur place dans le binaire, et l'avertissement est
+// ici du bruit, pas un signal.
+#[allow(dead_code)]
 impl FakeProbe {
     pub fn new(screens: Vec<ScreenInfo>) -> Self {
         FakeProbe {

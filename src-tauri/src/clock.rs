@@ -58,10 +58,17 @@ impl Clock for SystemClock {
 /// `Clock::elapsed` prend `&self` — un test qui détiendrait un `&FakeClock`
 /// ne pourrait sinon pas le faire avancer. `Cell` convient ici parce que
 /// `Duration` est `Copy` et qu'on reste sur un seul thread.
+// `allow(dead_code)` : ces éléments SONT utilisés — par les tests. Mais un
+// build normal ne compile pas `#[cfg(test)]`, donc le compilateur les voit
+// morts et le signale à chaque fois. Ce sont les doubles de test exigés par
+// la spec §10.2 ; ils ont leur place dans le binaire, et l'avertissement est
+// ici du bruit, pas un signal.
+#[allow(dead_code)]
 pub struct FakeClock {
     now: Cell<Duration>,
 }
 
+#[allow(dead_code)]
 impl FakeClock {
     pub fn new() -> Self {
         FakeClock {
