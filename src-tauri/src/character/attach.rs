@@ -240,7 +240,7 @@ mod tests {
             "id": "t", "name": "T", "frameSize": [128, 128], "scale": 1,
             "hitbox": [40, 20, 48, 100],
             "poses": {
-                "stand":    { "frames": [1] },
+                "stand":    { "frames": [1], "anchor": [64, 120] },
                 "decentre": { "frames": [1], "anchor": [100, 120] }
             }
         }"#;
@@ -424,11 +424,12 @@ mod tests {
         let a_droite = window_top_left(Point::new(500.0, 1032.0), pose, &m, 1.0, Facing::Right);
         let a_gauche = window_top_left(Point::new(500.0, 1032.0), pose, &m, 1.0, Facing::Left);
 
-        // Vers la droite : l'ancre est à 100 depuis le bord gauche.
-        assert_eq!(a_droite.x, 500.0 - 100.0);
-        // Vers la gauche : le sprite est miroité, l'ancre se retrouve à
-        // 128 - 100 = 28 depuis le bord gauche.
-        assert_eq!(a_gauche.x, 500.0 - 28.0);
+        // Les sprites étant dessinés vers la GAUCHE (voir `Facing::flipped`),
+        // c'est le sens non miroité : l'ancre est à 100 du bord gauche.
+        assert_eq!(a_gauche.x, 500.0 - 100.0);
+        // Vers la droite, le sprite est miroité : l'ancre se retrouve à
+        // 128 - 100 = 28 du bord gauche.
+        assert_eq!(a_droite.x, 500.0 - 28.0);
         // La hauteur, elle, ne bouge pas : le miroir est horizontal.
         assert_eq!(a_droite.y, a_gauche.y);
     }
@@ -502,10 +503,10 @@ mod tests {
             Facing::Left,
         );
 
-        // Vers la droite, la hitbox commence à 10 dans la boîte ; vers la
-        // gauche, elle commence à 128 - (10 + 30) = 88.
+        // Sens non miroité (gauche) : la hitbox commence à 10 dans la boîte.
+        // Miroitée (droite) : elle commence à 128 - (10 + 30) = 88.
         assert_eq!(droite.w, gauche.w);
         assert_ne!(droite.x, gauche.x);
-        assert_eq!(gauche.x - droite.x, 88.0 - 10.0);
+        assert_eq!(droite.x - gauche.x, 88.0 - 10.0);
     }
 }

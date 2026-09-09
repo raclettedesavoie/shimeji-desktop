@@ -21,9 +21,15 @@ use std::time::Duration;
 // que des littéraux dispersés : une faute de frappe devient une erreur de
 // compilation au lieu d'une pose silencieusement absente.
 //
-// Ces sept-là sont celles dont l'étape 1a a besoin. Les autres poses du
-// manifeste (`sleep`, `crawl`, `cling`, `climbOver`, `hang`, `split`) sont
-// chargées mais encore inutilisées : elles servent aux étapes 2 et 4.
+// Ces neuf-là sont celles dont l'étape 1a a besoin. Les autres poses du
+// manifeste (`sprawl`, `creep`, `grabWall`, `climbWall`, `grabCeiling`,
+// `climbCeiling`, `split`…) sont chargées mais encore inutilisées : elles
+// servent aux étapes 2 et 4.
+//
+// **La correspondance frames → poses vient de `conf/actions.xml` de
+// Shimeji-ee**, pas d'une observation à l'œil. Justification pose par pose,
+// et les cinq erreurs que ce relevé a corrigées :
+// `docs/specs/2026-09-09-frames-shimeji.md`.
 
 pub const POSE_STAND: &str = "stand";
 pub const POSE_WALK: &str = "walk";
@@ -31,7 +37,21 @@ pub const POSE_RUN: &str = "run";
 pub const POSE_SIT: &str = "sit";
 pub const POSE_FALL: &str = "fall";
 pub const POSE_LAND: &str = "land";
+
+/// Porté, sans mouvement notable — le `Pinched` de Shimeji-ee au repos.
 pub const POSE_DRAGGED: &str = "dragged";
+
+/// Porté en se déplaçant vers la gauche : le balancier penche à gauche.
+///
+/// Shimeji-ee joue un cycle unique `9,7,5,1,6,8,10` (action `Pinched`), qui
+/// bat indépendamment de ce que fait la souris. On le découpe en trois poses
+/// pour que le balancier **suive le sens du déplacement** — c'est ce qui
+/// donne l'impression de tenir une peluche par la tête plutôt que de
+/// regarder une animation.
+pub const POSE_DRAGGED_LEFT: &str = "draggedLeft";
+
+/// Porté en se déplaçant vers la droite.
+pub const POSE_DRAGGED_RIGHT: &str = "draggedRight";
 
 /// Le rectangle réellement occupé par le personnage dans la boîte de 128×128
 /// (spec §8.4). Sert au hit-testing (Tâche 11) et à la proximité entre
@@ -62,10 +82,18 @@ impl From<[f32; 4]> for Hitbox {
     }
 }
 
-/// L'ancre par défaut : le sol sous les pieds, bas de la boîte, centré
-/// (spec §8.5).
+/// L'ancre par défaut : le sol sous les pieds, **tout en bas** de la boîte,
+/// centré.
+///
+/// `[64, 128]` et non `[64, 120]` comme le supposait la spec §8.5 : dans
+/// `conf/actions.xml` de Shimeji-ee, toutes les poses au sol portent
+/// `ImageAnchor="64,128"`. Les seules exceptions sont explicites et
+/// déclarées pose par pose dans le manifeste — `64,112` pour les poses
+/// assises jambes ballantes, `64,48` pour l'agrippement au plafond.
+///
+/// Les 8 px d'écart enfonçaient le personnage sous la ligne du sol.
 fn ancre_par_defaut() -> [f32; 2] {
-    [64.0, 120.0]
+    [64.0, 128.0]
 }
 
 /// La durée d'affichage par défaut d'une frame (spec §8.5).
@@ -388,8 +416,8 @@ mod tests {
         assert_eq!(stand.frame_ms, 150);
         // `loop` absent → false
         assert!(!stand.looping);
-        // `anchor` absent → [64, 120], le sol centré
-        assert_eq!(stand.anchor, [64.0, 120.0]);
+        // `anchor` absent → [64, 128], le sol tout en bas de la boîte
+        assert_eq!(stand.anchor, [64.0, 128.0]);
         // `hitbox` de pose absente → celle du manifeste
         assert_eq!(m.hitbox_de(POSE_STAND), m.hitbox);
     }

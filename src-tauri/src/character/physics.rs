@@ -32,13 +32,28 @@ pub const GRAVITE: f32 = 1400.0;
 /// plateforme.
 pub const VITESSE_CHUTE_MAX: f32 = 1600.0;
 
-/// Vitesse de marche. Lente exprès : un pet qui se presse n'a pas l'air de
-/// flâner.
-pub const VITESSE_MARCHE: f32 = 55.0;
+/// Vitesse de marche.
+///
+/// **Reprise de Shimeji-ee, pas réglée à l'œil** : l'action `Walk` de
+/// `conf/actions.xml` porte `Velocity="-2,0"`, soit 2 px par tick, et
+/// `Manager.TICK_INTERVAL = 40 ms` — donc 50 px/s.
+pub const VITESSE_MARCHE: f32 = 50.0;
 
-/// Vitesse de course. Le rapport à la marche (~2,7×) est ce qui rend le
-/// passage de l'une à l'autre visible.
-pub const VITESSE_COURSE: f32 = 150.0;
+/// Vitesse de course. `Run` porte `Velocity="-4,0"` → 100 px/s.
+///
+/// Le rapport à la marche est donc exactement **2×**, et c'est ce qui rend
+/// le passage de l'une à l'autre lisible. Shimeji-ee a aussi un `Dash` à
+/// `-8,0` (200 px/s) qu'on n'utilise pas encore.
+pub const VITESSE_COURSE: f32 = 100.0;
+
+/// Au-delà de cette vitesse de déplacement horizontal de la souris, le
+/// personnage porté se met à balancer (spec §3.3, poses `draggedLeft` /
+/// `draggedRight`).
+///
+/// Réglée à l'œil, celle-là : Shimeji-ee n'a pas d'équivalent, son `Pinched`
+/// battant indépendamment de la souris. 120 px/s est franchement dépassé par
+/// un glisser volontaire et jamais atteint par un tremblement de main.
+pub const VITESSE_BALANCIER: f32 = 120.0;
 
 /// Un pas d'intégration de la chute libre.
 ///

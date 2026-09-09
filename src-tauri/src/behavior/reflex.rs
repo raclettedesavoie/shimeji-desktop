@@ -18,8 +18,10 @@
 
 use super::Entrees;
 use crate::character::attach::{hors_bornes, world_position, Attachment};
-use crate::character::manifest::{POSE_DRAGGED, POSE_FALL, POSE_LAND, POSE_STAND};
-use crate::character::physics::{atterrissage, integrer_chute, sous_le_bureau};
+use crate::character::manifest::{
+    POSE_DRAGGED, POSE_DRAGGED_LEFT, POSE_DRAGGED_RIGHT, POSE_FALL, POSE_LAND, POSE_STAND,
+};
+use crate::character::physics::{atterrissage, integrer_chute, sous_le_bureau, VITESSE_BALANCIER};
 use crate::character::Character;
 use crate::geom::{Face, Vec2};
 use crate::world::World;
@@ -39,6 +41,28 @@ pub enum Reflexe {
     /// Rattrapé par le garde-fou après être tombé sous le bureau.
     Rattrape,
     Aucun,
+}
+
+/// La pose d'un personnage porté, selon la vitesse horizontale de la souris.
+///
+/// C'est le **balancier** : immobile il pend droit, tiré d'un côté il penche
+/// de ce côté. Shimeji-ee joue à la place un cycle unique
+/// (`Pinched` = 9,7,5,1,6,8,10) qui bat indépendamment de la souris ; le
+/// découper en trois poses donne l'impression de tenir une peluche plutôt
+/// que de regarder une animation.
+///
+/// > Le sens retenu est le **direct** : on tire à gauche → il penche à
+/// > gauche. Un pendule réel traînerait *derrière* et pencherait à droite.
+/// > Les deux se défendent ; ce choix-ci se lit mieux à l'écran. Pour
+/// > l'inverser, échanger les deux constantes ci-dessous — une ligne.
+fn pose_portee(souris_vx: f32) -> &'static str {
+    if souris_vx < -VITESSE_BALANCIER {
+        POSE_DRAGGED_LEFT
+    } else if souris_vx > VITESSE_BALANCIER {
+        POSE_DRAGGED_RIGHT
+    } else {
+        POSE_DRAGGED
+    }
 }
 
 /// Applique les réflexes, dans l'ordre de priorité.
@@ -71,7 +95,7 @@ pub fn appliquer(
                 // ici : pendant un déplacement rapide, le sprite traîne
                 // derrière le curseur et sortirait de sa propre hitbox — il
                 // se décrocherait tout seul.
-                ch.set_pose(POSE_DRAGGED, maintenant);
+                ch.set_pose(pose_portee(e.souris_vx), maintenant);
                 return Reflexe::Porte;
             }
 
@@ -89,7 +113,7 @@ pub fn appliquer(
             // Pas encore tenu : le devient-il ?
             if e.bouton_gauche && e.curseur_sur_le_personnage {
                 ch.attachment = Attachment::Dragged;
-                ch.set_pose(POSE_DRAGGED, maintenant);
+                ch.set_pose(pose_portee(e.souris_vx), maintenant);
                 // Être soulevé annule ce qu'il était en train de faire :
                 // reprendre une promenade après avoir été déplacé de deux
                 // écrans n'aurait aucun sens.
@@ -191,7 +215,9 @@ mod tests {
                 "sit":     { "frames": [6] },
                 "fall":    { "frames": [7], "anchor": [64, 64] },
                 "land":    { "frames": [8], "frameMs": 150 },
-                "dragged": { "frames": [7], "anchor": [64, 64] }
+                "dragged":      { "frames": [1] },
+                "draggedLeft":  { "frames": [5, 7, 9], "frameMs": 100, "loop": true },
+                "draggedRight": { "frames": [6, 8, 10], "frameMs": 100, "loop": true }
             }
         }"#;
         serde_json::from_str(json).unwrap()
@@ -220,6 +246,7 @@ mod tests {
     fn entrees_neutres() -> Entrees {
         Entrees {
             souris: Point::new(0.0, 0.0),
+            souris_vx: 0.0,
             bouton_gauche: false,
             curseur_sur_le_personnage: false,
         }
@@ -301,6 +328,7 @@ mod tests {
 
         let e = Entrees {
             souris: Point::new(300.0, 1000.0),
+            souris_vx: 0.0,
             bouton_gauche: true,
             curseur_sur_le_personnage: true,
         };
@@ -313,12 +341,56 @@ mod tests {
     }
 
     #[test]
+    fn porte_immobile_il_pend_droit() {
+        let m = monde();
+        let mut ch = perso_pose_sur_le_sol(&m);
+        ch.attachment = Attachment::Dragged;
+
+        let e = Entrees {
+            souris: Point::new(800.0, 300.0),
+            souris_vx: 0.0,
+            bouton_gauche: true,
+            curseur_sur_le_personnage: true,
+        };
+        appliquer(&mut ch, &m, &e, Duration::ZERO, DT);
+        assert_eq!(ch.pose, POSE_DRAGGED);
+    }
+
+    #[test]
+    fn porte_en_mouvement_il_balance_du_bon_cote() {
+        // Le balancier que Shimeji-ee n'a pas : son `Pinched` bat
+        // indépendamment de la souris.
+        let m = monde();
+        let mut ch = perso_pose_sur_le_sol(&m);
+        ch.attachment = Attachment::Dragged;
+
+        let mut entrees = |vx: f32| Entrees {
+            souris: Point::new(800.0, 300.0),
+            souris_vx: vx,
+            bouton_gauche: true,
+            curseur_sur_le_personnage: true,
+        };
+
+        appliquer(&mut ch, &m, &entrees(-400.0), Duration::ZERO, DT);
+        assert_eq!(ch.pose, POSE_DRAGGED_LEFT, "tiré à gauche");
+
+        appliquer(&mut ch, &m, &entrees(400.0), Duration::ZERO, DT);
+        assert_eq!(ch.pose, POSE_DRAGGED_RIGHT, "tiré à droite");
+
+        // Sous le seuil : il repend droit. Un tremblement de main ne doit pas
+        // le faire battre.
+        appliquer(&mut ch, &m, &entrees(30.0), Duration::ZERO, DT);
+        assert_eq!(ch.pose, POSE_DRAGGED, "vitesse sous le seuil");
+    }
+
+    #[test]
     fn le_bouton_seul_ne_suffit_pas_a_l_attraper() {
         // Sinon tout clic n'importe où sur le bureau l'arracherait.
         let m = monde();
         let mut ch = perso_pose_sur_le_sol(&m);
         let e = Entrees {
             souris: Point::new(50.0, 50.0),
+            souris_vx: 0.0,
             bouton_gauche: true,
             curseur_sur_le_personnage: false,
         };
@@ -342,6 +414,7 @@ mod tests {
 
         let e = Entrees {
             souris: Point::new(300.0, 1000.0),
+            souris_vx: 0.0,
             bouton_gauche: true,
             curseur_sur_le_personnage: true,
         };
@@ -358,6 +431,7 @@ mod tests {
 
         let e = Entrees {
             souris: Point::new(1200.0, 400.0),
+            souris_vx: 0.0,
             bouton_gauche: false,
             curseur_sur_le_personnage: true,
         };
@@ -378,6 +452,7 @@ mod tests {
 
         let e = Entrees {
             souris: Point::new(800.0, 300.0),
+            souris_vx: 0.0,
             bouton_gauche: true,
             curseur_sur_le_personnage: false, // il a glissé sous le curseur
         };

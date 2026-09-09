@@ -1,22 +1,37 @@
 {
+  "_source": "Correspondance frames -> poses extraite de conf/actions.xml de Shimeji-ee, PAS devinée à l'oeil. Durées converties depuis les ticks (Manager.TICK_INTERVAL = 40 ms). Justification pose par pose : docs/specs/2026-09-09-frames-shimeji.md",
+
   "id": "blob",
   "name": "Shimeji (mascotte par défaut)",
   "frameSize": [128, 128],
   "scale": 1,
-  "hitbox": [40, 20, 48, 100],
+  "hitbox": [40, 20, 48, 108],
+
   "poses": {
-    "stand":     { "frames": [1],                "anchor": [64, 120] },
-    "walk":      { "frames": [2, 3, 1, 4],       "frameMs": 120, "loop": true },
-    "run":       { "frames": [30, 31, 32, 33],   "frameMs": 80,  "loop": true },
-    "sit":       { "frames": [39] },
-    "sleep":     { "frames": [39, 40, 41],       "frameMs": 400, "hold": 41 },
-    "fall":      { "frames": [10],               "anchor": [64, 64] },
-    "land":      { "frames": [4],                "frameMs": 150 },
-    "dragged":   { "frames": [10],               "anchor": [64, 64] },
-    "crawl":     { "frames": [18, 20, 21],       "frameMs": 200, "loop": true },
-    "cling":     { "frames": [23, 24, 25],       "frameMs": 150, "loop": true, "anchor": [110, 64] },
-    "climbOver": { "frames": [34, 35, 36],       "frameMs": 180 },
-    "hang":      { "frames": [22],               "anchor": [64, 10] },
-    "split":     { "frames": [44, 45, 46],       "frameMs": 200 }
+    "stand":        { "frames": [1] },
+    "walk":         { "frames": [1, 2, 1, 3], "frameMs": 240, "loop": true },
+    "run":          { "frames": [1, 2, 1, 3], "frameMs": 80,  "loop": true },
+    "sit":          { "frames": [11] },
+    "fall":         { "frames": [4] },
+    "land":         { "frames": [18, 19], "frameMs": 160 },
+
+    "dragged":      { "frames": [1] },
+    "draggedLeft":  { "frames": [5, 7, 9],  "frameMs": 100, "loop": true },
+    "draggedRight": { "frames": [6, 8, 10], "frameMs": 100, "loop": true },
+
+    "sprawl":       { "frames": [21] },
+    "tripping":     { "frames": [19, 18, 20, 20, 19], "frameMs": 160 },
+    "creep":        { "frames": [20, 20, 21, 21, 21], "frameMs": 160, "loop": true },
+    "sitDangle":    { "frames": [31, 32, 31, 33], "frameMs": 400, "loop": true, "anchor": [64, 112] },
+    "sitLegsUp":    { "frames": [30], "anchor": [64, 112] },
+    "sitLookUp":    { "frames": [26] },
+    "jump":         { "frames": [22] },
+
+    "grabWall":     { "frames": [13] },
+    "climbWall":    { "frames": [14, 12, 13], "frameMs": 160, "loop": true },
+    "grabCeiling":  { "frames": [23], "anchor": [64, 48] },
+    "climbCeiling": { "frames": [23, 24, 25], "frameMs": 160, "loop": true, "anchor": [64, 48] },
+
+    "split":        { "frames": [42, 43, 44, 45, 46], "frameMs": 160 }
   }
 }

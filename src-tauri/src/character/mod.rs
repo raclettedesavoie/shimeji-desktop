@@ -21,12 +21,20 @@ pub enum Facing {
 impl Facing {
     /// `true` s'il faut retourner le sprite horizontalement.
     ///
-    /// Convention : les sprites sont dessinés **tournés vers la droite**.
-    /// Regarder à gauche demande donc un miroir. Si un pack tiers est dessiné
-    /// dans l'autre sens, il paraîtra à l'envers — c'est un défaut de contenu
-    /// qui se corrige dans le manifeste, pas ici.
+    /// **Convention : les sprites Shimeji sont dessinés tournés vers la
+    /// GAUCHE.** Regarder à droite demande donc un miroir.
+    ///
+    /// Ce n'est pas une supposition : dans `conf/actions.xml` de Shimeji-ee,
+    /// l'action `Walk` porte `Velocity="-2,0"` — une vitesse **négative**,
+    /// donc vers la gauche, avec le sprite non miroité. Idem pour `Run`
+    /// (`-4,0`), `Dash` (`-8,0`) et `Creep`.
+    ///
+    /// La convention inverse avait été retenue au départ, par défaut plutôt
+    /// que par vérification, et le personnage marchait à reculons — les
+    /// pattes allaient dans un sens, le déplacement dans l'autre. C'est
+    /// visible en une seconde à l'œil et invisible pour un test.
     pub fn flipped(&self) -> bool {
-        matches!(self, Facing::Left)
+        matches!(self, Facing::Right)
     }
 
     /// L'autre sens. Sert au demi-tour en bout de plateforme.
@@ -165,9 +173,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn facing_gauche_demande_un_miroir() {
-        assert!(Facing::Left.flipped());
-        assert!(!Facing::Right.flipped());
+    fn facing_droite_demande_un_miroir() {
+        // **C'est ce test qui garde la convention.** Les sprites Shimeji sont
+        // dessinés tournés vers la GAUCHE — `Walk` porte `Velocity="-2,0"`
+        // dans `conf/actions.xml`. Donc c'est regarder à DROITE qui demande
+        // un miroir.
+        //
+        // L'inverse avait été supposé au départ, et le personnage marchait à
+        // reculons : les pattes dans un sens, le déplacement dans l'autre.
+        assert!(Facing::Right.flipped());
+        assert!(!Facing::Left.flipped());
     }
 
     #[test]
