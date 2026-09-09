@@ -1238,7 +1238,32 @@ compteur avancer."
 > (spec §8.6) joue **par animation**. C'est aussi la lecture littérale de la
 > notation `Jouer(action)` de la spec §7.1.
 
-- [ ] **Step 1 : Écrire les tests**
+- [ ] **Step 1 : Étendre le manifeste synthétique des tests d'`intention.rs`**
+
+⚠️ **À faire en premier, sinon les tests du Step suivant échoueront pour la
+mauvaise raison.** `intention.rs::tests::manifeste()` est un JSON en dur qui ne
+déclare aujourd'hui que `stand, walk, run, sit, fall, land`. Les tests de jeu
+utilisent `perso()`, donc ce manifeste : sans les deux poses, `jouer` sortirait
+par sa garde de couverture partielle et l'on accuserait le code alors que c'est
+le **double de test** qui manque.
+
+```rust
+                "sit":   { "frames": [6] },
+                "fall":  { "frames": [7], "anchor": [64, 64] },
+                "land":  { "frames": [8], "frameMs": 150 },
+
+                // Les deux animations de jeu. Numéros arbitraires : ce
+                // manifeste est un DOUBLE, il ne sert qu'à dire quelles poses
+                // existent. Les vraies frames sont dans `mascot.json`.
+                "spinHead":  { "frames": [9, 10], "frameMs": 200 },
+                "sitDangle": { "frames": [11], "anchor": [64, 112] }
+```
+
+> **Ne pas les ajouter à `manifeste_avec(&[…])` de `desire.rs`** : celui-là est
+> déjà paramétré, et c'est justement son absence de poses qui fait marcher les
+> tests de couverture partielle.
+
+- [ ] **Step 2 : Écrire les tests**
 
 Dans le module `tests` de `src/behavior/desire.rs` :
 
@@ -1413,12 +1438,12 @@ Dans le module `tests` de `src/behavior/intention.rs` :
     }
 ```
 
-- [ ] **Step 2 : Lancer les tests pour vérifier qu'ils échouent**
+- [ ] **Step 3 : Lancer les tests pour vérifier qu'ils échouent**
 
 Run : `cargo test jouer`
 Attendu : **échec de compilation** — `Jeu`, `Intention::Jouer`, `POSE_SPIN_HEAD` et `POSE_SIT_DANGLE` n'existent pas.
 
-- [ ] **Step 3 : Les constantes de pose**
+- [ ] **Step 4 : Les constantes de pose**
 
 Dans `src/character/manifest.rs`, avec les autres :
 
@@ -1435,7 +1460,7 @@ pub const POSE_SPIN_HEAD: &str = "spinHead";
 pub const POSE_SIT_DANGLE: &str = "sitDangle";
 ```
 
-- [ ] **Step 4 : Le type `Jeu`, et la variante d'intention**
+- [ ] **Step 5 : Le type `Jeu`, et la variante d'intention**
 
 Dans `src/behavior/intention.rs` :
 
@@ -1506,7 +1531,7 @@ Dans `ActiveIntention::nouvelle`, la branche correspondante :
             },
 ```
 
-- [ ] **Step 5 : `fn jouer`**
+- [ ] **Step 6 : `fn jouer`**
 
 Dans `src/behavior/intention.rs` :
 
@@ -1571,7 +1596,7 @@ Et la branche dans `poursuivre`, à côté des deux autres :
 > sans lui, réécrire `ch.intention` ressusciterait une intention que `jouer`
 > vient d'annuler.
 
-- [ ] **Step 6 : Les deux lignes de table**
+- [ ] **Step 7 : Les deux lignes de table**
 
 Dans `src/behavior/desire.rs`, `depuis_config` :
 
@@ -1596,7 +1621,7 @@ Dans `src/behavior/desire.rs`, `depuis_config` :
                 },
 ```
 
-- [ ] **Step 7 : Le poids, le modificateur, et le biais**
+- [ ] **Step 8 : Le poids, le modificateur, et le biais**
 
 Dans `src/config.rs`, `Envies` gagne `pub jouer: f32` avec le défaut `1.0` (spec §7.2), et `ModifsAppli` gagne `pub jouer: Option<f32>`.
 
@@ -1617,7 +1642,7 @@ Et `biais_de` applique le modificateur d'application :
             }
 ```
 
-- [ ] **Step 8 : Le jeton de signature du mode simulation**
+- [ ] **Step 9 : Le jeton de signature du mode simulation**
 
 Dans `src/sim.rs`, le `match` qui construit la signature. **Ne pas mettre de
 bras `_`** : c'est ce `match` exhaustif qui fera échouer la compilation quand
@@ -1640,7 +1665,7 @@ ambiguë.
                 };
 ```
 
-- [ ] **Step 9 : Déclarer `spinHead` dans le manifeste de `blob`**
+- [ ] **Step 10 : Déclarer `spinHead` dans le manifeste de `blob`**
 
 Dans `characters/blob/mascot.json`, à côté de `sitLookUp` :
 
@@ -1650,22 +1675,26 @@ Dans `characters/blob/mascot.json`, à côté de `sitLookUp` :
 
 Frames et durée relevées dans `SitAndSpinHeadAction` (`Duration="5"` ticks × 40 ms). **Pas de `loop`** : l'animation revient à la frame 11, donc elle se relit proprement, et `jouer` la maintient posée le temps voulu.
 
-- [ ] **Step 10 : Lancer la suite**
+- [ ] **Step 11 : Lancer la suite**
 
 Run : `cargo test`
 Attendu : **156 tests passent** (150 + 6).
 
-> ⚠️ **Deux tests d'étape 1 vont légitimement bouger** :
-> `la_table_par_defaut_privilegie_la_flanerie` et
-> `un_multiplicateur_biaise_sans_commander` calculent des pourcentages sur
-> une table de deux lignes. Avec quatre lignes, les proportions changent.
-> **Recalculer les attentes, ne pas relâcher les tolérances** : flâner 5,
-> reposer 1, jouer 1 + 1 sur un total de 8, donc 62,5 % / 12,5 % / 25 %.
-> Et si le manifeste de test n'a pas les poses de jeu, la table reste à deux
-> lignes et rien ne change — vérifier lequel des deux cas s'applique avant de
-> toucher un chiffre.
+> ⚠️ **Deux tests d'étape 1 calculent des proportions**, et l'on pourrait
+> croire qu'ils vont bouger : `la_table_par_defaut_privilegie_la_flanerie` et
+> `un_multiplicateur_biaise_sans_commander`.
+>
+> **Vérifié : ils ne bougent PAS.** Tous deux construisent leur manifeste avec
+> `manifeste_avec(&["stand", "walk", "sit"])`, qui n'a **ni** `spinHead` **ni**
+> `sitDangle`. Les deux lignes `Jouer` voient donc leur poids annulé par la
+> couverture partielle, et les proportions restent 83,3 / 16,7.
+>
+> **Si malgré tout ils rougissent**, c'est que quelqu'un a ajouté les poses de
+> jeu à `manifeste_avec` : recalculer alors les attentes — flâner 5, reposer 1,
+> jouer 1 + 1 sur un total de 8, donc 62,5 / 12,5 / 25 — et **ne pas relâcher
+> les tolérances**.
 
-- [ ] **Step 11 : Voir les deux animations, à l'œil**
+- [ ] **Step 12 : Voir les deux animations, à l'œil**
 
 ```powershell
 cargo build
@@ -1678,7 +1707,7 @@ cargo build
 2. Il finit par s'asseoir et **balancer les jambes**.
 3. **Le point à juger :** `sitDangle` descend de 16 px dans la barre des tâches. Est-ce que ça a l'air voulu, ou cassé ? C'est ce que fait Shimeji-ee ; si ça déplaît, la correction est **une valeur d'ancre dans `mascot.json`** — `[64, 128]` — et un rechargement à chaud, sans recompiler.
 
-- [ ] **Step 12 : Commit**
+- [ ] **Step 13 : Commit**
 
 ```bash
 git add src characters/blob/mascot.json config.exemple.json
@@ -1728,7 +1757,27 @@ fera echouer la compilation a la prochaine intention."
 > de signature de la tâche, et il touche `behavior/mod.rs` et les tests de
 > `intention.rs`.
 
-- [ ] **Step 1 : Écrire les tests**
+- [ ] **Step 1 : Ajouter `sleep` au manifeste synthétique des tests**
+
+⚠️ **Même piège qu'à la Tâche 3, et pour la même raison.** Sans cette pose,
+`se_reposer` ne passera jamais en phase `Endormi` — sa garde de couverture
+partielle l'en empêche — et le test du Step 2 échouerait en accusant le code
+alors que c'est le double de test qui manque.
+
+Dans `intention.rs::tests::manifeste()` :
+
+```rust
+                "spinHead":  { "frames": [9, 10], "frameMs": 200 },
+                "sitDangle": { "frames": [11], "anchor": [64, 112] },
+
+                // La pose de sommeil. Le test
+                // `sans_la_pose_sleep_il_reste_assis_au_lieu_d_echouer`
+                // construit, lui, son propre manifeste SANS elle — c'est
+                // justement ce qu'il vérifie.
+                "sleep":     { "frames": [12] }
+```
+
+- [ ] **Step 2 : Écrire les tests**
 
 Dans le module `tests` de `src/behavior/intention.rs` :
 
@@ -1889,12 +1938,12 @@ Dans le module `tests` de `src/behavior/intention.rs` :
     }
 ```
 
-- [ ] **Step 2 : Lancer les tests pour vérifier qu'ils échouent**
+- [ ] **Step 3 : Lancer les tests pour vérifier qu'ils échouent**
 
 Run : `cargo test dormir OR cargo test repos`
 Attendu : **échec de compilation** — `POSE_SLEEP` n'existe pas, et `poursuivre` ne prend pas d'`Entrees`.
 
-- [ ] **Step 3 : La constante de pose**
+- [ ] **Step 4 : La constante de pose**
 
 Dans `src/character/manifest.rs` :
 
@@ -1912,7 +1961,7 @@ Dans `src/character/manifest.rs` :
 pub const POSE_SLEEP: &str = "sleep";
 ```
 
-- [ ] **Step 4 : Le seuil dans les réglages**
+- [ ] **Step 5 : Le seuil dans les réglages**
 
 Dans `src/config.rs`, `Reglages` gagne un champ, et `Reglages::depuis` le remplit depuis `config.signaux.seuil_sommeil` :
 
@@ -1921,7 +1970,7 @@ Dans `src/config.rs`, `Reglages` gagne un champ, et `Reglages::depuis` le rempli
     pub seuil_sommeil: f32,
 ```
 
-- [ ] **Step 5 : Les phases**
+- [ ] **Step 6 : Les phases**
 
 Dans `src/behavior/intention.rs` :
 
@@ -1955,7 +2004,7 @@ Et dans `ActiveIntention::nouvelle` :
             },
 ```
 
-- [ ] **Step 6 : `se_reposer`, réécrite**
+- [ ] **Step 7 : `se_reposer`, réécrite**
 
 ```rust
 /// Se reposer : s'asseoir, et s'endormir si un signal y pousse.
@@ -2055,7 +2104,7 @@ fn se_reposer(
 }
 ```
 
-- [ ] **Step 7 : Faire descendre les `Entrees` jusqu'à `poursuivre`**
+- [ ] **Step 8 : Faire descendre les `Entrees` jusqu'à `poursuivre`**
 
 `poursuivre` gagne `e: &super::Entrees` en troisième paramètre, et le passe à `se_reposer`. Dans `behavior/mod.rs`, l'appel devient :
 
@@ -2066,12 +2115,12 @@ fn se_reposer(
 > **Astuce :** le compilateur liste tous les appels à corriger dans les tests.
 > Ne pas les chercher à la main.
 
-- [ ] **Step 8 : Lancer la suite**
+- [ ] **Step 9 : Lancer la suite**
 
 Run : `cargo test`
 Attendu : **160 tests passent** (156 + 4).
 
-- [ ] **Step 9 : Le voir dormir, sans attendre deux minutes**
+- [ ] **Step 10 : Le voir dormir, sans attendre deux minutes**
 
 Le seuil d'inactivité est réglable : on le descend à 5 s pour l'observer tout de suite. C'est exactement à ça que sert la décision n° 5.
 
@@ -2087,7 +2136,7 @@ cargo build
 > ne pas conclure ici que le sommeil ne marche pas. Les quatre tests de cette
 > tâche sont la vérification, et elle est complète.
 
-- [ ] **Step 10 : Commit**
+- [ ] **Step 11 : Commit**
 
 ```bash
 git add src
