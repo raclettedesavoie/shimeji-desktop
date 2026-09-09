@@ -134,18 +134,27 @@ cargo run -- --sim 30    # 30 min de comportement sans écran (spec §10.3)
 cargo run -- --demarrage etat|on|off   # le démarrage avec Windows, scriptable
 ```
 
-**Trois variables d'environnement de diagnostic**, chacune ayant servi à démentir une
-hypothèse fausse — voir « Mesurer le CPU » plus bas :
+**Cinq variables d'environnement de diagnostic.** Les trois premières ont chacune servi
+à démentir une hypothèse fausse — voir « Mesurer le CPU » plus bas ; les deux dernières
+remplacent un clic dans le tray :
 
 | Variable | Ce qu'elle fait |
 |---|---|
 | `SHIMEJI_CADENCE=1` | images/s réelles, travail par image, **et le taux de déplacement** |
 | `SHIMEJI_SANS_BOUCLE=1` | crée la fenêtre et n'anime rien |
 | `SHIMEJI_TRACE=1` | trace chaque image servie par le schéma URI |
+| `SHIMEJI_CACHE=1` | démarre caché, comme si « Afficher » était décoché |
+| `SHIMEJI_QUITTER_APRES=<s>` | appelle `exit(0)` — la ligne de « Quitter » — après *s* secondes |
 
 **Et un fichier témoin** : créer `characters/recharger.txt` déclenche un rechargement à
-chaud, puis le fichier est supprimé. Le rechargement passe normalement par le tray, donc
-par un clic — le témoin le rend vérifiable sans humain, et scriptable.
+chaud, puis le fichier est supprimé.
+
+> **Le principe, récurrent sur ce projet : tout ce qui demanderait un clic reçoit un
+> équivalent scriptable.** Le tray, le démarrage automatique et le rechargement se
+> constatent normalement à la souris ; à ce jour, seule **la dépêche d'un clic de menu**
+> par le tray n'a pas d'équivalent, tout le reste se vérifie sans humain — sonde de
+> styles Win32, `--demarrage etat`, fichier témoin, `SHIMEJI_CACHE`,
+> `SHIMEJI_QUITTER_APRES`, énumération des fenêtres, lecture de l'en-tête PE.
 
 > ⚠️ **`cargo test` ne reconstruit pas l'exe.** Il compile le harnais de test. Après une
 > correction, `cargo build` avant de relancer l'application — sinon on vérifie un binaire
@@ -199,13 +208,14 @@ $c = $p.CPU; Start-Sleep -Seconds 60; $p.Refresh()
 "$([math]::Round((($p.CPU - $c) / 60) * 100, 1)) % d'un coeur"
 ```
 
-Deux variables d'environnement de diagnostic, **conservées** parce que ce sont elles qui
-ont démenti les hypothèses 2 et 3 :
+Les variables de diagnostic, **conservées** parce que ce sont elles qui ont démenti les
+hypothèses 2 et 3 :
 
 | Variable | Ce qu'elle donne |
 |---|---|
 | `SHIMEJI_CADENCE=1` | images/s réelles, travail moyen par image, **et le nombre de déplacements sur le nombre d'images** — c'est ce dernier chiffre qui explique tout |
 | `SHIMEJI_SANS_BOUCLE=1` | crée la fenêtre et n'anime rien : sépare le coût de la fenêtre de celui de la boucle |
+| `SHIMEJI_CACHE=1` | la boucle tourne entièrement, mais ne déplace ni ne dessine rien : sépare **notre calcul** du coût des déplacements |
 | `SHIMEJI_TRACE=1` | trace chaque image servie par le schéma URI (a diagnostiqué le sprite invisible) |
 
 **Chiffres de référence, build *debug*, mesures de 40 à 60 s, le 2026-09-09 :**
@@ -216,6 +226,14 @@ ont démenti les hypothèses 2 et 3 :
 | `set_position` à chaque image, quoi qu'il arrive | **21 %** |
 | **`set_position` seulement si la position a changé au pixel** | **12,3 %** |
 | **la même chose, build `release`** (exe de 2,7 Mo) | **12 %** |
+| **caché** (`SHIMEJI_CACHE=1`), build `release` | **0,9 %** |
+
+> **Le relevé « caché » chiffre enfin le partage.** En mode caché la boucle tourne
+> *entièrement* — sonde du curseur, hit-testing, physique, comportement, 60 fois par
+> seconde ; **seuls le déplacement et la poussée du sprite sont sautés.** Donc :
+> **0,9 % = tout ce que nous calculons**, et les **~11 points restants = `SetWindowPos`
+> sur une fenêtre en couche.** C'est la confirmation directe du diagnostic, et la raison
+> pour laquelle optimiser notre code ne rapporterait rien.
 
 > **Le `release` ne gagne rien sur le debug, et c'est cohérent.** Notre travail par image
 > ne représente que 1 à 5 % du budget de 16,7 ms — les optimisations du compilateur n'ont
@@ -237,9 +255,8 @@ ont démenti les hypothèses 2 et 3 :
 3. ~~Ne pas appeler `set_position` quand la position n'a pas changé~~ — **appliqué**,
    21 % → 12,3 %.
 4. ~~Ne rien dessiner quand les personnages sont cachés~~ — **appliqué** (Tâche 1 de 1b,
-   tirée en avant). ⬜ Le gain reste à mesurer : il demande un clic sur « Afficher » dans
-   le tray. Attendu proche de zéro, puisque la fenêtre seule sans boucle mesure 0 % et
-   que le comportement seul coûte ~100 µs par image.
+   tirée en avant) **et mesuré** : 12 % → **0,9 %**. Caché, il ne reste plus que notre
+   propre calcul.
 
 > **Ce qu'il ne faut PAS faire :** descendre la cadence sous 60 Hz. L'étape 0 a établi
 > que 60 Hz est fluide sur cette machine, et le travail par image ne représente que 1 à
@@ -523,9 +540,9 @@ Chaque étape est agréable en elle-même, et aucune ne dépend d'un dessin manq
 
 | | Étape | Résultat |
 |---|---|---|
-| 0 | Validation technique | fenêtre transparente, sans bordure, au premier plan, hors taskbar, clics traversants, PNG déplacé à 60 Hz sur 2 écrans |
-| 1 | **Il vit sur le sol** | marche, court, s'arrête, demi-tour, tous les écrans ; attrapable et il tombe ; tray, démarrage auto |
-| 2 | **Il réagit** | s'endort quand on part, se réveille au retour, mange à midi |
+| ✅ 0 | Validation technique | fenêtre transparente, sans bordure, au premier plan, hors taskbar, clics traversants, PNG déplacé à 60 Hz sur 2 écrans |
+| ✅ 1 | **Il vit sur le sol** | marche, court, s'arrête, demi-tour, tous les écrans ; attrapable et il tombe ; tray, démarrage auto |
+| **2** | **Il réagit** ← *la prochaine* | s'endort quand on part, se réveille au retour, mange à midi |
 | 3 | **Un deuxième personnage** | ils coexistent et se remarquent |
 | 4 | **Il grimpe** | bords de fenêtres, barres de titre, chute quand la fenêtre se ferme |
 | 5 | **Il suit** | se déplace vers l'application au premier plan |
@@ -556,8 +573,12 @@ avant d'écrire une ligne de physique, pas après.
 
 ## État actuel
 
-**L'étape 0 est terminée : les 7 propriétés sont vertes, la stack Tauri est validée.**
-L'application, elle, n'existe pas encore — aucune ligne de physique n'est écrite.
+**L'étape 1 est terminée — l'application existe et se vit au quotidien.** Un personnage
+`blob` marche, court, s'arrête, fait demi-tour, circule sur les deux écrans, s'attrape à
+la souris, se lance et atterrit ; un tray l'affiche, le cache, le recharge, le fait
+démarrer avec Windows et le quitte ; un `config.json` règle son caractère sans
+recompiler. **140 tests**, exe release de **2,7 Mo**, **12 % d'un cœur** en marche et
+**0,9 %** caché.
 
 | Où | Contenu |
 |---|---|
@@ -565,7 +586,7 @@ L'application, elle, n'existe pas encore — aucune ligne de physique n'est écr
 | `docs/plans/2026-09-08-etape-0-spike-overlay.md` | le plan de l'étape 0, **soldé** ; **annexe A = structure de fichiers verrouillée pour l'étape 1** |
 | `docs/specs/2026-09-08-spike-0-resultat.md` | **le résultat de l'étape 0** : grille remplie, décision de stack, API vérifiées, et les 2 découvertes à appliquer |
 | `docs/plans/2026-09-08-etape-1a-il-vit-sur-le-sol.md` | le plan de l'étape 1a, **exécuté** — 11 tâches |
-| `docs/plans/2026-09-09-etape-1b-tour-du-proprietaire.md` | **le plan à exécuter** : tray, config, démarrage auto, rechargement à chaud, CPU |
+| `docs/plans/2026-09-09-etape-1b-tour-du-proprietaire.md` | le plan de l'étape 1b, **soldé** — tray, config, démarrage auto, rechargement à chaud, CPU |
 | `docs/specs/2026-09-09-frames-shimeji.md` | **la correspondance frames → poses**, tirée des sources de Shimeji-ee — à lire avant de toucher au `mascot.json` |
 | `docs/conception/2026-09-08-journal-decisions.md` | **pourquoi** chaque décision, et ce qu'elle a écarté — à lire avant d'en défaire une |
 | `docs/conception/2026-09-08-discussion.md` | la discussion de conception intégrale, verbatim |
@@ -649,28 +670,71 @@ plutôt qu'en réglant à l'œil :
 > départ »). Avant d'inventer une constante d'animation ou de physique, **la chercher
 > dans le source**.
 
+### L'étape 1b est faite (2026-09-09)
+
+Les 6 tâches sont exécutées, un commit chacune, de `67dfb0c` à `77811fc`. Ce que ça change
+au quotidien :
+
+| | Ce qui existe maintenant |
+|---|---|
+| **Tray** | afficher / cacher, recharger, « Démarrer avec Windows », ouvrir le dossier, **Quitter** |
+| **`config.json`** | échelle, vitesses, poids d'envies, dossier des personnages — **toutes les clés optionnelles**, l'absence de fichier n'est pas une erreur |
+| **Démarrage auto** | clé `HKCU…\Run`, chemin **entre guillemets**, et la case du tray lit le **registre**, jamais la config |
+| **Rechargement à chaud** | le manifeste est relu sans redémarrer ; en cas d'erreur **rien ne change** et le message est bruyant |
+| **Release** | plus de console (`windows_subsystem`), sortie prouvée par `SHIMEJI_QUITTER_APRES` |
+
+Trois choses apprises en exécutant, qui valent plus que le code :
+
+1. **Un `config.json` parfaitement valide peut être rejeté** — `serde_json` refuse le
+   **BOM UTF-8** que les éditeurs Windows ajoutent, avec le message trompeur
+   `expected value at line 1 column 1`. D'où `config::lire_json`, qui retire le BOM et
+   sert aussi au manifeste.
+2. **`cargo test` ne reconstruit pas l'exe** — la première vérification du correctif du
+   BOM a tourné sur un binaire plus vieux que la source, et a conclu à tort à un échec.
+3. **Shimeji-ee a lui aussi des bugs**, et il ne faut pas les recopier : son test `d < 0`
+   passe **avant** la bande neutre de ±10, qui devient inatteignable pour un retard
+   négatif — le personnage finissait chaque glisser légèrement penché. Corrigé ici en
+   testant la bande neutre d'abord, symétriquement.
+
+> **Reste un clic que personne n'a fait :** que le menu du tray **dépêche** ses clics.
+> Chaque action est prouvée autrement (`--demarrage etat`, `recharger.txt`,
+> `SHIMEJI_CACHE`, `SHIMEJI_QUITTER_APRES`), mais le clic lui-même ne se script pas. Un
+> clic sur « Quitter » couvre les cinq entrées : c'est le même gestionnaire.
+
 ### La prochaine action
 
-**Exécuter le plan de l'étape 1b**, `docs/plans/2026-09-09-etape-1b-tour-du-proprietaire.md`
-— 6 tâches, dans l'ordre, chacune se fermant sur un commit.
+**Écrire le plan de l'étape 2 — « Il réagit »**, dans `docs/plans/`. Le contenu est
+cadré par l'annexe du plan 1b et par la spec §7 :
 
-> ⚠️ **Tant que la Tâche 1 de 1b n'est pas faite, l'application ne se ferme que par
-> `Stop-Process -Name shimeji-desktop`.** La fenêtre est sans bordure, non focalisable,
-> hors taskbar et hors Alt+Tab : c'est voulu, et ça se retourne contre soi au moment de
-> quitter. C'est pour ça que le tray vient en premier dans ce plan, avant la config qui
-> est pourtant plus structurante.
+| Contenu | Fichiers |
+|---|---|
+| Les signaux : inactivité, appli au premier plan, heure, batterie, verrouillage | `signals.rs`, `probe/` étendu |
+| Les modificateurs par application dans `config.json` | `config.rs` + `desire.rs` |
+| `tirer_avec` branché sur les signaux — **le point d'entrée existe déjà** | `behavior/mod.rs`, une ligne |
+| S'endormir, se réveiller, manger | `intention.rs` |
+| Suspendre la boucle quand la session est verrouillée | `main.rs` |
 
-La **Tâche 6 de 1b** porte la mesure du `release` et les deux optimisations de CPU
-identifiées — dans cet ordre, la mesure d'abord. On a déjà fait l'expérience de l'inverse
-à l'étape 1a, en accusant `set_size` à tort.
+> ⚠️ **Deux choses à trancher AVANT d'écrire ce plan.**
+>
+> 1. **L'animation de sommeil n'existe pas.** Shimeji-ee n'en a aucune : les frames 38-41
+>    que la spec croyait être « s'asseoir puis dormir » appartiennent à `PullUpShimeji`.
+>    Les trois issues et la recommandation (`sprawl`, la 21, déclarée sous le nom `sleep`
+>    pour que le code ignore qu'il s'agit d'un substitut) sont dans
+>    `docs/specs/2026-09-09-frames-shimeji.md`. **C'est une décision de contenu, elle
+>    revient à l'auteur.**
+> 2. **L'inactivité ne se mesure pas par capture de frappe** — c'est une exclusion
+>    explicite du besoin. `GetLastInputInfo` rend un simple compteur de millisecondes,
+>    sans jamais dire *quelle* touche : c'est la seule voie acceptable.
 
-Rappel de périmètre : ni 1a ni 1b **n'ont** de plateformes de fenêtres. Le monde n'expose
-que le sol de chaque écran, donc **pas de soustraction d'intervalles 1D** et **pas de
-filtrage de fenêtres** — ces deux morceaux appartiennent à l'étape 4. YAGNI.
+> **Et le rappel qui tient toute l'étape 2 :** décision n° 3, **les signaux biaisent, ils
+> ne commandent pas**. Si « inactif 2 min » *déclenche* le sommeil, on a livré un
+> afficheur d'état système déguisé en personnage. Il doit **multiplier un poids**.
 
-> **Une inconnue de contenu attend l'étape 2 :** Shimeji-ee **n'a aucune animation de
-> sommeil**, alors que l'étape 2 promet « il s'endort quand on part ». Les trois issues
-> possibles et la recommandation sont dans `docs/specs/2026-09-09-frames-shimeji.md`.
+Rappel de périmètre : l'étape 2 **n'a toujours pas** de plateformes de fenêtres. Le monde
+n'expose que le sol de chaque écran, donc **pas de soustraction d'intervalles 1D** et
+**pas de filtrage de fenêtres** — ils appartiennent à l'étape 4. YAGNI. Seul le signal
+« appli au premier plan » touche aux fenêtres, et il ne demande que `GetForegroundWindow`,
+pas un recensement.
 
 ### Ce que le spike a déjà établi
 

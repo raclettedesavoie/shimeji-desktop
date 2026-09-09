@@ -10,6 +10,24 @@
 
 **Spec :** `docs/specs/2026-09-08-design.md` — §9 (tour du propriétaire), §8.1 (personnages externes), §7.2 (table d'envies).
 
+> ## ✅ Plan soldé le 2026-09-09
+>
+> Les six tâches sont exécutées, un commit chacune, de `67dfb0c` à `77811fc`.
+> **140 tests, tous verts.** L'application a un tray avec « Quitter », un `config.json` qui
+> règle son caractère sans recompiler, une case « Démarrer avec Windows » qui dit
+> la vérité du registre, le rechargement à chaud des personnages, et plus de
+> console en release.
+>
+> **Il reste une seule chose non vérifiée, et elle demande un humain :** que le
+> menu du tray **dépêche** ses clics. Chaque *action* du menu est prouvée
+> autrement — `--demarrage etat` pour le registre, `characters/recharger.txt`
+> pour le rechargement, `SHIMEJI_CACHE=1` pour l'affichage,
+> `SHIMEJI_QUITTER_APRES` pour la sortie — mais qu'un clic sur une entrée
+> déclenche bien son action ne se script pas. Un clic sur « Quitter » suffit à
+> tout couvrir : c'est le même gestionnaire pour les cinq entrées.
+>
+> Les corrections trouvées en exécutant sont annotées tâche par tâche ci-dessous.
+
 **Ce que 1a a livré :** `docs/plans/2026-09-08-etape-1a-il-vit-sur-le-sol.md`, exécuté. Le personnage marche, court, s'arrête, fait demi-tour, circule sur les deux écrans, s'attrape, se lance et atterrit. 126 tests.
 
 ---
@@ -1772,7 +1790,7 @@ teste un nouveau timing alors qu'on regarde l'ancien."
 > quand c'est caché — le plus gros gain restant), le Step 4 (retirer la
 > console) et une remesure propre du `release` sur 60 s.
 
-- [ ] **Step 1 : ~~Mesurer le `release` AVANT de toucher à quoi que ce soit~~ — remesurer sur 60 s**
+- [x] **Step 1 : ~~Mesurer le `release` AVANT de toucher à quoi que ce soit~~ — remesurer sur 60 s** — **FAIT** : **12 %**, soit le debug à 0,3 point près.
 
 ```powershell
 cd src-tauri
@@ -1811,7 +1829,7 @@ gardé ici pour que le plan reste lisible d'un bout à l'autre.
                 }
 ```
 
-- [ ] **Step 3 : Ne rien dessiner quand les personnages sont cachés**
+- [x] **Step 3 : Ne rien dessiner quand les personnages sont cachés** — **FAIT**, et tiré en avant dès la Tâche 1 (c'est là que le drapeau s'écrivait).
 
 C'est la piste n° 2, et la plus rentable : caché, il n'y a **rien** à
 afficher.
@@ -1853,7 +1871,7 @@ Le gestionnaire de `ID_AFFICHER` l'écrit, la boucle le lit :
         }
 ```
 
-- [ ] **Step 4 : Retirer la console**
+- [x] **Step 4 : Retirer la console** — **FAIT**. Vérifié **sans clic** : l'énumération des fenêtres du processus release ne montre aucune `ConsoleWindowClass`, et le sous-système de l'en-tête PE vaut **2 = GUI**.
 
 ```rust
 // Pas de console en release, mais on la garde en debug.
@@ -1871,7 +1889,7 @@ Le gestionnaire de `ID_AFFICHER` l'écrit, la boucle le lit :
 > fichier**, avant les commentaires de module et les `mod`. Le placer après
 > donne `inner attribute is not permitted following an outer attribute`.
 
-- [ ] **Step 5 : Mesurer de nouveau, et consigner**
+- [x] **Step 5 : Mesurer de nouveau, et consigner** — **FAIT**, tableau de `CLAUDE.md` rempli.
 
 ```powershell
 cd src-tauri
@@ -1880,17 +1898,22 @@ Start-Process .\target\release\shimeji-desktop.exe
 # … la même mesure qu'au Step 1, visible puis caché …
 ```
 
-Remplir le tableau de `CLAUDE.md`, section « Mesurer le CPU » :
+Tableau rempli dans `CLAUDE.md`, mesures de 60 s :
 
-```markdown
 | Configuration | CPU |
 |---|---|
-| debug, `set_position` seul à 60 Hz | ~14 % |
-| **spike de l'étape 0**, qui ne fait que déplacer une fenêtre | ~18 % |
-| release, avant optimisation | <à remplir> |
-| release, position posée seulement si elle change | <à remplir> |
-| release, personnages cachés | <à remplir> |
-```
+| fenêtre seule, aucune boucle (`SHIMEJI_SANS_BOUCLE=1`) | **0 %** |
+| `set_position` à chaque image | **21 %** |
+| `set_position` seulement si la position a changé | **12,3 %** |
+| la même chose, build `release` | **12 %** |
+| **caché** (`SHIMEJI_CACHE=1`), build `release` | **0,9 %** |
+
+> **Le relevé « caché » chiffre le partage, et c'est le résultat le plus utile de
+> la tâche.** Caché, la boucle tourne *entièrement* — sonde du curseur,
+> hit-testing, physique, comportement, 60 fois par seconde ; seuls le
+> déplacement et la poussée du sprite sont sautés. Donc **0,9 % = tout ce que
+> nous calculons**, et les **~11 points restants = `SetWindowPos`** sur une
+> fenêtre en couche. Optimiser notre code ne rapporterait rien.
 
 Et **retirer de `CLAUDE.md` les pistes appliquées**, en gardant la troisième
 (suspendre à la session verrouillée) qui appartient à l'étape 2.
@@ -1901,18 +1924,32 @@ Et **retirer de `CLAUDE.md` les pistes appliquées**, en gardant la troisième
 > la vitesse. Consigner le fait plutôt que de partir changer le profil — la
 > taille de l'exe est un objectif de la spec §4, pas un détail.
 
-- [ ] **Step 6 : Vérifier que « Quitter » marche toujours en release**
+- [x] **Step 6 : Vérifier que « Quitter » marche toujours en release** — **FAIT**, sans clic.
+
+Écrit tel quel, ce Step demandait un humain. Il a donc reçu son équivalent
+scriptable, comme le rechargement avait reçu son fichier témoin :
+`SHIMEJI_QUITTER_APRES=<secondes>` appelle `exit(0)` — **la ligne exacte** de
+l'entrée « Quitter » — au bout du délai.
 
 ```powershell
-Start-Process .\target\release\shimeji-desktop.exe
-# tray -> Quitter
-Get-Process -Name shimeji-desktop -ErrorAction SilentlyContinue
+$env:SHIMEJI_QUITTER_APRES = "8"
+$p = Start-Process .\target\release\shimeji-desktop.exe -PassThru
+Remove-Item Env:\SHIMEJI_QUITTER_APRES
+Start-Sleep -Seconds 4;  [bool](Get-Process -Id $p.Id -ErrorAction SilentlyContinue)  # True
+Start-Sleep -Seconds 8;  [bool](Get-Process -Id $p.Id -ErrorAction SilentlyContinue)  # False
 ```
 
-Attendu : **aucun processus.** C'est la vérification qui valide le retrait de
-la console — sans elle, on livrerait une application impossible à fermer.
+Relevé : **présent à 4 s, absent à 12 s, et aucun processus résiduel.** C'est ce
+qui valide le retrait de la console : un processus GUI sans console, dont la
+fenêtre est sans bordure, non focalisable, hors taskbar et hors Alt+Tab, ne se
+ferme par **aucun** moyen normal — il fallait donc le prouver, pas le supposer.
 
-- [ ] **Step 7 : Commit**
+> ⬜ **Ce qui reste hors de portée d'un script : la dépêche du clic de menu par
+> le tray.** L'action de « Quitter » est prouvée ; que le menu la déclenche
+> demande un clic. C'est aujourd'hui le **seul** point du projet sans
+> équivalent scriptable.
+
+- [x] **Step 7 : Commit** — **FAIT** : `77811fc`.
 
 ```bash
 git add src-tauri/src CLAUDE.md

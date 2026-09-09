@@ -289,6 +289,52 @@ fn lancer_application() {
                 eprintln!("tray non installé : {e}");
             }
 
+            // ── Deux crochets pour les vérifications qui demandent un clic ──
+            //
+            // Le tray a deux entrées dont l'effet ne se constate qu'en
+            // cliquant : « Afficher » et « Quitter ». Chacune reçoit ici son
+            // équivalent scriptable — même code appelé, sans humain. C'est la
+            // même intention que le fichier témoin de rechargement juste
+            // en dessous.
+
+            // `SHIMEJI_CACHE=1` : démarre caché, comme si l'on avait décoché
+            // « Afficher ». Sans ça, le gain de l'optimisation « ne rien
+            // dessiner quand c'est caché » ne se mesure pas — et une
+            // optimisation non mesurée est une croyance (voir CLAUDE.md).
+            if std::env::var("SHIMEJI_CACHE").is_ok() {
+                visibilite.store(false, std::sync::atomic::Ordering::Relaxed);
+                tray::basculer_visibilite(&app.handle().clone(), false);
+                println!("SHIMEJI_CACHE : démarré caché");
+            }
+
+            // `SHIMEJI_QUITTER_APRES=<secondes>` : appelle `exit(0)` — la
+            // ligne exacte de l'entrée « Quitter » — au bout du délai.
+            //
+            // C'est la vérification qui **valide le retrait de la console** :
+            // sans console, `Ctrl+C` n'existe plus, et une fenêtre sans
+            // bordure, non focalisable, hors taskbar et hors Alt+Tab ne se
+            // ferme par aucun moyen normal. Il faut donc prouver, et pas
+            // supposer, qu'un processus GUI dans cet état sait bien se
+            // terminer sur `exit`.
+            if let Ok(valeur) = std::env::var("SHIMEJI_QUITTER_APRES") {
+                // `parse` rend un `Result` : une valeur illisible ne doit pas
+                // faire quitter tout de suite, ce qui ressemblerait à un
+                // succès de la vérification alors qu'on n'a rien vérifié.
+                match valeur.trim().parse::<u64>() {
+                    Ok(secondes) => {
+                        let handle_quitter = app.handle().clone();
+                        std::thread::spawn(move || {
+                            std::thread::sleep(std::time::Duration::from_secs(secondes));
+                            println!("SHIMEJI_QUITTER_APRES : exit(0)");
+                            handle_quitter.exit(0);
+                        });
+                    }
+                    Err(_) => eprintln!(
+                        "SHIMEJI_QUITTER_APRES : « {valeur} » n'est pas un nombre de secondes"
+                    ),
+                }
+            }
+
             // ── Rechargement déclenché par un fichier témoin ────────────
             //
             // Le rechargement se fait normalement par le tray, donc par un
