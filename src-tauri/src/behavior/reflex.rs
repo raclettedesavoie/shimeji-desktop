@@ -91,6 +91,39 @@ fn avancer_balancier(ch: &mut Character, curseur: crate::geom::Point, dt: f32) -
     }
 }
 
+/// Oriente le personnage d'après sa vitesse horizontale de chute.
+///
+/// Repris de `Fall.java`, qui commence chaque tick par :
+///
+/// ```java
+/// if( this.getVelocityX() != 0 )
+///     getMascot().setLookRight( this.getVelocityX() > 0 );
+/// ```
+///
+/// Sans cela, un personnage **lancé vers la droite tombe la tête à gauche** :
+/// le sprite de chute est asymétrique, et il partait toujours dans
+/// l'orientation qu'il avait avant d'être saisi (forcée à `Left` pendant le
+/// portage).
+///
+/// La **zone morte** est un ajout : `!= 0` sur un flottant est presque
+/// toujours vrai, et la vitesse horizontale d'un lâcher « immobile » n'est
+/// jamais exactement nulle — elle vient d'une moyenne lissée du curseur. Sans
+/// zone morte, un résidu d'un pixel par seconde suffirait à retourner le
+/// sprite.
+fn orienter_selon_la_chute(ch: &mut Character, vx: f32) {
+    /// En px/s. Un lâcher franchement latéral dépasse allègrement ce seuil ;
+    /// un résidu de lissage, non.
+    const ZONE_MORTE: f32 = 5.0;
+
+    if vx > ZONE_MORTE {
+        ch.facing = Facing::Right;
+    } else if vx < -ZONE_MORTE {
+        ch.facing = Facing::Left;
+    }
+    // Dans la zone morte : on ne touche à rien. Il garde son orientation, ce
+    // qui est le comportement voulu pour une chute verticale.
+}
+
 /// Applique les réflexes, dans l'ordre de priorité.
 ///
 /// L'ordre compte, et il n'est pas arbitraire : « porté » passe avant
@@ -160,6 +193,13 @@ pub fn appliquer(
             };
 
             ch.attachment = Attachment::Falling { pos, vel: elan };
+
+            // Dès cette image, et pas à la suivante : sinon la première image
+            // de chute s'affiche dans l'orientation du portage (toujours
+            // `Left`), ce qui donne un bref clignotement sur un lancer vers la
+            // droite.
+            orienter_selon_la_chute(ch, elan.x);
+
             ch.set_pose(POSE_FALL, maintenant);
             ch.intention = None;
             return Reflexe::Chute;
@@ -210,6 +250,12 @@ pub fn appliquer(
 
     // ── Réflexe 3 : la chute, et son issue ──────────────────────────────
     if let Attachment::Falling { pos, vel } = ch.attachment {
+        // L'orientation suit la vitesse horizontale, à chaque image, comme
+        // `Fall.java`. Utile au-delà du lancer : un personnage dont la
+        // plateforme se dérobe alors qu'il marchait garde le sens de sa
+        // marche.
+        orienter_selon_la_chute(ch, vel.x);
+
         // Le garde-fou d'abord : inutile de chercher un atterrissage à
         // 50 000 px sous le bureau.
         if sous_le_bureau(world, pos) {
@@ -704,6 +750,52 @@ mod tests {
             }
             autre => panic!("attendu Falling, obtenu {autre:?}"),
         }
+    }
+
+    #[test]
+    fn lance_a_droite_il_tombe_la_tete_a_droite() {
+        // Repris de `Fall.java` : l'orientation suit la vitesse horizontale.
+        // Sans ça, il partait toujours dans l'orientation du portage (forcée
+        // à `Left`), donc un jet vers la droite montrait un sprite de chute
+        // tête à gauche.
+        let m = monde();
+
+        let lancer = |vitesse: f32| -> crate::character::Facing {
+            let mut ch = perso_pose_sur_le_sol(&m);
+            ch.attachment = Attachment::Dragged;
+            ch.portage = crate::character::Portage::neuf(Point::new(800.0, 300.0));
+            glisser(&mut ch, &m, vitesse, 0.5);
+
+            let x_final = 800.0 + vitesse * 0.5;
+            let e = Entrees {
+                souris: Point::new(x_final, 300.0),
+                echelle_ecran: 1.0,
+                bouton_gauche: false,
+                curseur_sur_le_personnage: true,
+            };
+            appliquer(&mut ch, &m, &e, Duration::from_millis(500), DT);
+            ch.facing
+        };
+
+        assert_eq!(lancer(600.0), crate::character::Facing::Right, "jet à droite");
+        assert_eq!(lancer(-600.0), crate::character::Facing::Left, "jet à gauche");
+    }
+
+    #[test]
+    fn une_chute_verticale_ne_retourne_pas_le_sprite() {
+        // La zone morte : un résidu de lissage ne doit pas retourner le
+        // sprite. On le fait tomber d'une plateforme disparue en regardant à
+        // droite — il doit continuer à regarder à droite.
+        let m = monde();
+        let mut ch = perso_pose_sur_le_sol(&m);
+        ch.facing = crate::character::Facing::Right;
+        ch.attachment = Attachment::Falling {
+            pos: Point::new(300.0, 500.0),
+            vel: Vec2::new(1.0, 0.0), // un pixel par seconde : du bruit
+        };
+
+        appliquer(&mut ch, &m, &entrees_neutres(), Duration::ZERO, DT);
+        assert_eq!(ch.facing, crate::character::Facing::Right);
     }
 
     #[test]
