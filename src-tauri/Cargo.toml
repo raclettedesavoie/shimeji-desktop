@@ -13,7 +13,10 @@ publish = false
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+# `tray-icon` : le module `tauri::tray` existe sans elle, mais sa dépendance
+# n'est pas tirée — c'est une feature de Tauri (Cargo.toml:129). Sans elle,
+# `TrayIconBuilder` reste introuvable alors que le `use` compile.
+tauri = { version = "2", features = ["tray-icon"] }
 
 # `derive` engendre le code de (dé)sérialisation à la compilation, à partir
 # des annotations sur les structs — c'est ce qui évite d'écrire le parsing

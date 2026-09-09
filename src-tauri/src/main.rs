@@ -19,6 +19,7 @@ mod probe;
 mod render;
 mod rng;
 mod sim;
+mod tray;
 mod world;
 
 // En Rust, **les méthodes d'un trait ne sont visibles que si le trait est
@@ -227,6 +228,26 @@ fn lancer_application() {
                 Err(e) => eprintln!("styles étendus NON appliqués : {e}"),
             }
 
+            // ── Le tray ─────────────────────────────────────────────────
+            // Installé AVANT la boucle : si le tray échoue, on veut le savoir
+            // tout de suite, pas après avoir démarré un thread.
+            //
+            // Non bloquant si ça échoue : une application sans tray reste
+            // utilisable (au prix d'un `Stop-Process`), alors qu'aucune
+            // application ne l'est du tout.
+            let visibilite = tray::nouvelle_visibilite();
+            if let Err(e) = tray::installer(
+                &app.handle().clone(),
+                &dossier,
+                // ⬜ Tâche 4 : lira le registre. En dur ici, ce serait un
+                // mensonge durable — la case afficherait « décoché » alors
+                // que le démarrage pourrait être actif.
+                false,
+                visibilite.clone(),
+            ) {
+                eprintln!("tray non installé : {e}");
+            }
+
             // ── Les horloges ────────────────────────────────────────────
             let handle = app.handle().clone();
             let personnage = character::Character::new(
@@ -248,7 +269,7 @@ fn lancer_application() {
                 println!("SHIMEJI_SANS_BOUCLE : aucune animation, fenêtre seule");
             } else {
                 std::thread::spawn(move || {
-                    boucle(handle, label, personnage, monde, echelle_ecran);
+                    boucle(handle, label, personnage, monde, echelle_ecran, visibilite);
                 });
             }
 
@@ -344,6 +365,7 @@ fn boucle(
     mut ch: character::Character,
     mut monde: world::World,
     mut echelle_ecran: f32,
+    visibilite: tray::Visibilite,
 ) {
     use behavior::{desire::TableEnvies, Entrees};
     use std::time::{Duration, Instant};
@@ -495,6 +517,34 @@ fn boucle(
                 return;
             }
             derniere_taille = Some(taille);
+        }
+
+        // ── Caché : rien à dessiner ─────────────────────────────────────
+        //
+        // Le comportement, lui, continue de tourner : il doit avancer pour
+        // qu'on le retrouve ailleurs en le réaffichant, et c'est du calcul
+        // pur — mesuré à 100 µs par image quand il ne se passe rien.
+        //
+        // Ce qui coûte, c'est `SetWindowPos` sur une fenêtre en couche (voir
+        // la section « Mesurer le CPU » de CLAUDE.md), et c'est exactement ce
+        // qu'on saute ici.
+        //
+        // `Ordering::Relaxed` : il n'y a aucune autre donnée à synchroniser
+        // avec ce booléen, seulement sa propre valeur. Un ordre plus fort
+        // n'apporterait qu'un coût.
+        let visible = visibilite.load(std::sync::atomic::Ordering::Relaxed);
+
+        if !visible {
+            // On oublie ce qu'on avait posé : au retour, il faut tout
+            // repousser, la fenêtre ayant pu être masquée entre-temps.
+            dernier_coin = None;
+            dernier_rendu = None;
+
+            let ecoule = debut.elapsed();
+            if let Some(reste) = PERIODE.checked_sub(ecoule) {
+                std::thread::sleep(reste);
+            }
+            continue;
         }
 
         // ── 60 Hz : le rendu ────────────────────────────────────────────
