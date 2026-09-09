@@ -1,5 +1,5 @@
 {
-  "_source": "Correspondance frames -> poses extraite de conf/actions.xml de Shimeji-ee, PAS devinée à l'oeil. Durées converties depuis les ticks (Manager.TICK_INTERVAL = 40 ms). Les poses dragged* portent une ancre 64,8 : Dragged.java place l'ancre du sprite à curseur + (0,120) avec ImageAnchor 64,128, donc le haut du sprite est 8 px AU-DESSUS du curseur - il le tient par la tete. Justification pose par pose : docs/specs/2026-09-09-frames-shimeji.md",
+  "_source": "Correspondance frames -> poses extraite de conf/actions.xml de Shimeji-ee, PAS devinée à l'oeil. Durées converties depuis les ticks (Manager.TICK_INTERVAL = 40 ms). Les poses dragged* portent une ancre 64,8 : Dragged.java place l'ancre du sprite à curseur + (0,120) avec ImageAnchor 64,128, donc le haut du sprite est 8 px AU-DESSUS du curseur - il le tient par la tete. Justification pose par pose : docs/specs/2026-09-09-frames-shimeji.md. La pose sleep est la MEME frame que sprawl (21) : Shimeji-ee n'a aucune animation de sommeil, et aucune frame du pack n'a les yeux fermes. Elle est declaree sous le nom sleep pour que le code ignore qu'il s'agit d'un substitut - un pack tiers avec une vraie pose de sommeil la declarerait au meme nom, sans changement cote Rust.",
 
   "id": "blob",
   "name": "Shimeji (mascotte par défaut)",
@@ -12,6 +12,7 @@
     "walk":         { "frames": [1, 2, 1, 3], "frameMs": 240, "loop": true },
     "run":          { "frames": [1, 2, 1, 3], "frameMs": 80,  "loop": true },
     "sit":          { "frames": [11] },
+    "sleep":        { "frames": [21] },
     "fall":         { "frames": [4] },
     "land":         { "frames": [18, 19], "frameMs": 160 },
 

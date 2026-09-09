@@ -714,14 +714,12 @@ cadré par l'annexe du plan 1b et par la spec §7 :
 | S'endormir, se réveiller, manger | `intention.rs` |
 | Suspendre la boucle quand la session est verrouillée | `main.rs` |
 
-> ⚠️ **Deux choses à trancher AVANT d'écrire ce plan.**
+> ⚠️ **Deux points de contenu, dont un déjà tranché.**
 >
-> 1. **L'animation de sommeil n'existe pas.** Shimeji-ee n'en a aucune : les frames 38-41
->    que la spec croyait être « s'asseoir puis dormir » appartiennent à `PullUpShimeji`.
->    Les trois issues et la recommandation (`sprawl`, la 21, déclarée sous le nom `sleep`
->    pour que le code ignore qu'il s'agit d'un substitut) sont dans
->    `docs/specs/2026-09-09-frames-shimeji.md`. **C'est une décision de contenu, elle
->    revient à l'auteur.**
+> 1. ~~L'animation de sommeil n'existe pas.~~ **Tranché le 2026-09-09** : il **s'assoit
+>    (11) puis s'affale (21)**, et la pose est déclarée sous le nom `sleep` — le code ne
+>    doit pas savoir qu'il s'agit d'un substitut. Détail et sprites vérifiés dans
+>    `docs/specs/2026-09-09-frames-shimeji.md`.
 > 2. **L'inactivité ne se mesure pas par capture de frappe** — c'est une exclusion
 >    explicite du besoin. `GetLastInputInfo` rend un simple compteur de millisecondes,
 >    sans jamais dire *quelle* touche : c'est la seule voie acceptable.

@@ -112,7 +112,7 @@ atteint par un tremblement de main.
 
 ---
 
-## ⚠️ Une inconnue de contenu pour l'étape 2
+## ✅ Tranché le 2026-09-09 — comment il dort
 
 **Shimeji-ee n'a AUCUNE animation de sommeil.** Aucune action ne s'appelle
 `Sleep`, `Doze` ni `Nap`, et les frames 38-41 que la spec croyait être
@@ -129,11 +129,32 @@ ce pack.** Trois issues, à trancher à l'étape 2 :
 3. **Dessiner une pose de sommeil** — sortirait du pack d'origine, et perdrait
    la compatibilité « n'importe quel pack du net fonctionne ».
 
-Recommandation : **la 1**, avec la pose déclarée sous le nom `sleep` dans le
-manifeste pour que le code n'ait pas à savoir qu'il s'agit d'un substitut. Un
-pack tiers qui aurait une vraie pose de sommeil la déclarerait au même nom, et
-rien ne changerait côté code — c'est précisément le bénéfice du format
-(spec §8.6).
+**Décision de l'auteur : la 1**, et sous forme de *séquence* plutôt que de pose
+unique :
+
+| | Pose | Frame |
+|---|---|---|
+| il s'assoit | `sit` | **11** |
+| puis il s'affale | `sleep` | **21** |
+
+C'est exactement la promesse de la spec (« il s'assoit, **puis** il s'endort »),
+et l'enchaînement fait la moitié du travail de lisibilité : ce n'est pas la
+frame 21 qui dit « il dort », c'est le passage de 11 à 21 après un moment
+d'immobilité.
+
+**La pose s'appelle `sleep` dans le manifeste, pas `sprawl`.** Le code ne doit
+pas savoir qu'il s'agit d'un substitut : un pack tiers qui aurait une vraie
+pose de sommeil la déclarerait au même nom, et rien ne changerait côté Rust —
+c'est précisément le bénéfice du format (spec §8.6). Le manifeste de `blob`
+déclare donc **deux poses sur la frame 21** : `sprawl` (l'action Shimeji-ee) et
+`sleep` (notre usage).
+
+> **Vérifié sur les sprites, et pas seulement dans le XML :** aucune frame du
+> pack n'a les yeux fermés — les yeux du blob sont deux points, il n'existe
+> aucune version « endormie » à trouver. 21 est le plus proche : à plat sur le
+> ventre, corps horizontal. Les candidats assis (26, 31-33) ont été écartés
+> parce qu'ils rendent « il dort » et « il est à l'arrêt » visuellement
+> identiques.
 
 ---
 
