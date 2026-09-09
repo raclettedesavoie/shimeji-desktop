@@ -18,6 +18,7 @@ mod clock;
 mod config;
 mod geom;
 mod probe;
+mod rechargement;
 mod render;
 mod rng;
 mod sim;
@@ -140,13 +141,23 @@ fn lancer_application() {
         configuration.echelle, configuration.vitesse, reglages.vitesse_marche
     );
 
+    // Le nom du dossier du personnage. `first()` : l'étape 1 n'en instancie
+    // qu'un ; l'étape 3 bouclera sur la liste. `unwrap_or_else` plutôt qu'un
+    // échec : une liste vide dans la config ne doit pas empêcher de démarrer
+    // (spec §9.3), et `blob` est le personnage livré.
+    let nom_personnage = configuration
+        .personnages
+        .first()
+        .cloned()
+        .unwrap_or_else(|| "blob".to_string());
+
     // ── Le manifeste, avant tout le reste ───────────────────────────────
     // Sans personnage, il n'y a rien à afficher : autant échouer tout de
     // suite avec un message clair que d'ouvrir une fenêtre vide.
-    let manifeste = match character::manifest::Manifest::load(&dossier.join("blob")) {
+    let manifeste = match character::manifest::Manifest::load(&dossier.join(&nom_personnage)) {
         Ok(m) => m,
         Err(e) => {
-            eprintln!("personnage « blob » illisible : {e}");
+            eprintln!("personnage « {nom_personnage} » illisible : {e}");
             std::process::exit(1);
         }
     };
@@ -247,6 +258,7 @@ fn lancer_application() {
             // utilisable (au prix d'un `Stop-Process`), alors qu'aucune
             // application ne l'est du tout.
             let visibilite = tray::nouvelle_visibilite();
+            let demande = rechargement::nouvelle_demande();
             if let Err(e) = tray::installer(
                 &app.handle().clone(),
                 &dossier,
@@ -256,9 +268,24 @@ fn lancer_application() {
                 // vérité.
                 autostart::est_actif(),
                 visibilite.clone(),
+                demande.clone(),
+                nom_personnage.clone(),
             ) {
                 eprintln!("tray non installé : {e}");
             }
+
+            // ── Rechargement déclenché par un fichier témoin ────────────
+            //
+            // Le rechargement se fait normalement par le tray, donc par un
+            // clic. Pour qu'il soit **vérifiable sans humain** — et
+            // scriptable —, on surveille aussi l'apparition d'un fichier
+            // `recharger.txt` à côté des personnages : sa présence déclenche
+            // un rechargement, puis il est supprimé.
+            //
+            // Trois lignes de plus dans la boucle, et c'est ce qui permet de
+            // prouver que le rechargement à chaud marche vraiment plutôt que
+            // de l'affirmer.
+            let temoin = dossier.join("recharger.txt");
 
             // ── Les horloges ────────────────────────────────────────────
             let handle = app.handle().clone();
@@ -291,6 +318,9 @@ fn lancer_application() {
                     reglages,
                     table,
                     echelle_config,
+                    demande,
+                    temoin,
+                    nom_personnage,
                 );
                 });
             }
@@ -388,13 +418,18 @@ fn boucle(
     mut monde: world::World,
     mut echelle_affichage: f32,
     visibilite: tray::Visibilite,
-    reglages: config::Reglages,
-    table: behavior::desire::TableEnvies,
+    mut reglages: config::Reglages,
+    mut table: behavior::desire::TableEnvies,
     // Le réglage `echelle` de la config, gardé à part pour le recombiner à
     // l'échelle du moniteur au recensement — celle-ci peut changer si le
     // personnage passe sur un écran de DPI différent.
-    echelle_config: f32,
+    mut echelle_config: f32,
+    demande: rechargement::Demande,
+    temoin: std::path::PathBuf,
+    nom_personnage: String,
 ) {
+    // Le dossier des personnages, pour le rechargement par témoin.
+    let dossier_boucle = config::dossier_personnages();
     use behavior::Entrees;
     use std::time::{Duration, Instant};
 
@@ -425,6 +460,14 @@ fn boucle(
     const AMORCAGE: Duration = Duration::from_secs(2);
 
     let mut dernier_recensement = Duration::ZERO;
+
+    // L'échelle du moniteur, séparée du réglage de la config : le
+    // rechargement à chaud change le second sans redemander le premier.
+    let mut ecrans_echelle = if echelle_config != 0.0 {
+        echelle_affichage / echelle_config
+    } else {
+        1.0
+    };
     let mut dernier_rendu: Option<render::Rendu> = None;
     let mut derniere_taille: Option<(u32, u32)> = None;
 
@@ -461,8 +504,59 @@ fn boucle(
             let ecrans = sonde.screens();
             if !ecrans.is_empty() {
                 monde = world::World::from_screens(&ecrans);
-                echelle_affichage = ecrans[0].scale * echelle_config;
+                // Gardée à part : le rechargement à chaud doit pouvoir
+                // recombiner l'échelle du moniteur avec la NOUVELLE échelle
+                // de la config, sans redemander les écrans.
+                ecrans_echelle = ecrans[0].scale;
+                echelle_affichage = ecrans_echelle * echelle_config;
             }
+
+            // Le fichier témoin : présent → on demande un rechargement, et
+            // on le retire pour ne pas boucler.
+            if temoin.exists() {
+                let _ = std::fs::remove_file(&temoin);
+                match rechargement::preparer(&demande, &dossier_boucle, &nom_personnage) {
+                    Ok(v) => println!("rechargement demandé par témoin (version {v})"),
+                    Err(e) => eprintln!("rechargement impossible : {e}"),
+                }
+            }
+
+            // ── Une demande de rechargement en attente ? ────────────────
+            //
+            // `try_lock` et non `lock` : la boucle 60 Hz ne doit JAMAIS
+            // attendre. Si le tray tient le verrou à cet instant, on
+            // réessaiera dans 125 ms et personne ne s'en apercevra.
+            if let Ok(mut boite) = demande.try_lock() {
+                // `take()` vide la boîte en récupérant son contenu : la
+                // demande est consommée atomiquement, sans drapeau à
+                // remettre à zéro.
+                if let Some(r) = boite.take() {
+                    // La pose courante existe-t-elle encore dans le nouveau
+                    // manifeste ? Si l'utilisateur vient de la renommer ou de
+                    // la retirer, `set_pose` refuserait tout changement et le
+                    // personnage resterait figé sur une clé morte.
+                    if !r.manifeste.has_pose(&ch.pose) {
+                        ch.pose = character::manifest::POSE_STAND.to_string();
+                        ch.pose_depuis = maintenant;
+                    }
+
+                    ch.manifest = r.manifeste;
+                    reglages = r.reglages;
+                    table = r.table;
+                    echelle_config = r.echelle_config;
+                    echelle_affichage = ecrans_echelle * echelle_config;
+
+                    // Le webview doit oublier ses images, et la taille de la
+                    // fenêtre peut avoir changé (`frameSize`, `scale`).
+                    let _ = render::recharger(&handle, &label, r.version);
+                    derniere_taille = None;
+                    dernier_rendu = None;
+                    dernier_coin = None;
+
+                    println!("personnage rechargé (version {})", r.version);
+                }
+            }
+
             dernier_recensement = maintenant;
         }
 

@@ -133,6 +133,18 @@ pub fn pousser(app: &AppHandle, label: &str, r: Rendu) -> Result<(), String> {
     win.eval(js).map_err(|e| format!("eval : {e}"))
 }
 
+/// Prévient le webview qu'il doit oublier ses images.
+///
+/// Séparée de `pousser` parce qu'elle n'arrive que sur action de
+/// l'utilisateur, jamais dans la boucle.
+pub fn recharger(app: &AppHandle, label: &str, version: u64) -> Result<(), String> {
+    let Some(win) = app.get_webview_window(label) else {
+        return Err(format!("fenêtre « {label} » absente"));
+    };
+    win.eval(format!("window.recharger({version})"))
+        .map_err(|e| format!("eval : {e}"))
+}
+
 /// Déplace la fenêtre. **Appelée 60 fois par seconde.**
 ///
 /// La position est en **pixels physiques du bureau virtuel** (spec §3.4),

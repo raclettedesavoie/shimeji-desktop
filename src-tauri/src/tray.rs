@@ -75,6 +75,8 @@ pub fn installer(
     dossier_personnages: &Path,
     demarrage_actif: bool,
     visibilite: Visibilite,
+    demande: crate::rechargement::Demande,
+    personnage: String,
 ) -> Result<(), String> {
     // ── Les entrées ─────────────────────────────────────────────────────
     // `with_id` et non `new` : c'est l'identifiant qui reviendra dans
@@ -182,9 +184,17 @@ pub fn installer(
                 }
 
                 ID_RECHARGER => {
-                    // Tâche 5. On le dit plutôt que de ne rien faire : une
-                    // entrée de menu muette se diagnostique mal.
-                    println!("rechargement : Tâche 5 du plan 1b");
+                    match crate::rechargement::preparer(
+                        &demande,
+                        &dossier_a_ouvrir,
+                        &personnage,
+                    ) {
+                        Ok(v) => println!("rechargement demandé (version {v})"),
+                        // **Bruyant.** Un rechargement silencieusement raté
+                        // est le pire des cas : on croit tester son nouveau
+                        // timing et on regarde l'ancien.
+                        Err(e) => eprintln!("rechargement impossible : {e}"),
+                    }
                 }
 
                 ID_DEMARRAGE => {

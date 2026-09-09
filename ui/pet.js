@@ -18,17 +18,31 @@ const personnage = window.location.hash.slice(1) || 'blob';
 // http://<scheme>.localhost.
 const BASE = `http://shime.localhost/${personnage}/`;
 
+// Version du contenu, changée à chaque rechargement à chaud.
+//
+// Les images sont servies avec `Cache-Control: max-age=3600` : sans ce
+// paramètre, une image modifiée sur le disque ne serait jamais relue. On
+// change donc l'URL plutôt que le cache.
+let version = 0;
+
 // On précharge chaque image à sa première utilisation : sans ça, la
 // première apparition d'une pose clignote le temps du chargement. Les
 // images restent ensuite dans le cache du webview.
 const cache = new Map();
+
 function urlDe(n) {
-  if (!cache.has(n)) {
+  // La clé inclut la version : après un rechargement, les anciennes entrées
+  // sont simplement ignorées au lieu d'être supprimées une par une.
+  const cle = version + '/' + n;
+  if (!cache.has(cle)) {
     const img = new Image();
-    img.src = BASE + n;
-    cache.set(n, img.src);
+    // Le gestionnaire du schéma URI lit `uri().path()`, qui IGNORE la
+    // requête : `?v=3` ne change donc rien côté Rust, seulement la clé de
+    // cache du webview.
+    img.src = BASE + n + '?v=' + version;
+    cache.set(cle, img.src);
   }
-  return cache.get(n);
+  return cache.get(cle);
 }
 
 let derniere = null;
@@ -49,9 +63,17 @@ function poser(image, flip) {
   derniere = { image, flip };
 }
 
-// Exposée pour que Rust puisse l'appeler par `eval` — c'est la voie de
-// secours si le pont d'événements ne fonctionne pas.
+// Exposée pour que Rust puisse l'appeler par `eval`.
 window.poser = poser;
+
+// Appelée par Rust après un rechargement à chaud.
+window.recharger = (v) => {
+  version = v;
+  // On force le prochain `poser` à réécrire le `src`, même si l'image
+  // demandée porte le même numéro qu'avant : c'est son CONTENU qui a pu
+  // changer, pas son numéro.
+  derniere = null;
+};
 
 // ── Affichage immédiat, sans attendre Rust ──────────────────────────────
 //
