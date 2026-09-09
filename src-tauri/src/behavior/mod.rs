@@ -26,6 +26,18 @@ pub struct Entrees {
 
     pub bouton_gauche: bool,
 
+    /// Le facteur d'échelle de l'écran où se trouve le personnage.
+    ///
+    /// Les réflexes en ont besoin pour **une seule chose** : convertir une
+    /// position d'une ancre à l'autre quand la pose change au relâchement
+    /// d'un portage (`attach::position_conservant_le_sprite`). Les ancres
+    /// sont exprimées dans la boîte du sprite, donc la conversion se met à
+    /// l'échelle avec lui (spec §3.4).
+    ///
+    /// C'est le seul endroit où le comportement touche à l'échelle, et c'est
+    /// légitime : c'est une donnée de l'environnement, comme la souris.
+    pub echelle_ecran: f32,
+
     /// Le curseur est-il dans la **hitbox de la pose courante** ?
     ///
     /// Calculé par l'appelant (Tâche 11) et non ici : la hitbox dépend de la

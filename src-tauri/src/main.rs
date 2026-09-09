@@ -451,6 +451,7 @@ fn boucle(
 
         let entrees = Entrees {
             souris: m.pos,
+            echelle_ecran,
             bouton_gauche: m.left_down,
             curseur_sur_le_personnage: sur_le_personnage,
         };

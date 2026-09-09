@@ -122,6 +122,82 @@ pub const BALANCIER_AMORTISSEMENT: f32 = 5.0;
 /// donc 300 px/s de glisser produisent 30 px de retard.
 pub const BALANCIER_SEUILS: [f32; 3] = [10.0, 30.0, 50.0];
 
+// ── Le lancer ─────────────────────────────────────────────────────────
+//
+// Shimeji-ee lance : `conf/actions.xml`, action `Thrown`, enchaîne sur
+//
+//     <ActionReference Name="Falling"
+//         InitialVX="${mascot.environment.cursor.dx}"
+//         InitialVY="${mascot.environment.cursor.dy}"/>
+//
+// et `UserBehavior.mouseReleased` déclenche ce comportement dès qu'on lâche
+// un personnage qu'on portait. Il ne tombe donc **jamais** à la verticale
+// après un glisser — il part avec la vitesse de la main.
+//
+// `cursor.dx` n'est pas un delta brut : `environment/Location.java` en fait
+// une moyenne exponentielle, `dx = (dx + Δx) / 2` à chaque tick. Le delta est
+// donc divisé par deux à chaque tick en l'absence de mouvement, ce qui
+// correspond à une constante de lissage de `ln 2 / TICK_INTERVAL ≈ 17,3 s⁻¹`.
+
+/// Constante de lissage de la vitesse du curseur, en s⁻¹.
+///
+/// `ln 2 / TICK_INTERVAL` : c'est le taux qui divise l'écart par deux à
+/// chaque tick de 40 ms, comme `Location.set`.
+pub const LISSAGE_CURSEUR: f32 = 17.33;
+
+/// Plafond de la vitesse de lancer, en px/s.
+///
+/// Un coup de poignet violent peut produire plusieurs milliers de px/s, ce
+/// qui traverserait un écran en trois images. Deux raisons de borner :
+/// l'atterrissage teste un **segment** et de trop grands pas rendent son
+/// choix arbitraire, et un personnage qui disparaît instantanément hors du
+/// bureau n'est pas amusant, juste perdu — même si le garde-fou le rattrape.
+///
+/// 1 200 px/s traverse un écran de 1 920 px en 1,6 s : c'est déjà un beau
+/// jet.
+pub const VITESSE_LANCER_MAX: f32 = 1200.0;
+
+/// Met à jour la vitesse lissée du curseur.
+///
+/// `precedent` et `actuel` sont deux positions successives du curseur,
+/// séparées de `dt`. Rend la nouvelle vitesse lissée, en px/s.
+///
+/// `1 − e^{−k·dt}` plutôt qu'un poids fixe : le lissage garde alors le même
+/// comportement dans le temps quelle que soit la cadence. Un poids fixe de
+/// 0,5 par image lisserait 2,4× plus vite à 60 Hz qu'aux 25 Hz de
+/// Shimeji-ee.
+pub fn lisser_vitesse_curseur(lissee: Vec2, precedent: Point, actuel: Point, dt: f32) -> Vec2 {
+    if dt <= 0.0 {
+        return lissee;
+    }
+
+    let instantanee = Vec2::new(
+        (actuel.x - precedent.x) / dt,
+        (actuel.y - precedent.y) / dt,
+    );
+
+    let poids = 1.0 - (-LISSAGE_CURSEUR * dt).exp();
+
+    Vec2::new(
+        lissee.x + (instantanee.x - lissee.x) * poids,
+        lissee.y + (instantanee.y - lissee.y) * poids,
+    )
+}
+
+/// Borne la vitesse de lancer, en gardant sa direction.
+///
+/// On borne la **norme** et non chaque axe séparément : borner les axes
+/// déformerait la direction du jet, et un lancer en diagonale ne partirait
+/// pas là où la main l'a envoyé.
+pub fn borner_lancer(v: Vec2) -> Vec2 {
+    let norme = (v.x * v.x + v.y * v.y).sqrt();
+    if norme <= VITESSE_LANCER_MAX || norme == 0.0 {
+        return v;
+    }
+    let facteur = VITESSE_LANCER_MAX / norme;
+    Vec2::new(v.x * facteur, v.y * facteur)
+}
+
 /// Un pas d'intégration de la chute libre.
 ///
 /// **Euler semi-implicite** : on met à jour la vitesse *avant* la position.

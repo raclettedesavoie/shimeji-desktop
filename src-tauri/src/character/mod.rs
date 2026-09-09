@@ -94,18 +94,65 @@ pub struct Character {
     /// L'intention en cours. `None` = il faut en tirer une (couche 3).
     pub intention: Option<crate::behavior::intention::ActiveIntention>,
 
-    /// Le point « pied » du balancier de portage, et sa vitesse.
+    /// L'état du portage. **Significatif seulement quand `attachment` vaut
+    /// `Dragged`**, et réinitialisé à chaque saisie.
+    pub portage: Portage,
+}
+
+/// Ce qu'il faut savoir pendant qu'on tient le personnage à la souris.
+///
+/// Regroupé dans une structure plutôt qu'étalé sur `Character` : ces quatre
+/// valeurs n'ont de sens que dans un seul état, elles se réinitialisent
+/// ensemble, et les garder ensemble rend cette réinitialisation impossible à
+/// oublier à moitié.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Portage {
+    /// Le point « pied » du balancier, et sa vitesse.
     ///
-    /// Repris de `Dragged.java` : pendant qu'on le porte, un point poursuit
-    /// le curseur par un **ressort amorti**, et son retard sur le curseur
-    /// choisit la pose. Ce n'est donc pas une animation qui se déroule mais
-    /// un état physique — d'où l'amplitude qui suit la vitesse de la main, et
-    /// le retour au repos qui repasse par les poses intermédiaires.
-    ///
-    /// Seulement significatif quand `attachment` vaut `Dragged` ; réinitialisé
-    /// sur le curseur au moment où on l'attrape.
+    /// Repris de `Dragged.java` : un point poursuit le curseur par un
+    /// **ressort amorti**, et son retard sur le curseur choisit la pose. Ce
+    /// n'est donc pas une animation qui se déroule mais un état physique —
+    /// d'où l'amplitude qui suit la vitesse de la main, et le retour au repos
+    /// qui repasse par les poses intermédiaires.
     pub pied_x: f32,
     pub pied_vx: f32,
+
+    /// La vitesse **lissée** du curseur, en px/s. C'est elle qui devient la
+    /// vitesse initiale de la chute quand on lâche : **on lance le
+    /// personnage**, il ne tombe pas à la verticale.
+    ///
+    /// Repris de `environment/Location.java`, où le delta du curseur est une
+    /// moyenne exponentielle : `dx = (dx + Δx) / 2` à chaque tick. Le
+    /// lissage n'est pas cosmétique — un delta brut à 60 Hz est bruité, et un
+    /// tremblement de main sur la dernière image avant le relâchement
+    /// enverrait le personnage dans une direction arbitraire.
+    ///
+    /// C'est une valeur DISTINCTE de `pied_vx`, malgré la ressemblance : le
+    /// ressort oscille autour de la vitesse du curseur, donc `pied_vx` peut
+    /// être momentanément de signe opposé. Lancer avec lui donnerait parfois
+    /// un jet à l'envers.
+    pub curseur_v: crate::geom::Vec2,
+
+    /// Position du curseur à l'image précédente, pour en dériver la vitesse
+    /// instantanée qui alimente le lissage.
+    pub curseur_precedent: Point,
+}
+
+impl Portage {
+    /// L'état d'une saisie qui commence : le pied sur le curseur, tout au
+    /// repos.
+    ///
+    /// Sans cette réinitialisation, il hériterait du retard et de la vitesse
+    /// d'un portage précédent — donc balancerait violemment à l'instant de la
+    /// saisie, et serait lancé au relâchement suivant même sans avoir bougé.
+    pub fn neuf(souris: Point) -> Portage {
+        Portage {
+            pied_x: souris.x,
+            pied_vx: 0.0,
+            curseur_v: crate::geom::Vec2::zero(),
+            curseur_precedent: souris,
+        }
+    }
 }
 
 impl Character {
@@ -123,10 +170,9 @@ impl Character {
             pose_depuis: Duration::ZERO,
             pos_connue,
             intention: None,
-            // Sans objet tant qu'il n'est pas porté ; `reflex` les
-            // réinitialise sur le curseur à l'instant de l'attrapage.
-            pied_x: 0.0,
-            pied_vx: 0.0,
+            // Sans objet tant qu'il n'est pas porté ; `reflex` le
+            // réinitialise à l'instant de l'attrapage.
+            portage: Portage::neuf(pos_connue),
         }
     }
 

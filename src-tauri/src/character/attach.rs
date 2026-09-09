@@ -165,6 +165,51 @@ pub fn window_top_left(
     Point::new(pos.x - ancre_x * echelle, pos.y - ancre_y * echelle)
 }
 
+/// La position à donner après un changement de pose, pour que **le sprite ne
+/// bouge pas à l'écran**.
+///
+/// Deux poses peuvent avoir des ancres différentes — c'est même le but des
+/// ancres. Mais `pos` désigne « le point de la scène sur lequel l'ancre se
+/// pose » : garder le même `pos` en changeant d'ancre **téléporte le
+/// sprite**.
+///
+/// > C'est exactement le bug qu'on a eu au relâchement d'un portage : les
+/// > poses `dragged*` ont l'ancre `[64, 8]` (le curseur tient la tête) et
+/// > `fall` a `[64, 128]` (les pieds). En gardant `pos = curseur`, le
+/// > personnage repartait **120 px plus haut** que là où on le tenait.
+///
+/// La conversion passe par le coin de la fenêtre, qui lui est une vraie
+/// position d'écran : on le calcule avec l'ancienne pose, puis on remonte à
+/// `pos` avec la nouvelle.
+///
+/// `facing` est le même pour les deux poses — appeler cette fonction en
+/// changeant aussi d'orientation n'aurait pas de sens, et le miroir se
+/// compense donc de lui-même.
+pub fn position_conservant_le_sprite(
+    pos: Point,
+    pose_avant: &Pose,
+    pose_apres: &Pose,
+    manifest: &Manifest,
+    scale_ecran: f32,
+    facing: Facing,
+) -> Point {
+    let coin = window_top_left(pos, pose_avant, manifest, scale_ecran, facing);
+
+    // L'inverse de `window_top_left`, avec la pose d'arrivée.
+    let echelle = manifest.scale * scale_ecran;
+    let largeur_boite = manifest.frame_size[0] as f32;
+    let ancre_x = if facing.flipped() {
+        largeur_boite - pose_apres.anchor[0]
+    } else {
+        pose_apres.anchor[0]
+    };
+
+    Point::new(
+        coin.x + ancre_x * echelle,
+        coin.y + pose_apres.anchor[1] * echelle,
+    )
+}
+
 /// La taille en pixels physiques de la fenêtre d'un personnage.
 ///
 /// Séparée de `window_top_left` parce qu'elle ne change qu'au chargement du

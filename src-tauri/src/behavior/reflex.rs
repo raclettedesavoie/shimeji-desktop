@@ -17,12 +17,15 @@
 //! rang de priorité.
 
 use super::Entrees;
-use crate::character::attach::{hors_bornes, world_position, Attachment};
+use crate::character::attach::{
+    hors_bornes, position_conservant_le_sprite, world_position, Attachment,
+};
 use crate::character::manifest::{
     POSES_DRAGGED_LEFT, POSES_DRAGGED_RIGHT, POSE_DRAGGED, POSE_FALL, POSE_LAND, POSE_STAND,
 };
 use crate::character::physics::{
-    atterrissage, integrer_balancier, integrer_chute, niveau_balancier, sous_le_bureau, Cote,
+    atterrissage, borner_lancer, integrer_balancier, integrer_chute, lisser_vitesse_curseur,
+    niveau_balancier, sous_le_bureau, Cote,
 };
 use crate::character::{Character, Facing};
 use crate::geom::{Face, Vec2};
@@ -61,12 +64,24 @@ pub enum Reflexe {
 /// > gauche**. C'est le point qui avait été inversé, et le source le tranche :
 /// > la condition `FootX < cursor.x` (pied à gauche, curseur parti à droite)
 /// > sélectionne les frames 5, 7, 9.
-fn avancer_balancier(ch: &mut Character, curseur_x: f32, dt: f32) -> &'static str {
-    let (x, vx) = integrer_balancier(ch.pied_x, ch.pied_vx, curseur_x, dt);
-    ch.pied_x = x;
-    ch.pied_vx = vx;
+fn avancer_balancier(ch: &mut Character, curseur: crate::geom::Point, dt: f32) -> &'static str {
+    // Le ressort du balancier.
+    let (x, vx) = integrer_balancier(ch.portage.pied_x, ch.portage.pied_vx, curseur.x, dt);
+    ch.portage.pied_x = x;
+    ch.portage.pied_vx = vx;
 
-    let (cote, niveau) = niveau_balancier(ch.pied_x - curseur_x);
+    // La vitesse lissée du curseur, qui servira à LANCER au relâchement.
+    // Tenue à jour ici parce que c'est le seul endroit qui voit passer les
+    // positions successives du curseur pendant un portage.
+    ch.portage.curseur_v = lisser_vitesse_curseur(
+        ch.portage.curseur_v,
+        ch.portage.curseur_precedent,
+        curseur,
+        dt,
+    );
+    ch.portage.curseur_precedent = curseur;
+
+    let (cote, niveau) = niveau_balancier(ch.portage.pied_x - curseur.x);
 
     match cote {
         Cote::Aucun => POSE_DRAGGED,
@@ -106,16 +121,45 @@ pub fn appliquer(
                 // ici : pendant un déplacement rapide, le sprite traîne
                 // derrière le curseur et sortirait de sa propre hitbox — il
                 // se décrocherait tout seul.
-                let pose = avancer_balancier(ch, e.souris.x, dt);
+                let pose = avancer_balancier(ch, e.souris, dt);
                 ch.set_pose(pose, maintenant);
                 return Reflexe::Porte;
             }
 
-            // Relâché : il tombe, depuis le curseur et sans élan vertical.
-            ch.attachment = Attachment::Falling {
-                pos: e.souris,
-                vel: Vec2::zero(),
+            // ── Relâché : ON LE LANCE ───────────────────────────────
+            //
+            // Il ne tombe PAS à la verticale : il part avec la vitesse de la
+            // main, exactement comme l'action `Thrown` de Shimeji-ee, qui
+            // enchaîne sur `Falling` avec `InitialVX/VY = cursor.dx/dy`.
+            //
+            // On utilise la vitesse LISSÉE et non `pied_vx` : le ressort
+            // oscille autour de la vitesse du curseur, donc `pied_vx` peut
+            // être momentanément de signe opposé et produirait un jet à
+            // l'envers.
+            let elan = borner_lancer(ch.portage.curseur_v);
+
+            // ── Et on convertit la position ─────────────────────────
+            //
+            // Les poses de portage ont l'ancre sur la tête, `fall` l'a sous
+            // les pieds : garder `pos = curseur` ferait **repartir le
+            // personnage 120 px plus haut** que là où on le tenait. C'est un
+            // saut bien visible, et c'était le cas avant cette conversion.
+            let pos = match (ch.manifest.pose(&ch.pose), ch.manifest.pose(POSE_FALL)) {
+                (Some(avant), Some(apres)) => position_conservant_le_sprite(
+                    e.souris,
+                    avant,
+                    apres,
+                    &ch.manifest,
+                    e.echelle_ecran,
+                    ch.facing,
+                ),
+                // L'une des deux poses manque (couverture partielle) : on ne
+                // peut rien convertir, on part du curseur. Un saut vaut mieux
+                // qu'un personnage qui ne tombe pas.
+                _ => e.souris,
             };
+
+            ch.attachment = Attachment::Falling { pos, vel: elan };
             ch.set_pose(POSE_FALL, maintenant);
             ch.intention = None;
             return Reflexe::Chute;
@@ -126,12 +170,13 @@ pub fn appliquer(
             if e.bouton_gauche && e.curseur_sur_le_personnage {
                 ch.attachment = Attachment::Dragged;
 
-                // Le ressort part **au repos, sur le curseur** — comme
-                // `Dragged.init()` qui fait `setFootX(cursor.x)`. Sans ça, il
-                // hériterait du retard d'un portage précédent et balancerait
-                // violemment à l'instant où on le saisit.
-                ch.pied_x = e.souris.x;
-                ch.pied_vx = 0.0;
+                // Tout l'état de portage repart de zéro, sur le curseur —
+                // comme `Dragged.init()` qui fait `setFootX(cursor.x)`. Sans
+                // ça, il hériterait du retard ET de la vitesse d'un portage
+                // précédent : il balancerait violemment à l'instant de la
+                // saisie, et serait lancé au relâchement suivant sans même
+                // avoir bougé.
+                ch.portage = crate::character::Portage::neuf(e.souris);
 
                 // Shimeji-ee force `setLookRight(false)` pendant tout le
                 // portage : le sprite n'est jamais miroité. C'est nécessaire,
@@ -277,6 +322,7 @@ mod tests {
     fn entrees_neutres() -> Entrees {
         Entrees {
             souris: Point::new(0.0, 0.0),
+            echelle_ecran: 1.0,
             bouton_gauche: false,
             curseur_sur_le_personnage: false,
         }
@@ -358,6 +404,7 @@ mod tests {
 
         let e = Entrees {
             souris: Point::new(300.0, 1000.0),
+            echelle_ecran: 1.0,
             bouton_gauche: true,
             curseur_sur_le_personnage: true,
         };
@@ -377,10 +424,11 @@ mod tests {
         // Le pied déjà sur le curseur : c'est l'état « au repos ». Sans cette
         // ligne il partirait de 0, à 800 px du curseur, donc en balancement
         // maximal — ce qui teste autre chose.
-        ch.pied_x = 800.0;
+        ch.portage.pied_x = 800.0;
 
         let e = Entrees {
             souris: Point::new(800.0, 300.0),
+            echelle_ecran: 1.0,
             bouton_gauche: true,
             curseur_sur_le_personnage: true,
         };
@@ -403,6 +451,7 @@ mod tests {
             x += vitesse * DT;
             let e = Entrees {
                 souris: Point::new(x, 300.0),
+                echelle_ecran: 1.0,
                 bouton_gauche: true,
                 curseur_sur_le_personnage: true,
             };
@@ -420,7 +469,7 @@ mod tests {
 
         let mut ch = perso_pose_sur_le_sol(&m);
         ch.attachment = Attachment::Dragged;
-        ch.pied_x = 800.0;
+        ch.portage.pied_x = 800.0;
         let pose = glisser(&mut ch, &m, -400.0, 0.5);
         assert!(
             POSES_DRAGGED_LEFT.contains(&pose.as_str()),
@@ -429,7 +478,7 @@ mod tests {
 
         let mut ch = perso_pose_sur_le_sol(&m);
         ch.attachment = Attachment::Dragged;
-        ch.pied_x = 800.0;
+        ch.portage.pied_x = 800.0;
         let pose = glisser(&mut ch, &m, 400.0, 0.5);
         assert!(
             POSES_DRAGGED_RIGHT.contains(&pose.as_str()),
@@ -447,7 +496,7 @@ mod tests {
         let niveau = |vitesse: f32| -> usize {
             let mut ch = perso_pose_sur_le_sol(&m);
             ch.attachment = Attachment::Dragged;
-            ch.pied_x = 800.0;
+            ch.portage.pied_x = 800.0;
             let pose = glisser(&mut ch, &m, vitesse, 1.0);
             POSES_DRAGGED_LEFT
                 .iter()
@@ -471,7 +520,7 @@ mod tests {
         let m = monde();
         let mut ch = perso_pose_sur_le_sol(&m);
         ch.attachment = Attachment::Dragged;
-        ch.pied_x = 800.0;
+        ch.portage.pied_x = 800.0;
 
         // On le lance fort, puis on immobilise le curseur.
         let ample = glisser(&mut ch, &m, -700.0, 1.0);
@@ -484,6 +533,7 @@ mod tests {
         for _ in 0..120 {
             let e = Entrees {
                 souris: Point::new(x_final, 300.0),
+                echelle_ecran: 1.0,
                 bouton_gauche: true,
                 curseur_sur_le_personnage: true,
             };
@@ -509,18 +559,19 @@ mod tests {
         // précédent et balancerait violemment à l'instant de la saisie.
         let m = monde();
         let mut ch = perso_pose_sur_le_sol(&m);
-        ch.pied_x = -99_999.0;
-        ch.pied_vx = 12_345.0;
+        ch.portage.pied_x = -99_999.0;
+        ch.portage.pied_vx = 12_345.0;
 
         let e = Entrees {
             souris: Point::new(640.0, 480.0),
+            echelle_ecran: 1.0,
             bouton_gauche: true,
             curseur_sur_le_personnage: true,
         };
         appliquer(&mut ch, &m, &e, Duration::ZERO, DT);
 
-        assert_eq!(ch.pied_x, 640.0);
-        assert_eq!(ch.pied_vx, 0.0);
+        assert_eq!(ch.portage.pied_x, 640.0);
+        assert_eq!(ch.portage.pied_vx, 0.0);
         assert_eq!(ch.pose, POSE_DRAGGED, "il pend droit au moment de la saisie");
         // Et le sprite n'est pas miroité pendant le portage.
         assert_eq!(ch.facing, crate::character::Facing::Left);
@@ -533,6 +584,7 @@ mod tests {
         let mut ch = perso_pose_sur_le_sol(&m);
         let e = Entrees {
             souris: Point::new(50.0, 50.0),
+            echelle_ecran: 1.0,
             bouton_gauche: true,
             curseur_sur_le_personnage: false,
         };
@@ -556,6 +608,7 @@ mod tests {
 
         let e = Entrees {
             souris: Point::new(300.0, 1000.0),
+            echelle_ecran: 1.0,
             bouton_gauche: true,
             curseur_sur_le_personnage: true,
         };
@@ -565,21 +618,119 @@ mod tests {
     }
 
     #[test]
-    fn relacher_le_bouton_le_fait_tomber_depuis_le_curseur() {
+    fn relacher_le_bouton_ne_fait_pas_sauter_le_sprite() {
+        // **L'invariante, et non une coordonnée.** Les poses de portage ont
+        // l'ancre sur la tête et `fall` sous les pieds : garder `pos =
+        // curseur` faisait repartir le personnage 120 px plus haut que là où
+        // on le tenait, ce qui se voyait très bien.
+        //
+        // On vérifie donc que le COIN DE LA FENÊTRE est inchangé — c'est la
+        // seule vraie position d'écran, et l'assertion reste juste si l'on
+        // change une ancre plus tard.
+        use crate::character::attach::window_top_left;
+
         let m = monde();
         let mut ch = perso_pose_sur_le_sol(&m);
         ch.attachment = Attachment::Dragged;
+        ch.portage = crate::character::Portage::neuf(Point::new(1200.0, 400.0));
+        ch.set_pose(POSE_DRAGGED, Duration::ZERO);
+
+        let coin_avant = window_top_left(
+            Point::new(1200.0, 400.0),
+            ch.manifest.pose(POSE_DRAGGED).unwrap(),
+            &ch.manifest,
+            1.0,
+            ch.facing,
+        );
 
         let e = Entrees {
             souris: Point::new(1200.0, 400.0),
+            echelle_ecran: 1.0,
             bouton_gauche: false,
             curseur_sur_le_personnage: true,
         };
         let r = appliquer(&mut ch, &m, &e, Duration::ZERO, DT);
-
         assert_eq!(r, Reflexe::Chute);
+
+        let pos = match ch.attachment {
+            Attachment::Falling { pos, .. } => pos,
+            autre => panic!("attendu Falling, obtenu {autre:?}"),
+        };
+        let coin_apres = window_top_left(
+            pos,
+            ch.manifest.pose(POSE_FALL).unwrap(),
+            &ch.manifest,
+            1.0,
+            ch.facing,
+        );
+
+        assert!(
+            (coin_apres.x - coin_avant.x).abs() < 0.01
+                && (coin_apres.y - coin_avant.y).abs() < 0.01,
+            "le sprite a sauté : coin {coin_avant:?} -> {coin_apres:?}"
+        );
+    }
+
+    #[test]
+    fn relacher_apres_un_glisser_le_lance() {
+        // **Le lancer.** Il ne doit pas tomber à la verticale après un
+        // glisser : il part avec la vitesse de la main, comme l'action
+        // `Thrown` de Shimeji-ee.
+        let m = monde();
+        let mut ch = perso_pose_sur_le_sol(&m);
+        ch.attachment = Attachment::Dragged;
+        ch.portage = crate::character::Portage::neuf(Point::new(800.0, 300.0));
+
+        // On le glisse vers la droite pendant une demi-seconde…
+        glisser(&mut ch, &m, 600.0, 0.5);
+
+        // …puis on lâche, curseur à la dernière position atteinte.
+        let x_final = 800.0 + 600.0 * 0.5;
+        let e = Entrees {
+            souris: Point::new(x_final, 300.0),
+            echelle_ecran: 1.0,
+            bouton_gauche: false,
+            curseur_sur_le_personnage: true,
+        };
+        appliquer(&mut ch, &m, &e, Duration::from_millis(500), DT);
+
         match ch.attachment {
-            Attachment::Falling { pos, .. } => assert_eq!(pos, Point::new(1200.0, 400.0)),
+            Attachment::Falling { vel, .. } => {
+                assert!(
+                    vel.x > 300.0,
+                    "il devrait partir vers la droite avec de l'élan, vx = {}",
+                    vel.x
+                );
+            }
+            autre => panic!("attendu Falling, obtenu {autre:?}"),
+        }
+    }
+
+    #[test]
+    fn relacher_sans_avoir_bouge_le_laisse_tomber_droit() {
+        // Le pendant du test précédent : un simple clic-relâche ne doit pas
+        // le catapulter.
+        let m = monde();
+        let mut ch = perso_pose_sur_le_sol(&m);
+        ch.attachment = Attachment::Dragged;
+        ch.portage = crate::character::Portage::neuf(Point::new(800.0, 300.0));
+
+        // Curseur immobile pendant une demi-seconde.
+        glisser(&mut ch, &m, 0.0, 0.5);
+
+        let e = Entrees {
+            souris: Point::new(800.0, 300.0),
+            echelle_ecran: 1.0,
+            bouton_gauche: false,
+            curseur_sur_le_personnage: true,
+        };
+        appliquer(&mut ch, &m, &e, Duration::from_millis(500), DT);
+
+        match ch.attachment {
+            Attachment::Falling { vel, .. } => {
+                assert!(vel.x.abs() < 10.0, "élan parasite vx = {}", vel.x);
+                assert!(vel.y.abs() < 10.0, "élan parasite vy = {}", vel.y);
+            }
             autre => panic!("attendu Falling, obtenu {autre:?}"),
         }
     }
@@ -592,6 +743,7 @@ mod tests {
 
         let e = Entrees {
             souris: Point::new(800.0, 300.0),
+            echelle_ecran: 1.0,
             bouton_gauche: true,
             curseur_sur_le_personnage: false, // il a glissé sous le curseur
         };

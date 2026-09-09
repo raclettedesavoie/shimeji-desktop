@@ -98,6 +98,7 @@ pub fn executer(minutes: u32, graine: u32, dossier: &Path) -> Result<Resume, Str
     // les tests de `reflex.rs`, et à l'œil en Tâche 11.
     let entrees = Entrees {
         souris: Point::new(0.0, 0.0),
+        echelle_ecran: 1.0,
         bouton_gauche: false,
         curseur_sur_le_personnage: false,
     };
