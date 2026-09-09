@@ -38,20 +38,23 @@ pub const POSE_SIT: &str = "sit";
 pub const POSE_FALL: &str = "fall";
 pub const POSE_LAND: &str = "land";
 
-/// Porté, sans mouvement notable — le `Pinched` de Shimeji-ee au repos.
+/// Porté, au repos : il pend droit. Frame 1.
 pub const POSE_DRAGGED: &str = "dragged";
 
-/// Porté en se déplaçant vers la gauche : le balancier penche à gauche.
+/// Les poses de balancement, **tête à gauche**, du plus léger au plus ample.
 ///
-/// Shimeji-ee joue un cycle unique `9,7,5,1,6,8,10` (action `Pinched`), qui
-/// bat indépendamment de ce que fait la souris. On le découpe en trois poses
-/// pour que le balancier **suive le sens du déplacement** — c'est ce qui
-/// donne l'impression de tenir une peluche par la tête plutôt que de
-/// regarder une animation.
-pub const POSE_DRAGGED_LEFT: &str = "draggedLeft";
+/// Frames 6, 8, 10. Le pied traîne alors à droite, ce qui arrive quand le
+/// curseur va vers la **gauche** : un pendule traîne derrière.
+///
+/// Sept poses à une frame chacune, et non trois animations en boucle : le
+/// niveau de balancement est un **état physique** calculé par
+/// `physics::integrer_balancier`, pas une animation qui se déroule. C'est ce
+/// qui donne l'amplitude proportionnelle à la vitesse et le retour au repos
+/// en passant par les niveaux intermédiaires.
+pub const POSES_DRAGGED_LEFT: [&str; 3] = ["draggedLeft1", "draggedLeft2", "draggedLeft3"];
 
-/// Porté en se déplaçant vers la droite.
-pub const POSE_DRAGGED_RIGHT: &str = "draggedRight";
+/// Les poses de balancement, **tête à droite**. Frames 5, 7, 9.
+pub const POSES_DRAGGED_RIGHT: [&str; 3] = ["draggedRight1", "draggedRight2", "draggedRight3"];
 
 /// Le rectangle réellement occupé par le personnage dans la boîte de 128×128
 /// (spec §8.4). Sert au hit-testing (Tâche 11) et à la proximité entre

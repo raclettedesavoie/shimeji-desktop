@@ -1,5 +1,5 @@
 {
-  "_source": "Correspondance frames -> poses extraite de conf/actions.xml de Shimeji-ee, PAS devinée à l'oeil. Durées converties depuis les ticks (Manager.TICK_INTERVAL = 40 ms). Justification pose par pose : docs/specs/2026-09-09-frames-shimeji.md",
+  "_source": "Correspondance frames -> poses extraite de conf/actions.xml de Shimeji-ee, PAS devinée à l'oeil. Durées converties depuis les ticks (Manager.TICK_INTERVAL = 40 ms). Les poses dragged* portent une ancre 64,8 : Dragged.java place l'ancre du sprite à curseur + (0,120) avec ImageAnchor 64,128, donc le haut du sprite est 8 px AU-DESSUS du curseur - il le tient par la tete. Justification pose par pose : docs/specs/2026-09-09-frames-shimeji.md",
 
   "id": "blob",
   "name": "Shimeji (mascotte par défaut)",
@@ -15,9 +15,13 @@
     "fall":         { "frames": [4] },
     "land":         { "frames": [18, 19], "frameMs": 160 },
 
-    "dragged":      { "frames": [1] },
-    "draggedLeft":  { "frames": [5, 7, 9],  "frameMs": 100, "loop": true },
-    "draggedRight": { "frames": [6, 8, 10], "frameMs": 100, "loop": true },
+    "dragged":       { "frames": [1],  "anchor": [64, 8] },
+    "draggedRight1": { "frames": [5],  "anchor": [64, 8] },
+    "draggedRight2": { "frames": [7],  "anchor": [64, 8] },
+    "draggedRight3": { "frames": [9],  "anchor": [64, 8] },
+    "draggedLeft1":  { "frames": [6],  "anchor": [64, 8] },
+    "draggedLeft2":  { "frames": [8],  "anchor": [64, 8] },
+    "draggedLeft3":  { "frames": [10], "anchor": [64, 8] },
 
     "sprawl":       { "frames": [21] },
     "tripping":     { "frames": [19, 18, 20, 20, 19], "frameMs": 160 },

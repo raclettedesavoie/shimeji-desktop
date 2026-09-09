@@ -19,10 +19,12 @@
 use super::Entrees;
 use crate::character::attach::{hors_bornes, world_position, Attachment};
 use crate::character::manifest::{
-    POSE_DRAGGED, POSE_DRAGGED_LEFT, POSE_DRAGGED_RIGHT, POSE_FALL, POSE_LAND, POSE_STAND,
+    POSES_DRAGGED_LEFT, POSES_DRAGGED_RIGHT, POSE_DRAGGED, POSE_FALL, POSE_LAND, POSE_STAND,
 };
-use crate::character::physics::{atterrissage, integrer_chute, sous_le_bureau, VITESSE_BALANCIER};
-use crate::character::Character;
+use crate::character::physics::{
+    atterrissage, integrer_balancier, integrer_chute, niveau_balancier, sous_le_bureau, Cote,
+};
+use crate::character::{Character, Facing};
 use crate::geom::{Face, Vec2};
 use crate::world::World;
 use std::time::Duration;
@@ -43,25 +45,34 @@ pub enum Reflexe {
     Aucun,
 }
 
-/// La pose d'un personnage porté, selon la vitesse horizontale de la souris.
+/// Avance le balancier d'un personnage porté, et rend la pose à afficher.
 ///
-/// C'est le **balancier** : immobile il pend droit, tiré d'un côté il penche
-/// de ce côté. Shimeji-ee joue à la place un cycle unique
-/// (`Pinched` = 9,7,5,1,6,8,10) qui bat indépendamment de la souris ; le
-/// découper en trois poses donne l'impression de tenir une peluche plutôt
-/// que de regarder une animation.
+/// Reprise fidèle de `Dragged.java` + des conditions de l'action `Pinched` :
+/// un point « pied » poursuit le curseur par un ressort amorti, et son
+/// **retard** choisit la pose.
 ///
-/// > Le sens retenu est le **direct** : on tire à gauche → il penche à
-/// > gauche. Un pendule réel traînerait *derrière* et pencherait à droite.
-/// > Les deux se défendent ; ce choix-ci se lit mieux à l'écran. Pour
-/// > l'inverser, échanger les deux constantes ci-dessous — une ligne.
-fn pose_portee(souris_vx: f32) -> &'static str {
-    if souris_vx < -VITESSE_BALANCIER {
-        POSE_DRAGGED_LEFT
-    } else if souris_vx > VITESSE_BALANCIER {
-        POSE_DRAGGED_RIGHT
-    } else {
-        POSE_DRAGGED
+/// Les trois propriétés qu'on cherchait tombent gratuitement du modèle :
+///   · plus la main va vite, plus le retard est grand, plus il balance ;
+///   · le retour au repos repasse par les niveaux intermédiaires ;
+///   · le ressort étant sous-amorti, il oscille un peu avant de se poser.
+///
+/// > **Le sens est celui d'un pendule : il traîne derrière.** Curseur vers la
+/// > gauche → le pied reste en arrière, donc à droite → la **tête penche à
+/// > gauche**. C'est le point qui avait été inversé, et le source le tranche :
+/// > la condition `FootX < cursor.x` (pied à gauche, curseur parti à droite)
+/// > sélectionne les frames 5, 7, 9.
+fn avancer_balancier(ch: &mut Character, curseur_x: f32, dt: f32) -> &'static str {
+    let (x, vx) = integrer_balancier(ch.pied_x, ch.pied_vx, curseur_x, dt);
+    ch.pied_x = x;
+    ch.pied_vx = vx;
+
+    let (cote, niveau) = niveau_balancier(ch.pied_x - curseur_x);
+
+    match cote {
+        Cote::Aucun => POSE_DRAGGED,
+        // `niveau` vaut 1 à 3 hors du cas neutre, d'où le `- 1`.
+        Cote::PiedAGauche => POSES_DRAGGED_RIGHT[(niveau - 1) as usize],
+        Cote::PiedADroite => POSES_DRAGGED_LEFT[(niveau - 1) as usize],
     }
 }
 
@@ -95,7 +106,8 @@ pub fn appliquer(
                 // ici : pendant un déplacement rapide, le sprite traîne
                 // derrière le curseur et sortirait de sa propre hitbox — il
                 // se décrocherait tout seul.
-                ch.set_pose(pose_portee(e.souris_vx), maintenant);
+                let pose = avancer_balancier(ch, e.souris.x, dt);
+                ch.set_pose(pose, maintenant);
                 return Reflexe::Porte;
             }
 
@@ -113,7 +125,22 @@ pub fn appliquer(
             // Pas encore tenu : le devient-il ?
             if e.bouton_gauche && e.curseur_sur_le_personnage {
                 ch.attachment = Attachment::Dragged;
-                ch.set_pose(pose_portee(e.souris_vx), maintenant);
+
+                // Le ressort part **au repos, sur le curseur** — comme
+                // `Dragged.init()` qui fait `setFootX(cursor.x)`. Sans ça, il
+                // hériterait du retard d'un portage précédent et balancerait
+                // violemment à l'instant où on le saisit.
+                ch.pied_x = e.souris.x;
+                ch.pied_vx = 0.0;
+
+                // Shimeji-ee force `setLookRight(false)` pendant tout le
+                // portage : le sprite n'est jamais miroité. C'est nécessaire,
+                // pas cosmétique — les frames de balancement sont
+                // asymétriques, et les miroiter inverserait le sens du
+                // balancier par-dessus notre choix.
+                ch.facing = Facing::Left;
+
+                ch.set_pose(POSE_DRAGGED, maintenant);
                 // Être soulevé annule ce qu'il était en train de faire :
                 // reprendre une promenade après avoir été déplacé de deux
                 // écrans n'aurait aucun sens.
@@ -215,9 +242,13 @@ mod tests {
                 "sit":     { "frames": [6] },
                 "fall":    { "frames": [7], "anchor": [64, 64] },
                 "land":    { "frames": [8], "frameMs": 150 },
-                "dragged":      { "frames": [1] },
-                "draggedLeft":  { "frames": [5, 7, 9], "frameMs": 100, "loop": true },
-                "draggedRight": { "frames": [6, 8, 10], "frameMs": 100, "loop": true }
+                "dragged":       { "frames": [1],  "anchor": [64, 8] },
+                "draggedRight1": { "frames": [5],  "anchor": [64, 8] },
+                "draggedRight2": { "frames": [7],  "anchor": [64, 8] },
+                "draggedRight3": { "frames": [9],  "anchor": [64, 8] },
+                "draggedLeft1":  { "frames": [6],  "anchor": [64, 8] },
+                "draggedLeft2":  { "frames": [8],  "anchor": [64, 8] },
+                "draggedLeft3":  { "frames": [10], "anchor": [64, 8] }
             }
         }"#;
         serde_json::from_str(json).unwrap()
@@ -246,7 +277,6 @@ mod tests {
     fn entrees_neutres() -> Entrees {
         Entrees {
             souris: Point::new(0.0, 0.0),
-            souris_vx: 0.0,
             bouton_gauche: false,
             curseur_sur_le_personnage: false,
         }
@@ -328,7 +358,6 @@ mod tests {
 
         let e = Entrees {
             souris: Point::new(300.0, 1000.0),
-            souris_vx: 0.0,
             bouton_gauche: true,
             curseur_sur_le_personnage: true,
         };
@@ -345,10 +374,13 @@ mod tests {
         let m = monde();
         let mut ch = perso_pose_sur_le_sol(&m);
         ch.attachment = Attachment::Dragged;
+        // Le pied déjà sur le curseur : c'est l'état « au repos ». Sans cette
+        // ligne il partirait de 0, à 800 px du curseur, donc en balancement
+        // maximal — ce qui teste autre chose.
+        ch.pied_x = 800.0;
 
         let e = Entrees {
             souris: Point::new(800.0, 300.0),
-            souris_vx: 0.0,
             bouton_gauche: true,
             curseur_sur_le_personnage: true,
         };
@@ -356,31 +388,142 @@ mod tests {
         assert_eq!(ch.pose, POSE_DRAGGED);
     }
 
+    /// Porte le personnage et déplace le curseur à `vitesse` px/s pendant
+    /// `secondes`, en pas de 1/60 s. Rend la pose atteinte à la fin.
+    ///
+    /// C'est le seul moyen honnête d'éprouver un ressort : lui donner une
+    /// entrée réaliste et regarder son régime, plutôt que de vérifier un
+    /// seuil sur une seule image.
+    fn glisser(ch: &mut Character, m: &World, vitesse: f32, secondes: f32) -> String {
+        let mut x = 800.0f32;
+        let mut t = Duration::ZERO;
+        let pas = (secondes / DT) as usize;
+
+        for _ in 0..pas {
+            x += vitesse * DT;
+            let e = Entrees {
+                souris: Point::new(x, 300.0),
+                bouton_gauche: true,
+                curseur_sur_le_personnage: true,
+            };
+            appliquer(ch, m, &e, t, DT);
+            t += Duration::from_micros(16_667);
+        }
+        ch.pose.clone()
+    }
+
     #[test]
-    fn porte_en_mouvement_il_balance_du_bon_cote() {
-        // Le balancier que Shimeji-ee n'a pas : son `Pinched` bat
-        // indépendamment de la souris.
+    fn le_balancier_traine_derriere_le_curseur() {
+        // **LE test du sens**, celui qui avait été inversé. Un pendule traîne
+        // derrière : curseur vers la GAUCHE → tête à GAUCHE.
+        let m = monde();
+
+        let mut ch = perso_pose_sur_le_sol(&m);
+        ch.attachment = Attachment::Dragged;
+        ch.pied_x = 800.0;
+        let pose = glisser(&mut ch, &m, -400.0, 0.5);
+        assert!(
+            POSES_DRAGGED_LEFT.contains(&pose.as_str()),
+            "curseur à gauche : attendu une pose tête à gauche, obtenu {pose}"
+        );
+
+        let mut ch = perso_pose_sur_le_sol(&m);
+        ch.attachment = Attachment::Dragged;
+        ch.pied_x = 800.0;
+        let pose = glisser(&mut ch, &m, 400.0, 0.5);
+        assert!(
+            POSES_DRAGGED_RIGHT.contains(&pose.as_str()),
+            "curseur à droite : attendu une pose tête à droite, obtenu {pose}"
+        );
+    }
+
+    #[test]
+    fn plus_la_main_va_vite_plus_il_balance() {
+        // L'amplitude doit suivre la vitesse. En régime permanent le retard
+        // vaut `vitesse / 10`, et les seuils sont à 10, 30 et 50 px — donc
+        // 150 px/s, 400 px/s et 700 px/s tombent dans trois niveaux distincts.
+        let m = monde();
+
+        let niveau = |vitesse: f32| -> usize {
+            let mut ch = perso_pose_sur_le_sol(&m);
+            ch.attachment = Attachment::Dragged;
+            ch.pied_x = 800.0;
+            let pose = glisser(&mut ch, &m, vitesse, 1.0);
+            POSES_DRAGGED_LEFT
+                .iter()
+                .position(|p| *p == pose.as_str())
+                .map(|i| i + 1)
+                .unwrap_or(0)
+        };
+
+        let lent = niveau(-150.0);
+        let moyen = niveau(-400.0);
+        let vif = niveau(-700.0);
+
+        assert!(lent < moyen, "lent {lent} devrait balancer moins que {moyen}");
+        assert!(moyen < vif, "moyen {moyen} devrait balancer moins que {vif}");
+    }
+
+    #[test]
+    fn le_retour_au_repos_passe_par_les_niveaux_intermediaires() {
+        // Il ne doit pas SAUTER au repos quand la main s'arrête : le ressort
+        // le ramène en repassant par les poses de moindre amplitude.
         let m = monde();
         let mut ch = perso_pose_sur_le_sol(&m);
         ch.attachment = Attachment::Dragged;
+        ch.pied_x = 800.0;
 
-        let mut entrees = |vx: f32| Entrees {
-            souris: Point::new(800.0, 300.0),
-            souris_vx: vx,
+        // On le lance fort, puis on immobilise le curseur.
+        let ample = glisser(&mut ch, &m, -700.0, 1.0);
+        assert!(POSES_DRAGGED_LEFT.contains(&ample.as_str()));
+
+        // Curseur figé : on collecte les poses traversées.
+        let mut vues = std::collections::BTreeSet::new();
+        let x_final = 800.0 - 700.0 * 1.0;
+        let mut t = Duration::from_secs(1);
+        for _ in 0..120 {
+            let e = Entrees {
+                souris: Point::new(x_final, 300.0),
+                bouton_gauche: true,
+                curseur_sur_le_personnage: true,
+            };
+            appliquer(&mut ch, &m, &e, t, DT);
+            vues.insert(ch.pose.clone());
+            t += Duration::from_micros(16_667);
+        }
+
+        // Il finit au repos…
+        assert_eq!(ch.pose, POSE_DRAGGED, "il devrait avoir fini de balancer");
+        // …et il est passé par au moins un niveau intermédiaire en chemin,
+        // au lieu de sauter directement de l'amplitude maximale au repos.
+        assert!(
+            vues.len() >= 3,
+            "retour trop brusque : seulement {:?}",
+            vues
+        );
+    }
+
+    #[test]
+    fn attraper_repart_du_repos_sur_le_curseur() {
+        // Sans réinitialisation, il hériterait du retard d'un portage
+        // précédent et balancerait violemment à l'instant de la saisie.
+        let m = monde();
+        let mut ch = perso_pose_sur_le_sol(&m);
+        ch.pied_x = -99_999.0;
+        ch.pied_vx = 12_345.0;
+
+        let e = Entrees {
+            souris: Point::new(640.0, 480.0),
             bouton_gauche: true,
             curseur_sur_le_personnage: true,
         };
+        appliquer(&mut ch, &m, &e, Duration::ZERO, DT);
 
-        appliquer(&mut ch, &m, &entrees(-400.0), Duration::ZERO, DT);
-        assert_eq!(ch.pose, POSE_DRAGGED_LEFT, "tiré à gauche");
-
-        appliquer(&mut ch, &m, &entrees(400.0), Duration::ZERO, DT);
-        assert_eq!(ch.pose, POSE_DRAGGED_RIGHT, "tiré à droite");
-
-        // Sous le seuil : il repend droit. Un tremblement de main ne doit pas
-        // le faire battre.
-        appliquer(&mut ch, &m, &entrees(30.0), Duration::ZERO, DT);
-        assert_eq!(ch.pose, POSE_DRAGGED, "vitesse sous le seuil");
+        assert_eq!(ch.pied_x, 640.0);
+        assert_eq!(ch.pied_vx, 0.0);
+        assert_eq!(ch.pose, POSE_DRAGGED, "il pend droit au moment de la saisie");
+        // Et le sprite n'est pas miroité pendant le portage.
+        assert_eq!(ch.facing, crate::character::Facing::Left);
     }
 
     #[test]
@@ -390,7 +533,6 @@ mod tests {
         let mut ch = perso_pose_sur_le_sol(&m);
         let e = Entrees {
             souris: Point::new(50.0, 50.0),
-            souris_vx: 0.0,
             bouton_gauche: true,
             curseur_sur_le_personnage: false,
         };
@@ -414,7 +556,6 @@ mod tests {
 
         let e = Entrees {
             souris: Point::new(300.0, 1000.0),
-            souris_vx: 0.0,
             bouton_gauche: true,
             curseur_sur_le_personnage: true,
         };
@@ -431,7 +572,6 @@ mod tests {
 
         let e = Entrees {
             souris: Point::new(1200.0, 400.0),
-            souris_vx: 0.0,
             bouton_gauche: false,
             curseur_sur_le_personnage: true,
         };
@@ -452,7 +592,6 @@ mod tests {
 
         let e = Entrees {
             souris: Point::new(800.0, 300.0),
-            souris_vx: 0.0,
             bouton_gauche: true,
             curseur_sur_le_personnage: false, // il a glissé sous le curseur
         };

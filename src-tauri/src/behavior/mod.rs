@@ -24,13 +24,6 @@ use crate::geom::Point;
 pub struct Entrees {
     pub souris: Point,
 
-    /// Vitesse horizontale de la souris, en pixels par seconde.
-    ///
-    /// Sert au balancier du personnage porté (`reflex.rs`). Calculée par
-    /// l'appelant, qui est le seul à connaître deux positions successives —
-    /// les réflexes, eux, ne voient qu'une image à la fois.
-    pub souris_vx: f32,
-
     pub bouton_gauche: bool,
 
     /// Le curseur est-il dans la **hitbox de la pose courante** ?

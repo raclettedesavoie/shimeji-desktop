@@ -93,6 +93,19 @@ pub struct Character {
 
     /// L'intention en cours. `None` = il faut en tirer une (couche 3).
     pub intention: Option<crate::behavior::intention::ActiveIntention>,
+
+    /// Le point « pied » du balancier de portage, et sa vitesse.
+    ///
+    /// Repris de `Dragged.java` : pendant qu'on le porte, un point poursuit
+    /// le curseur par un **ressort amorti**, et son retard sur le curseur
+    /// choisit la pose. Ce n'est donc pas une animation qui se déroule mais
+    /// un état physique — d'où l'amplitude qui suit la vitesse de la main, et
+    /// le retour au repos qui repasse par les poses intermédiaires.
+    ///
+    /// Seulement significatif quand `attachment` vaut `Dragged` ; réinitialisé
+    /// sur le curseur au moment où on l'attrape.
+    pub pied_x: f32,
+    pub pied_vx: f32,
 }
 
 impl Character {
@@ -110,6 +123,10 @@ impl Character {
             pose_depuis: Duration::ZERO,
             pos_connue,
             intention: None,
+            // Sans objet tant qu'il n'est pas porté ; `reflex` les
+            // réinitialise sur le curseur à l'instant de l'attrapage.
+            pied_x: 0.0,
+            pied_vx: 0.0,
         }
     }
 

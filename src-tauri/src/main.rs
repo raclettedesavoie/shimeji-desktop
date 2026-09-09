@@ -375,11 +375,6 @@ fn boucle(
     // que c'est ce que `setup` a posé juste avant de lancer ce thread.
     let mut clics_traversent = true;
 
-    // Position de la souris à l'image précédente, pour en dériver la vitesse
-    // horizontale — le balancier du personnage porté en a besoin, et les
-    // réflexes ne voient qu'une image à la fois.
-    let mut souris_precedente: Option<crate::geom::Point> = None;
-
     loop {
         // `Instant` ici et non l'horloge injectée : c'est la CADENCE, pas le
         // temps du comportement. La distinction compte — le comportement doit
@@ -454,17 +449,8 @@ fn boucle(
             clics_traversent = doit_traverser;
         }
 
-        // `match` explicite plutôt qu'un combinateur : à la première image
-        // il n'y a pas de position précédente, donc pas de vitesse.
-        let souris_vx = match souris_precedente {
-            Some(p) => (m.pos.x - p.x) / PERIODE.as_secs_f32(),
-            None => 0.0,
-        };
-        souris_precedente = Some(m.pos);
-
         let entrees = Entrees {
             souris: m.pos,
-            souris_vx,
             bouton_gauche: m.left_down,
             curseur_sur_le_personnage: sur_le_personnage,
         };

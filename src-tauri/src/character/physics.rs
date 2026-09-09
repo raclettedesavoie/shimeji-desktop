@@ -12,25 +12,60 @@
 use crate::geom::{Face, Point, Vec2};
 use crate::world::{PlatformId, World};
 
-/// Accélération de la pesanteur.
-///
-/// Réglée à l'œil, pas dérivée du réel : à 9,81 m/s² et ~3 800 px/m, un
-/// personnage tomberait de 1 000 px en 0,45 s — trop vif pour qu'on suive la
-/// chute du regard. 1 400 px/s² donne ~1,2 s sur la même hauteur, ce qui se
-/// regarde. Passera dans `config.json` au plan 1b.
-pub const GRAVITE: f32 = 1400.0;
+// ── La chute, reprise de Shimeji-ee ────────────────────────────────────
+//
+// `src/com/group_finity/mascot/action/Fall.java` :
+//
+//     DEFAULT_GRAVITY     = 2      (px par tick, ajoutés à la vitesse)
+//     DEFAULT_RESISTANCEY = 0.1    (fraction de la vitesse retirée par tick)
+//     DEFAULT_RESISTANCEX = 0.05
+//
+//     vy = vy - vy * RESISTANCEY + GRAVITY
+//     vx = vx - vx * RESISTANCEX
+//
+// **Il y a donc un frottement de l'air**, que la première version du projet
+// n'avait pas — d'où une chute nettement trop rapide. La vitesse limite de
+// Shimeji-ee est `GRAVITY / RESISTANCEY = 20` px/tick, soit **500 px/s**,
+// contre 1 600 px/s de plafond dur ici. C'est un facteur 3.
+//
+// Conversion des constantes par tick (`TICK_INTERVAL = 40 ms`, donc
+// 25 ticks/s) en constantes par seconde. En notant `V` la vitesse en px/s :
+//
+//     dV/dt = 25·GRAVITY/T − (RESISTANCEY/T)·V
+//           = 1250 − 2,5·V
+//
+// La vitesse limite se retrouve bien : 1250 / 2,5 = 500 px/s.
 
-/// Vitesse de chute maximale.
+/// Accélération de la pesanteur, en px/s².
 ///
-/// Existe pour une raison technique, pas esthétique : la détection
-/// d'atterrissage teste le **segment** parcouru dans une image. Sans plafond,
-/// un personnage lâché très haut parcourrait plusieurs milliers de pixels par
-/// image, enjamberait plusieurs plateformes d'un coup, et le choix de celle
-/// sur laquelle atterrir deviendrait arbitraire.
+/// `25 × GRAVITY / TICK_INTERVAL` = `25 × 2 / 0,04`.
+pub const GRAVITE: f32 = 1250.0;
+
+/// Frottement de l'air vertical, en s⁻¹. `RESISTANCEY / TICK_INTERVAL`.
 ///
-/// À 60 Hz, 1 600 px/s vaut ~27 px par image : bien moins que la moindre
+/// C'est lui qui donne la vitesse limite, et lui qui manquait : sans
+/// frottement, une chute de 1 000 px prenait 1,2 s au lieu de 2,3 s.
+pub const FROTTEMENT_CHUTE_Y: f32 = 2.5;
+
+/// Frottement horizontal, en s⁻¹. `RESISTANCEX / TICK_INTERVAL`.
+///
+/// L'élan horizontal d'un personnage lâché en marchant **décroît** donc.
+/// La première version le conservait indéfiniment, ce qui donnait des
+/// trajectoires trop plates.
+pub const FROTTEMENT_CHUTE_X: f32 = 1.25;
+
+/// Plafond dur de la vitesse de chute, en px/s.
+///
+/// **Garde-fou, jamais atteint en pratique** : le frottement plafonne
+/// naturellement à ~500 px/s. Il ne sert que si un lâcher venait avec une
+/// vitesse initiale énorme, et sa raison est technique — la détection
+/// d'atterrissage teste le **segment** parcouru dans une image, et un
+/// segment de plusieurs milliers de pixels enjamberait plusieurs
+/// plateformes, rendant le choix arbitraire.
+///
+/// À 60 Hz, 900 px/s vaut 15 px par image : bien moins que la moindre
 /// plateforme.
-pub const VITESSE_CHUTE_MAX: f32 = 1600.0;
+pub const VITESSE_CHUTE_MAX: f32 = 900.0;
 
 /// Vitesse de marche.
 ///
@@ -46,14 +81,46 @@ pub const VITESSE_MARCHE: f32 = 50.0;
 /// `-8,0` (200 px/s) qu'on n'utilise pas encore.
 pub const VITESSE_COURSE: f32 = 100.0;
 
-/// Au-delà de cette vitesse de déplacement horizontal de la souris, le
-/// personnage porté se met à balancer (spec §3.3, poses `draggedLeft` /
-/// `draggedRight`).
+// ── Le balancier du personnage porté ──────────────────────────────────
+//
+// **Ce n'est pas une animation, c'est un ressort amorti.** Découvert dans
+// `action/Dragged.java` :
+//
+//     footDx = (footDx + (curseurX − footX) × 0,1) × 0,8
+//     footX += footDx
+//
+// Un point « pied » poursuit le curseur avec un ressort (raideur 0,1) et un
+// amortissement (facteur 0,8 par tick). Son **retard** sur le curseur choisit
+// ensuite la frame, par les conditions de l'action `Pinched`.
+//
+// Trois propriétés en découlent, gratuitement, et ce sont exactement les
+// trois qui manquaient :
+//   · l'amplitude croît avec la vitesse du curseur ;
+//   · le retour au repos passe par les frames intermédiaires ;
+//   · le système est sous-amorti, donc il oscille un peu avant de se poser.
+//
+// Conversion des constantes par tick en constantes par seconde, en notant
+// `x` la position du pied et `V` sa vitesse en px/s :
+//
+//     dV/dt = RAIDEUR·(curseur − x) − AMORTISSEMENT·V
+
+/// Raideur du ressort du balancier, en s⁻². `0,08 / TICK_INTERVAL²`.
+pub const BALANCIER_RAIDEUR: f32 = 50.0;
+
+/// Amortissement du balancier, en s⁻¹. `0,2 / TICK_INTERVAL`.
 ///
-/// Réglée à l'œil, celle-là : Shimeji-ee n'a pas d'équivalent, son `Pinched`
-/// battant indépendamment de la souris. 120 px/s est franchement dépassé par
-/// un glisser volontaire et jamais atteint par un tremblement de main.
-pub const VITESSE_BALANCIER: f32 = 120.0;
+/// Le rapport d'amortissement vaut `5 / (2·√50) ≈ 0,35` : **sous-amorti**.
+/// C'est voulu — un système critique reviendrait au repos sans osciller, et
+/// on perdrait le balancement qui fait tout l'intérêt.
+pub const BALANCIER_AMORTISSEMENT: f32 = 5.0;
+
+/// Les trois seuils de retard, en pixels, qui choisissent la frame.
+///
+/// Repris tels quels des conditions de l'action `Pinched` : `±10`, `±30`,
+/// `±50`. Ils sont en pixels et non en vitesse, et c'est cohérent — à vitesse
+/// constante `s`, le régime permanent du ressort donne un retard de `s/10`,
+/// donc 300 px/s de glisser produisent 30 px de retard.
+pub const BALANCIER_SEUILS: [f32; 3] = [10.0, 30.0, 50.0];
 
 /// Un pas d'intégration de la chute libre.
 ///
@@ -65,17 +132,100 @@ pub const VITESSE_BALANCIER: f32 = 120.0;
 /// Fonction pure : elle rend le nouvel état au lieu de modifier l'ancien.
 /// C'est ce qui la rend testable en boucle dans un test, comme ci-dessous.
 pub fn integrer_chute(pos: Point, vel: Vec2, dt: f32) -> (Point, Vec2) {
+    // Pesanteur **moins frottement**, exactement comme `Fall.java`. Le
+    // frottement est proportionnel à la vitesse : c'est lui qui plafonne
+    // naturellement la chute à ~500 px/s, sans plafond dur.
+    //
     // `min` et non `clamp` : seule la chute est plafonnée. Une vitesse
     // ascendante (personnage lâché vers le haut) n'a pas de raison de l'être.
-    let vy = (vel.y + GRAVITE * dt).min(VITESSE_CHUTE_MAX);
+    let vy = (vel.y + (GRAVITE - FROTTEMENT_CHUTE_Y * vel.y) * dt).min(VITESSE_CHUTE_MAX);
 
-    // La vitesse horizontale n'est pas amortie : le personnage garde son
-    // élan. C'est ce qui rend le lâcher agréable plutôt que raide.
-    let nouvelle_vel = Vec2::new(vel.x, vy);
+    // L'élan horizontal décroît aussi (`RESISTANCEX = 0,05`). Sans ça, un
+    // personnage lâché en courant garderait sa vitesse jusqu'au sol et la
+    // trajectoire paraîtrait plate.
+    let vx = vel.x - FROTTEMENT_CHUTE_X * vel.x * dt;
 
+    let nouvelle_vel = Vec2::new(vx, vy);
     let nouvelle_pos = Point::new(pos.x + nouvelle_vel.x * dt, pos.y + nouvelle_vel.y * dt);
 
     (nouvelle_pos, nouvelle_vel)
+}
+
+/// Un pas du ressort amorti du balancier de portage.
+///
+/// Rend la nouvelle position et la nouvelle vitesse du point « pied », qui
+/// poursuit `curseur_x`. Voir le bandeau de constantes ci-dessus pour le
+/// modèle et sa provenance.
+///
+/// Fonction pure, comme `integrer_chute` : c'est ce qui permet de tester le
+/// balancier sans souris, sans fenêtre et sans personnage.
+pub fn integrer_balancier(pied_x: f32, pied_vx: f32, curseur_x: f32, dt: f32) -> (f32, f32) {
+    // Euler semi-implicite ici aussi : la vitesse avant la position. Sur un
+    // ressort, l'explicite peut carrément diverger si le pas est grand.
+    let acceleration = BALANCIER_RAIDEUR * (curseur_x - pied_x) - BALANCIER_AMORTISSEMENT * pied_vx;
+    let nouvelle_vx = pied_vx + acceleration * dt;
+    let nouvelle_x = pied_x + nouvelle_vx * dt;
+    (nouvelle_x, nouvelle_vx)
+}
+
+/// Quel **niveau** de balancement afficher, d'après le retard du pied sur le
+/// curseur.
+///
+/// Rend `(cote, niveau)` où `cote` est le signe du retard et `niveau` va de 0
+/// (au repos) à 3 (balancement maximal).
+///
+/// Les seuils `±10`, `±30`, `±50` viennent des conditions de l'action
+/// `Pinched`.
+///
+/// > ⚠️ **Un écart volontaire, et c'est une correction de bug.** Dans le XML
+/// > de Shimeji-ee, les conditions sont évaluées dans l'ordre et
+/// > `FootX < cursor.x` (soit `d < 0`) est testée **avant** la bande neutre
+/// > `-10 < d < +10`. Cette bande est donc **inatteignable pour un retard
+/// > négatif** : un pied immobilisé un dixième de pixel à gauche du curseur
+/// > garde la pose 5 indéfiniment, au lieu de pendre droit.
+/// >
+/// > Ce n'est pas théorique : c'est exactement là que le ressort se pose
+/// > après avoir oscillé, donc le personnage terminait **tout portage** dans
+/// > une pose légèrement penchée. On teste donc la bande neutre **en
+/// > premier**, et symétriquement — ce qui est manifestement l'intention de
+/// > la condition `±10` d'origine.
+pub fn niveau_balancier(retard: f32) -> (Cote, u8) {
+    // La bande neutre d'abord, et symétrique. Voir l'avertissement ci-dessus.
+    if retard.abs() < BALANCIER_SEUILS[0] {
+        return (Cote::Aucun, 0);
+    }
+
+    if retard < 0.0 {
+        if retard <= -BALANCIER_SEUILS[2] {
+            (Cote::PiedAGauche, 3)
+        } else if retard <= -BALANCIER_SEUILS[1] {
+            (Cote::PiedAGauche, 2)
+        } else {
+            (Cote::PiedAGauche, 1)
+        }
+    } else if retard >= BALANCIER_SEUILS[2] {
+        (Cote::PiedADroite, 3)
+    } else if retard >= BALANCIER_SEUILS[1] {
+        (Cote::PiedADroite, 2)
+    } else {
+        (Cote::PiedADroite, 1)
+    }
+}
+
+/// De quel côté le pied traîne.
+///
+/// **Attention au sens, c'est le point qui a été inversé une fois :** le pied
+/// traîne à gauche quand le curseur va à **droite**. Et comme le pied part à
+/// gauche, la **tête penche à droite**. C'est un pendule, il traîne derrière.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cote {
+    /// Retard négatif : `footX < curseurX`. Curseur vers la droite, tête à
+    /// droite. Frames 5, 7, 9 chez Shimeji-ee.
+    PiedAGauche,
+    /// Retard positif. Curseur vers la gauche, tête à gauche. Frames 6, 8, 10.
+    PiedADroite,
+    /// Zone neutre : il pend droit. Frame 1.
+    Aucun,
 }
 
 /// Le personnage a-t-il touché une plateforme en passant de `avant` à
@@ -189,12 +339,29 @@ mod tests {
     }
 
     #[test]
-    fn la_chute_conserve_la_vitesse_horizontale() {
-        // Un personnage lâché en marchant garde son élan : c'est ce qui rend
-        // le lâcher agréable plutôt que raide.
+    fn l_elan_horizontal_decroit_sans_s_annuler() {
+        // Un personnage lâché en marchant garde son élan, mais **amorti** :
+        // `Fall.java` retire `RESISTANCEX = 0,05` de la vitesse à chaque
+        // tick. La première version du projet ne l'amortissait pas du tout,
+        // ce qui donnait des trajectoires trop plates.
         let (pos, vel) = integrer_chute(Point::new(100.0, 0.0), Vec2::new(80.0, 0.0), DT);
-        assert_eq!(vel.x, 80.0);
-        assert!(pos.x > 100.0);
+
+        assert!(vel.x < 80.0, "l'élan doit décroître");
+        assert!(vel.x > 70.0, "mais pas s'effondrer en une image");
+        assert!(pos.x > 100.0, "il avance quand même");
+    }
+
+    #[test]
+    fn l_elan_horizontal_finit_par_s_eteindre() {
+        // Sur plusieurs secondes, le frottement doit l'avoir presque annulé.
+        let mut pos = Point::new(0.0, 0.0);
+        let mut vel = Vec2::new(200.0, 0.0);
+        for _ in 0..(60 * 4) {
+            let (p, v) = integrer_chute(pos, vel, DT);
+            pos = p;
+            vel = v;
+        }
+        assert!(vel.x.abs() < 5.0, "élan résiduel {} px/s", vel.x);
     }
 
     #[test]
@@ -202,10 +369,14 @@ mod tests {
         // Le test que la spec §10.1 demande : « intégration déterministe,
         // hauteur et durée connues ».
         //
-        // On intègre 1 seconde à 60 Hz depuis l'immobilité et on vérifie que
-        // la distance parcourue est proche de ½·g·t² = 700 px. L'écart vient
-        // du pas discret (Euler semi-implicite surestime légèrement), d'où
-        // la tolérance.
+        // **Avec frottement, ce n'est plus ½·g·t².** La solution de
+        // `dV/dt = G − k·V` depuis l'immobilité donne, en une seconde :
+        //
+        //     y(t) = (G/k)·(t − (1 − e^{−k·t})/k)
+        //          = 500 · (1 − 0,918/2,5) ≈ 316 px
+        //
+        // Sans frottement on aurait 625 px : la chute est donc **deux fois
+        // plus lente**, et c'est exactement ce que Shimeji-ee fait.
         let mut pos = Point::new(0.0, 0.0);
         let mut vel = Vec2::zero();
 
@@ -215,21 +386,34 @@ mod tests {
             vel = v;
         }
 
-        let theorique = 0.5 * GRAVITE * 1.0;
+        let vitesse_limite = GRAVITE / FROTTEMENT_CHUTE_Y;
+        let theorique =
+            vitesse_limite * (1.0 - (1.0 - (-FROTTEMENT_CHUTE_Y).exp()) / FROTTEMENT_CHUTE_Y);
+
         assert!(
             (pos.y - theorique).abs() < theorique * 0.03,
-            "chute de {} px, théorie {} px",
+            "chute de {} px en 1 s, théorie {} px",
             pos.y,
             theorique
+        );
+
+        // Et le point qui compte pour l'œil : c'est bien plus lent que sans
+        // frottement.
+        assert!(
+            pos.y < 0.5 * GRAVITE * 0.7,
+            "la chute devrait être nettement plus lente que ½·g·t²"
         );
     }
 
     #[test]
-    fn la_vitesse_de_chute_est_plafonnee() {
-        // Sans plafond, un personnage lâché très haut traverserait le sol
-        // entre deux images : la détection d'atterrissage teste un segment,
-        // mais un segment de 3 000 px enjamberait plusieurs plateformes et
-        // rendrait le choix arbitraire.
+    fn la_chute_atteint_sa_vitesse_limite_par_frottement() {
+        // **C'est le frottement qui plafonne, pas le plafond dur.** La
+        // vitesse limite est `GRAVITE / FROTTEMENT_CHUTE_Y` = 500 px/s, ce
+        // qui correspond aux 20 px/tick de Shimeji-ee.
+        //
+        // Le plafond dur `VITESSE_CHUTE_MAX` n'est donc jamais atteint en
+        // chute libre : il ne sert que de garde-fou si un lâcher venait avec
+        // une vitesse initiale énorme.
         let mut vel = Vec2::new(0.0, 0.0);
         let mut pos = Point::new(0.0, 0.0);
         for _ in 0..600 {
@@ -237,6 +421,21 @@ mod tests {
             pos = p;
             vel = v;
         }
+
+        let limite = GRAVITE / FROTTEMENT_CHUTE_Y;
+        assert!(
+            (vel.y - limite).abs() < 1.0,
+            "vitesse limite {} px/s, attendu {}",
+            vel.y,
+            limite
+        );
+        assert!(vel.y < VITESSE_CHUTE_MAX, "le plafond dur ne doit pas mordre");
+    }
+
+    #[test]
+    fn le_plafond_dur_borne_une_vitesse_initiale_absurde() {
+        // Le garde-fou existe pour ça, et pour rien d'autre.
+        let (_, vel) = integrer_chute(Point::new(0.0, 0.0), Vec2::new(0.0, 50_000.0), DT);
         assert_eq!(vel.y, VITESSE_CHUTE_MAX);
     }
 
@@ -326,6 +525,83 @@ mod tests {
             Point::new(300.0, 1032.0)
         )
         .is_some());
+    }
+
+    #[test]
+    fn la_bande_neutre_du_balancier_est_symetrique() {
+        // **Le test qui garde la correction du bug d'ordre de Shimeji-ee.**
+        // Un retard négatif minuscule doit donner le repos, pas un
+        // balancement — sinon le personnage termine chaque portage dans une
+        // pose penchée, puisque c'est là que le ressort se pose.
+        assert_eq!(niveau_balancier(-0.001), (Cote::Aucun, 0));
+        assert_eq!(niveau_balancier(0.0), (Cote::Aucun, 0));
+        assert_eq!(niveau_balancier(9.9), (Cote::Aucun, 0));
+        assert_eq!(niveau_balancier(-9.9), (Cote::Aucun, 0));
+    }
+
+    #[test]
+    fn les_niveaux_du_balancier_suivent_les_seuils_de_shimeji_ee() {
+        // Retard négatif = pied à gauche = curseur parti à droite.
+        assert_eq!(niveau_balancier(-15.0), (Cote::PiedAGauche, 1));
+        assert_eq!(niveau_balancier(-35.0), (Cote::PiedAGauche, 2));
+        assert_eq!(niveau_balancier(-80.0), (Cote::PiedAGauche, 3));
+
+        assert_eq!(niveau_balancier(15.0), (Cote::PiedADroite, 1));
+        assert_eq!(niveau_balancier(35.0), (Cote::PiedADroite, 2));
+        assert_eq!(niveau_balancier(80.0), (Cote::PiedADroite, 3));
+    }
+
+    #[test]
+    fn le_balancier_rattrape_le_curseur_et_s_y_arrete() {
+        // Curseur fixe : le ressort doit converger, et ne pas osciller
+        // éternellement.
+        let (mut x, mut v) = (0.0f32, 0.0f32);
+        for _ in 0..(60 * 3) {
+            let (nx, nv) = integrer_balancier(x, v, 500.0, DT);
+            x = nx;
+            v = nv;
+        }
+        assert!((x - 500.0).abs() < 1.0, "pied à {x}, curseur à 500");
+        assert!(v.abs() < 5.0, "il devrait s'être arrêté, v = {v}");
+    }
+
+    #[test]
+    fn le_retard_du_balancier_est_proportionnel_a_la_vitesse() {
+        // C'est ce qui donne « plus c'est rapide, plus il est balancé ».
+        // En régime permanent, retard = vitesse / (RAIDEUR/AMORTISSEMENT)
+        // = vitesse / 10.
+        let retard_a = |vitesse: f32| {
+            let (mut x, mut v) = (0.0f32, 0.0f32);
+            let mut curseur = 0.0f32;
+            for _ in 0..(60 * 3) {
+                curseur += vitesse * DT;
+                let (nx, nv) = integrer_balancier(x, v, curseur, DT);
+                x = nx;
+                v = nv;
+            }
+            x - curseur
+        };
+
+        let lent = retard_a(100.0).abs();
+        let vif = retard_a(500.0).abs();
+
+        assert!(lent < vif, "retard lent {lent}, vif {vif}");
+
+        // Le régime permanent théorique vaut `AMORTISSEMENT/RAIDEUR × v`,
+        // soit `v/10` — 50 px à 500 px/s. Le mesuré est plus petit d'un pas
+        // de curseur (`v × dt` = 8,3 px à 60 Hz), parce que la comparaison
+        // se fait APRÈS avoir avancé le curseur — et c'est exactement l'ordre
+        // dans lequel `avancer_balancier` opère.
+        //
+        // Conséquence assumée : à vitesse égale, le balancement est ~17 %
+        // moins ample que celui de Shimeji-ee. Si cela paraissait mou à
+        // l'usage, la correction propre serait de baisser les seuils de
+        // `BALANCIER_SEUILS`, pas de tripoter le ressort.
+        let theorique = 500.0 / 10.0 - 500.0 * DT;
+        assert!(
+            (vif - theorique).abs() < 3.0,
+            "retard à 500 px/s = {vif}, attendu ~{theorique}"
+        );
     }
 
     #[test]
