@@ -132,6 +132,29 @@ fn main() {
         return;
     }
 
+    // `--signaux` : imprime l'instantané de la sonde et sort.
+    //
+    // C'est la seule vérification possible des cinq appels Windows : aucun
+    // test ne peut savoir depuis combien de temps l'utilisateur n'a rien
+    // touché. Rendue scriptable plutôt que laissée à l'œil, comme le reste
+    // du projet — on peut la lancer deux fois à 5 s d'intervalle et vérifier
+    // que l'inactivité a bien augmenté de 5 s.
+    if args.iter().any(|a| a == "--signaux") {
+        probe::win32::activer_conscience_dpi();
+        let sonde = probe::win32::Win32Probe::new();
+        let s = sonde.signaux();
+        println!("inactivite        : {:.1} s", s.inactivite.as_secs_f32());
+        println!("appli active      : {}", s.appli_active.as_deref().unwrap_or("(aucune)"));
+        println!("heure locale      : {} h", s.heure);
+        match s.batterie.pourcent {
+            Some(p) => println!("batterie          : {p} %"),
+            None => println!("batterie          : (aucune, ou inconnue)"),
+        }
+        println!("sur secteur       : {}", s.batterie.sur_secteur);
+        println!("session verrouillee : {}", s.session_verrouillee);
+        return;
+    }
+
     lancer_application();
 }
 

@@ -4,9 +4,9 @@
 //! constructeurs de commodité reproduisent des topologies nommées, ce qui
 //! rend les attentes des tests lisibles sans commentaire.
 
-use super::{MouseState, ScreenInfo, SystemProbe};
+use super::{Batterie, MouseState, ScreenInfo, Signaux, SystemProbe};
 use crate::geom::{Point, Rect};
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 
 pub struct FakeProbe {
     screens: Vec<ScreenInfo>,
@@ -14,6 +14,11 @@ pub struct FakeProbe {
     // `&self`, donc un test qui n'a qu'une référence partagée doit pouvoir
     // bouger la souris. `MouseState` est `Copy`, ce que `Cell` exige.
     mouse: Cell<MouseState>,
+
+    // `RefCell` et non `Cell` : `Signaux` n'est pas `Copy`, il porte le nom
+    // de l'application active. `Cell::get` exige `Copy` ; `RefCell` prête à
+    // la place, au prix d'un compteur d'emprunts vérifié à l'exécution.
+    signaux: RefCell<Signaux>,
 }
 
 // `allow(dead_code)` : ces éléments SONT utilisés — par les tests. Mais un
@@ -29,6 +34,20 @@ impl FakeProbe {
             mouse: Cell::new(MouseState {
                 pos: Point::new(0.0, 0.0),
                 left_down: false,
+            }),
+
+            // Le défaut est délibérément « rien de spécial » : aucun signal
+            // ne mord, donc un test d'étape 1 qui ignore les signaux garde
+            // exactement le comportement qu'il avait.
+            signaux: RefCell::new(Signaux {
+                inactivite: std::time::Duration::ZERO,
+                appli_active: None,
+                heure: 15,
+                batterie: Batterie {
+                    pourcent: None,
+                    sur_secteur: true,
+                },
+                session_verrouillee: false,
             }),
         }
     }
@@ -87,6 +106,17 @@ impl FakeProbe {
     pub fn set_mouse(&self, pos: Point, left_down: bool) {
         self.mouse.set(MouseState { pos, left_down });
     }
+
+    pub fn set_signaux(&self, s: Signaux) {
+        *self.signaux.borrow_mut() = s;
+    }
+
+    /// Raccourci pour le cas le plus fréquent des tests : « il est parti
+    /// depuis N secondes ». Écrire les cinq champs à chaque fois noierait
+    /// l'intention du test dans du remplissage.
+    pub fn set_inactivite(&self, d: std::time::Duration) {
+        self.signaux.borrow_mut().inactivite = d;
+    }
 }
 
 impl SystemProbe for FakeProbe {
@@ -96,6 +126,13 @@ impl SystemProbe for FakeProbe {
 
     fn mouse(&self) -> MouseState {
         self.mouse.get()
+    }
+
+    fn signaux(&self) -> Signaux {
+        // `clone` : le trait rend une valeur possédée, et `Signaux` n'est pas
+        // `Copy`. Deux fois par seconde, une chaîne de vingt caractères —
+        // sans importance.
+        self.signaux.borrow().clone()
     }
 }
 
@@ -131,5 +168,41 @@ mod tests {
         let e = p.screens();
         assert!(e[1].work_area.left() < 0.0);
         assert_eq!(e[1].scale, 2.0);
+    }
+
+    #[test]
+    fn les_signaux_se_reglent_a_travers_une_reference_partagee() {
+        // Même contrainte que pour la souris : le trait expose `&self`, donc
+        // un test qui n'a qu'une référence partagée doit pouvoir changer les
+        // signaux. `Signaux` n'étant pas `Copy` (il porte une `String`),
+        // c'est un `RefCell` et non un `Cell`.
+        let p = FakeProbe::un_ecran();
+        let vue: &dyn SystemProbe = &p;
+
+        // Le défaut : personne n'est parti, il est 15 h, sur secteur, session
+        // ouverte. C'est « rien de spécial », comme dans les tests de
+        // `signals.rs`.
+        let d = vue.signaux();
+        assert_eq!(d.inactivite, std::time::Duration::ZERO);
+        assert!(!d.session_verrouillee);
+        assert_eq!(d.heure, 15);
+
+        p.set_signaux(Signaux {
+            inactivite: std::time::Duration::from_secs(300),
+            appli_active: Some("Code.exe".to_string()),
+            heure: 23,
+            batterie: Batterie {
+                pourcent: Some(7),
+                sur_secteur: false,
+            },
+            session_verrouillee: true,
+        });
+
+        let s = vue.signaux();
+        assert_eq!(s.inactivite, std::time::Duration::from_secs(300));
+        assert_eq!(s.appli_active.as_deref(), Some("Code.exe"));
+        assert_eq!(s.heure, 23);
+        assert_eq!(s.batterie.pourcent, Some(7));
+        assert!(s.session_verrouillee);
     }
 }

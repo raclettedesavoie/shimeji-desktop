@@ -108,4 +108,11 @@ pub trait SystemProbe {
     fn screens(&self) -> Vec<ScreenInfo>;
 
     fn mouse(&self) -> MouseState;
+
+    /// Tout ce qui change lentement, lu **d'un coup** (design §5.5 : ~2 Hz).
+    ///
+    /// Appelée deux fois par seconde et pas davantage : aucun de ces signaux
+    /// ne bouge vite, et cinq appels système à 60 Hz seraient 300 appels par
+    /// seconde pour des valeurs qui changent toutes les minutes.
+    fn signaux(&self) -> Signaux;
 }

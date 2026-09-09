@@ -150,6 +150,208 @@ unsafe extern "system" fn collecte_moniteur(
     BOOL(1)
 }
 
+// ── Les signaux (étape 2) ───────────────────────────────────────────────
+//
+// Les cinq appels ci-dessous ont été vérifiés dans les sources de
+// `windows` 0.61.3 le 2026-09-09 — signatures comprises. Les emplacements
+// sont dans `docs/specs/2026-09-09-etape-2-design.md` §3.
+
+use windows::Win32::System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
+use windows::Win32::System::RemoteDesktop::{
+    WTSFreeMemory, WTSQuerySessionInformationW, WTSSessionInfoEx, WTSINFOEXW,
+    WTS_SESSIONSTATE_LOCK,
+};
+use windows::Win32::System::SystemInformation::{GetLocalTime, GetTickCount};
+use windows::Win32::System::Threading::{
+    OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+    PROCESS_QUERY_LIMITED_INFORMATION,
+};
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
+use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
+
+/// La session courante, pour `WTSQuerySessionInformationW`.
+///
+/// ⚠️ **`WTS_CURRENT_SESSION` n'existe pas dans la crate `windows`** — vérifié
+/// dans les sources. La valeur est `(DWORD)-1` dans `wtsapi32.h`, donc
+/// `u32::MAX`. On la définit ici, avec ce commentaire, plutôt que d'écrire un
+/// `0xFFFFFFFF` nu que personne ne pourrait relier à sa source.
+const SESSION_COURANTE: u32 = u32::MAX;
+
+/// Depuis combien de temps l'utilisateur n'a touché à rien.
+///
+/// ⚠️ **Ce compteur ne dit JAMAIS quelle touche a été pressée** — c'est
+/// l'exclusion « aucune capture de frappe » du besoin, et c'est la seule
+/// raison pour laquelle ce signal est acceptable.
+fn inactivite() -> std::time::Duration {
+    // `cbSize` doit être renseigné AVANT l'appel : c'est ainsi que Windows
+    // sait quelle version de la structure on lui passe. Oublié, l'appel
+    // échoue sans autre explication.
+    let mut lii = LASTINPUTINFO {
+        cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32,
+        dwTime: 0,
+    };
+
+    let ok = unsafe { GetLastInputInfo(&mut lii) };
+    if !ok.as_bool() {
+        // Échec : on rend zéro, soit « l'utilisateur vient d'agir ». C'est le
+        // défaut prudent — il ne s'endormira pas à cause d'une erreur de
+        // sonde, alors que rendre « inactif depuis 10 min » l'endormirait à
+        // tort et sans explication.
+        return std::time::Duration::ZERO;
+    }
+
+    let maintenant = unsafe { GetTickCount() };
+
+    // `wrapping_sub` et non `-` : `GetTickCount` repasse à zéro au bout de
+    // 49,7 jours de fonctionnement. La soustraction qui déborde rend le bon
+    // écart malgré le tour ; une soustraction ordinaire paniquerait en debug.
+    let ecart_ms = maintenant.wrapping_sub(lii.dwTime);
+    std::time::Duration::from_millis(ecart_ms as u64)
+}
+
+/// Le nom de fichier de l'exécutable au premier plan — `"Code.exe"`.
+fn appli_active() -> Option<String> {
+    let hwnd = unsafe { GetForegroundWindow() };
+    if hwnd.is_invalid() {
+        // Aucune fenêtre au premier plan : ça arrive pendant un changement de
+        // bureau, ou sur l'écran de verrouillage.
+        return None;
+    }
+
+    let mut pid: u32 = 0;
+    unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+    if pid == 0 {
+        return None;
+    }
+
+    // `PROCESS_QUERY_LIMITED_INFORMATION` et non `PROCESS_QUERY_INFORMATION` :
+    // le droit limité suffit à lire le chemin de l'image, et il est accordé
+    // même sur des processus d'un autre niveau d'intégrité. Le droit complet
+    // échouerait sur toute application élevée.
+    //
+    // `ok()?` : l'échec est normal (processus protégé, processus qui vient de
+    // mourir) et n'est pas une erreur à signaler — on rend `None`.
+    let processus = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }.ok()?;
+
+    let mut tampon = [0u16; 260]; // MAX_PATH
+    let mut taille = tampon.len() as u32;
+
+    let resultat = unsafe {
+        QueryFullProcessImageNameW(
+            processus,
+            PROCESS_NAME_WIN32,
+            windows::core::PWSTR(tampon.as_mut_ptr()),
+            &mut taille,
+        )
+    };
+
+    // Le handle se ferme dans TOUS les cas, y compris en cas d'échec de
+    // l'appel ci-dessus. C'est pour ça qu'on ne fait pas `?` sur `resultat`
+    // avant cette ligne : un `return` précoce fuirait le handle.
+    unsafe {
+        let _ = windows::Win32::Foundation::CloseHandle(processus);
+    };
+    resultat.ok()?;
+
+    // `taille` contient maintenant la longueur écrite, sans le zéro final.
+    let chemin = String::from_utf16_lossy(&tampon[..taille as usize]);
+
+    // Le NOM seul, jamais le chemin : c'est ce que l'utilisateur écrira dans
+    // `config.json`, et un chemin complet y serait indevinable.
+    //
+    // `rsplit('\\').next()` rend le dernier segment ; sur un chemin sans
+    // antislash il rend la chaîne entière, ce qui est correct.
+    chemin.rsplit('\\').next().map(|s| s.to_string())
+}
+
+/// L'heure locale, 0 à 23.
+///
+/// `GetLocalTime` et non l'heure UTC : « il est tard le soir » se juge à
+/// l'heure de l'utilisateur. Et surtout pas la crate `chrono` — ce serait une
+/// dépendance entière pour lire un `u16`.
+fn heure_locale() -> u8 {
+    let t = unsafe { GetLocalTime() };
+    // `wHour` est un `u16` de 0 à 23 : le `as u8` ne peut pas tronquer.
+    t.wHour as u8
+}
+
+fn batterie() -> super::Batterie {
+    let mut etat = SYSTEM_POWER_STATUS::default();
+    if unsafe { GetSystemPowerStatus(&mut etat) }.is_err() {
+        // Sonde en échec : on rend « sur secteur, pourcentage inconnu », donc
+        // aucun biais. Le personnage ne doit pas fatiguer à cause d'une
+        // erreur de lecture.
+        return super::Batterie {
+            pourcent: None,
+            sur_secteur: true,
+        };
+    }
+
+    // ⚠️ `BatteryLifePercent` vaut **255** quand le pourcentage est inconnu —
+    // ce qui est le cas sur toute machine sans batterie. Le rendre tel quel
+    // donnerait « 255 % », et le comparer à un seuil donnerait « pas de
+    // batterie faible » par accident plutôt que par raison.
+    let pourcent = if etat.BatteryLifePercent <= 100 {
+        Some(etat.BatteryLifePercent)
+    } else {
+        None
+    };
+
+    // `ACLineStatus` : 0 hors secteur, 1 sur secteur, 255 inconnu. On traite
+    // « inconnu » comme « sur secteur », le défaut qui ne fatigue pas.
+    let sur_secteur = etat.ACLineStatus != 0;
+
+    super::Batterie {
+        pourcent,
+        sur_secteur,
+    }
+}
+
+/// La session est-elle verrouillée ?
+fn session_verrouillee() -> bool {
+    let mut tampon = windows::core::PWSTR::null();
+    let mut octets: u32 = 0;
+
+    // `None` pour le serveur = la machine locale.
+    let appel = unsafe {
+        WTSQuerySessionInformationW(
+            None,
+            SESSION_COURANTE,
+            WTSSessionInfoEx,
+            &mut tampon,
+            &mut octets,
+        )
+    };
+
+    if appel.is_err() || tampon.is_null() {
+        // On rend « déverrouillée » : le défaut qui laisse le personnage
+        // vivre. Le contraire le ferait disparaître sur une erreur de sonde,
+        // ce qui ressemblerait à un plantage.
+        return false;
+    }
+
+    // `WTSQuerySessionInformationW` ALLOUE : il faut libérer avec
+    // `WTSFreeMemory`, sinon on fuit une centaine d'octets deux fois par
+    // seconde — soit ~17 Mo par jour.
+    //
+    // On lit d'abord, on libère ensuite, et on ne sort qu'après.
+    let verrouillee = unsafe {
+        let info = &*(tampon.0 as *const WTSINFOEXW);
+
+        // `Level` doit valoir 1 pour que l'union porte un
+        // `WTSInfoExLevel1`. Lire l'union sans vérifier serait une lecture
+        // de mémoire non initialisée.
+        if info.Level == 1 {
+            info.Data.WTSInfoExLevel1.SessionFlags == WTS_SESSIONSTATE_LOCK as i32
+        } else {
+            false
+        }
+    };
+
+    unsafe { WTSFreeMemory(tampon.0 as *mut core::ffi::c_void) };
+    verrouillee
+}
+
 impl SystemProbe for Win32Probe {
     fn screens(&self) -> Vec<ScreenInfo> {
         let mut ecrans: Vec<ScreenInfo> = Vec::new();
@@ -190,6 +392,16 @@ impl SystemProbe for Win32Probe {
         MouseState {
             pos: Point::new(p.x as f32, p.y as f32),
             left_down,
+        }
+    }
+
+    fn signaux(&self) -> super::Signaux {
+        super::Signaux {
+            inactivite: inactivite(),
+            appli_active: appli_active(),
+            heure: heure_locale(),
+            batterie: batterie(),
+            session_verrouillee: session_verrouillee(),
         }
     }
 }
