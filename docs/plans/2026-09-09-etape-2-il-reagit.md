@@ -908,11 +908,20 @@ use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThre
 
 /// La session courante, pour `WTSQuerySessionInformationW`.
 ///
-/// ⚠️ **`WTS_CURRENT_SESSION` n'existe pas dans la crate `windows`** — vérifié
-/// dans les sources. La valeur est `(DWORD)-1` dans `wtsapi32.h`, donc
-/// `u32::MAX`. On la définit ici, avec ce commentaire, plutôt que d'écrire un
-/// `0xFFFFFFFF` nu que personne ne pourrait relier à sa source.
-const SESSION_COURANTE: u32 = u32::MAX;
+/// ⚠️ **Rectification du 2026-09-10.** Ce bloc affirmait que
+/// `WTS_CURRENT_SESSION` n'existait pas dans la crate. **C'est faux** — il est
+/// à `RemoteDesktop/mod.rs:11313`, et ma commande de vérification le manquait
+/// à cause d'un `head -4`. **Importer la constante de la crate**, ne pas en
+/// définir une locale :
+///
+/// ```rust
+/// use windows::Win32::System::RemoteDesktop::WTS_CURRENT_SESSION;
+/// ```
+///
+/// Ce qui méritait d'être commenté, et qu'il faut garder, c'est la valeur
+/// elle-même : `wtsapi32.h` définit la session courante comme `(DWORD)-1`,
+/// donc `u32::MAX` — un entier qui ressemble à une erreur alors que c'en est
+/// la valeur normale.
 
 /// Depuis combien de temps l'utilisateur n'a touché à rien.
 ///
@@ -1194,8 +1203,8 @@ Cinq pieges, chacun commente a son emplacement :
   on aurait « 255 % » et un pet qui ne fatigue jamais par accident.
 - WTSQuerySessionInformationW ALLOUE : WTSFreeMemory obligatoire, sinon on
   fuit ~17 Mo par jour a 2 Hz. Et Level doit valoir 1 avant de lire l'union.
-- WTS_CURRENT_SESSION n'existe pas dans la crate : defini ici a u32::MAX,
-  avec le commentaire qui dit d'ou vient la valeur.
+- WTS_CURRENT_SESSION vaut u32::MAX, wtsapi32.h la definissant comme (DWORD)-1 :
+  une valeur qui ressemble a une erreur alors que c'est la normale.
 
 PROCESS_QUERY_LIMITED_INFORMATION et non PROCESS_QUERY_INFORMATION : le droit
 limite suffit a lire le chemin et fonctionne sur les applications elevees.

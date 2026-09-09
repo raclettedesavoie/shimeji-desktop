@@ -120,8 +120,13 @@ Relevé le 2026-09-09 dans les sources de la crate — pas supposé :
 
 Trois détails relevés en même temps, chacun étant une occasion de perdre une heure :
 
-- **`WTS_CURRENT_SESSION` n'existe pas dans la crate.** C'est `0xFFFF_FFFF` ; on le
-  définit nous-mêmes, avec le commentaire qui dit d'où il vient.
+- **`WTS_CURRENT_SESSION` vaut `0xFFFF_FFFF`** — `wtsapi32.h` la définit comme
+  `(DWORD)-1`, donc une valeur qui ressemble à une erreur alors que c'est la normale.
+  ⚠️ **Rectifié le 2026-09-10 :** ce paragraphe affirmait que la constante était absente
+  de la crate et qu'il fallait la redéfinir. Faux — elle est à
+  `RemoteDesktop/mod.rs:11313`. La commande de vérification qui a produit cette
+  affirmation coupait ses résultats à quatre lignes. **La leçon vaut plus que le
+  correctif : une vérification tronquée est indiscernable d'une vérification négative.**
 - `WTSQuerySessionInformationW` alloue : il **faut** `WTSFreeMemory` après lecture.
 - `SYSTEM_POWER_STATUS.BatteryFlag` vaut `128` quand il n'y a **pas** de batterie, et
   `BatteryLifePercent` vaut alors `255`. D'où le `Option<u8>` ci-dessus : `255` n'est
