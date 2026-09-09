@@ -124,18 +124,62 @@ Visual C++ — à **lier statiquement** pour que l'exe soit totalement autonome.
 
 ### Compiler et lancer
 
-Depuis **PowerShell** (voir piège 3). L'application n'existe pas encore ; le seul projet
-compilable à ce jour est le spike de l'étape 0, **archivé** depuis qu'il a répondu :
+Depuis **PowerShell** (voir piège 3).
 
 ```powershell
-cd C:\Users\alri\Documents\shimeji-desktop\docs\spike-etape-0
-cargo build          # ~2 min à froid
-cargo run            # ou .\target\debug\spike-overlay.exe
+cd C:\Users\alri\Documents\shimeji-desktop\src-tauri
+cargo test               # la suite complète, sans écran
+cargo run                # l'application : un personnage sur le sol
+cargo run -- --sim 30    # 30 min de comportement sans écran (spec §10.3)
 ```
 
-Voir `docs/spike-etape-0/README.md` pour ce qu'il prouve et la sonde de styles Win32
-qui l'accompagne. **Ne pas le faire évoluer vers l'application** : il lui manque
-délibérément les deux styles étendus que son analyse a révélés nécessaires.
+Le **spike de l'étape 0** est archivé dans `docs/spike-etape-0/` (`cargo run` y fonctionne
+aussi). Voir son `README.md` pour ce qu'il prouve et la sonde de styles Win32 qui
+l'accompagne. **Ne pas le faire évoluer vers l'application** : il lui manque délibérément
+les deux styles étendus que son analyse a révélés nécessaires.
+
+### ⚠️ Mesurer le CPU — vérification systématique
+
+**Un desktop pet qui consomme se fait désinstaller.** Toute modification du chemin à
+60 Hz — la boucle de `main.rs`, `render.rs`, la sonde — doit être suivie d'une **mesure**,
+pas d'une intuition.
+
+```powershell
+$p = Get-Process -Name shimeji-desktop
+$c = $p.CPU; Start-Sleep -Seconds 10; $p.Refresh()
+"$([math]::Round((($p.CPU - $c) / 10) * 100, 1)) % d'un coeur"
+```
+
+**Chiffres de référence, mesurés le 2026-09-09 en build *debug* :**
+
+| Configuration | CPU |
+|---|---|
+| application complète, `set_position` seul à 60 Hz | **~14 %** |
+| application avec `set_size` en plus à chaque image | ~15 % |
+| **spike de l'étape 0**, qui ne fait *que* déplacer une fenêtre à 60 Hz | **~18 %** |
+
+> **La leçon de ces trois lignes :** le spike consomme **plus** que l'application
+> complète. Le coût est donc **inhérent au déplacement d'une fenêtre en couche à 60 Hz** —
+> la composition alpha que Windows refait à chaque déplacement —, et **non** dans notre
+> physique, notre comportement ou notre rendu. Chercher l'optimisation de ce côté-là
+> serait chercher au mauvais endroit.
+>
+> Corollaire méthodologique : **comparer au spike avant d'optimiser quoi que ce soit.**
+> C'est le témoin, et c'est une raison de plus de l'avoir archivé plutôt que supprimé.
+
+⬜ **Non encore mesuré : le build `release`.** Le profil release est réglé pour la taille
+(`opt-level = "z"`, LTO) et non pour la vitesse ; l'écart avec debug reste à établir. À
+faire **avant** de conclure quoi que ce soit sur la consommation du produit livré.
+
+Trois pistes d'optimisation identifiées mais **non appliquées**, faute d'avoir mesuré le
+release d'abord — les inscrire ici évite de les redécouvrir :
+
+1. **Ne pas appeler `set_position` quand la position arrondie n'a pas changé.** À l'arrêt
+   (~3 tirages sur 10), ce sont 60 appels par seconde entièrement gratuits à supprimer.
+2. **Descendre la cadence quand rien ne bouge** — 60 Hz est nécessaire au mouvement, pas
+   à l'immobilité.
+3. **Suspendre la boucle quand la session est verrouillée** — déjà prévu comme réflexe à
+   l'étape 2, et c'est aussi une optimisation.
 
 **`cargo run` suffit — pas besoin de `cargo tauri dev`.** Le front étant statique, les
 assets sont embarqués dans le binaire à la compilation. Le CLI Tauri ne devient nécessaire
