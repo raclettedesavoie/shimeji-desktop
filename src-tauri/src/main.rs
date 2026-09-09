@@ -1,3 +1,18 @@
+// Pas de console en release, mais on la garde en debug.
+//
+// `cfg_attr(not(debug_assertions), …)` plutôt que l'attribut nu : le mode
+// simulation (`--sim`), la sous-commande `--demarrage` et les traces de
+// diagnostic (`SHIMEJI_CADENCE`, `SHIMEJI_TRACE`) écrivent tous sur la sortie
+// standard. Les priver de console en debug les rendrait muets.
+//
+// **Possible seulement depuis la Tâche 1** : sans « Quitter » dans le tray,
+// une application sans console ne se fermerait plus du tout.
+//
+// ⚠️ Un attribut `#![…]` de niveau *crate* doit être la PREMIÈRE chose du
+// fichier — avant les commentaires de module et les `mod`. Le placer après
+// donne « inner attribute is not permitted following an outer attribute ».
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 // Amorçage de l'application.
 //
 // Deux modes : l'application (fenêtre, boucle 60 Hz) et le mode simulation

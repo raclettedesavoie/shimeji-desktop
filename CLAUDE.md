@@ -131,7 +131,26 @@ cd C:\Users\alri\Documents\shimeji-desktop\src-tauri
 cargo test               # la suite complète, sans écran
 cargo run                # l'application : un personnage sur le sol
 cargo run -- --sim 30    # 30 min de comportement sans écran (spec §10.3)
+cargo run -- --demarrage etat|on|off   # le démarrage avec Windows, scriptable
 ```
+
+**Trois variables d'environnement de diagnostic**, chacune ayant servi à démentir une
+hypothèse fausse — voir « Mesurer le CPU » plus bas :
+
+| Variable | Ce qu'elle fait |
+|---|---|
+| `SHIMEJI_CADENCE=1` | images/s réelles, travail par image, **et le taux de déplacement** |
+| `SHIMEJI_SANS_BOUCLE=1` | crée la fenêtre et n'anime rien |
+| `SHIMEJI_TRACE=1` | trace chaque image servie par le schéma URI |
+
+**Et un fichier témoin** : créer `characters/recharger.txt` déclenche un rechargement à
+chaud, puis le fichier est supprimé. Le rechargement passe normalement par le tray, donc
+par un clic — le témoin le rend vérifiable sans humain, et scriptable.
+
+> ⚠️ **`cargo test` ne reconstruit pas l'exe.** Il compile le harnais de test. Après une
+> correction, `cargo build` avant de relancer l'application — sinon on vérifie un binaire
+> plus ancien que la source, et l'on conclut à tort que le correctif ne marche pas. C'est
+> arrivé une fois, sur le correctif du BOM.
 
 Le **spike de l'étape 0** est archivé dans `docs/spike-etape-0/` (`cargo run` y fonctionne
 aussi). Voir son `README.md` pour ce qu'il prouve et la sonde de styles Win32 qui
@@ -196,20 +215,31 @@ ont démenti les hypothèses 2 et 3 :
 | fenêtre seule, **aucune boucle** (`SHIMEJI_SANS_BOUCLE=1`) | **0 %** |
 | `set_position` à chaque image, quoi qu'il arrive | **21 %** |
 | **`set_position` seulement si la position a changé au pixel** | **12,3 %** |
-| exe `release` (2,6 Mo) | ~même ordre que debug — le coût n'est pas dans notre code |
+| **la même chose, build `release`** (exe de 2,7 Mo) | **12 %** |
 
-⬜ **Le `release` reste à remesurer** avec ce protocole de 60 s : les relevés faits sur
-10 s avant de comprendre la variance ne sont pas exploitables. Ce qui est acquis : la
-taille de l'exe est de **2,6 Mo**, largement sous les ~10 Mo visés par la spec §4.
+> **Le `release` ne gagne rien sur le debug, et c'est cohérent.** Notre travail par image
+> ne représente que 1 à 5 % du budget de 16,7 ms — les optimisations du compilateur n'ont
+> presque rien sur quoi mordre. Le coût est dans `SetWindowPos` de Windows, que le profil
+> release ne change pas. Le profil visant d'ailleurs la **taille** (`opt-level = "z"`,
+> LTO), il n'y avait pas de raison d'attendre mieux.
+>
+> Corollaire : **inutile de repasser le profil en `opt-level = 3`.** On paierait la taille
+> de l'exe — un objectif de la spec §4, tenu ici à 2,7 Mo contre ~10 Mo visés — pour un
+> gain nul.
 
 **Pistes restantes**, par rentabilité décroissante :
 
-1. **Ne rien dessiner quand les personnages sont cachés** — Tâche 6 du plan 1b. Caché,
-   il n'y a rien à afficher, et c'est le gain le plus net qui reste.
-2. **Suspendre la boucle quand la session est verrouillée** — prévu comme réflexe à
+1. **Suspendre la boucle quand la session est verrouillée** — prévu comme réflexe à
    l'étape 2, et c'est aussi une optimisation.
+2. **Descendre à 8 Hz les images où la position ne change pas** — le personnage à l'arrêt
+   n'a besoin ni de 60 déplacements ni de 60 décisions par seconde. Gain modeste, le
+   travail de calcul étant déjà négligeable.
 3. ~~Ne pas appeler `set_position` quand la position n'a pas changé~~ — **appliqué**,
    21 % → 12,3 %.
+4. ~~Ne rien dessiner quand les personnages sont cachés~~ — **appliqué** (Tâche 1 de 1b,
+   tirée en avant). ⬜ Le gain reste à mesurer : il demande un clic sur « Afficher » dans
+   le tray. Attendu proche de zéro, puisque la fenêtre seule sans boucle mesure 0 % et
+   que le comportement seul coûte ~100 µs par image.
 
 > **Ce qu'il ne faut PAS faire :** descendre la cadence sous 60 Hz. L'étape 0 a établi
 > que 60 Hz est fluide sur cette machine, et le travail par image ne représente que 1 à
@@ -219,12 +249,15 @@ taille de l'exe est de **2,6 Mo**, largement sous les ~10 Mo visés par la spec 
 assets sont embarqués dans le binaire à la compilation. Le CLI Tauri ne devient nécessaire
 que pour produire un installateur.
 
-> ⚠️ **Pour arrêter un personnage : `Ctrl+C` dans le terminal.** La fenêtre est
-> volontairement non focalisable, sans bordure, hors taskbar et hors Alt+Tab — elle ne
-> peut donc **pas** se fermer normalement. C'est le comportement voulu, mais il se
-> retourne contre soi au moment de quitter. En secours :
-> `Stop-Process -Name spike-overlay`. L'application de l'étape 1 aura une entrée « Quitter »
-> dans le tray, ce qui règle le problème pour de bon.
+> **Pour arrêter l'application : « Quitter » dans le menu du tray.** Depuis la Tâche 1
+> du plan 1b, c'est la voie normale. Ce qui suit ne vaut que si le tray n'a pas pu
+> s'installer — le message `tray non installé` le dirait.
+>
+> ⚠️ **En secours : `Stop-Process -Name shimeji-desktop`** (ou `Ctrl+C` dans le terminal,
+> en debug seulement — le build `release` n'a pas de console). La fenêtre est volontairement
+> non focalisable, sans bordure, hors taskbar et hors Alt+Tab : elle ne peut donc **pas** se
+> fermer normalement. C'est le comportement voulu, et c'est exactement pourquoi « Quitter »
+> était la Tâche 1 du plan 1b, avant le retrait de la console.
 
 **Deux exigences de `tauri-build` découvertes à l'étape 0**, valables aussi pour
 l'application :
