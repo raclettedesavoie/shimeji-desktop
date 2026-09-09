@@ -235,8 +235,19 @@ fn lancer_application() {
             let win = tauri::WebviewWindowBuilder::new(
                 app,
                 &label,
-                // Le fragment `#blob` dit à `pet.js` quel personnage servir.
-                tauri::WebviewUrl::App("index.html#blob".into()),
+                // Le fragment dit à `pet.js` quel personnage servir, et il
+                // doit porter le nom **lu dans la config**, pas `blob` en dur.
+                //
+                // Le bug que ça corrige est sournois : avec `#blob` fixe, le
+                // manifeste chargé était bien celui du personnage demandé
+                // (bonnes poses, bonnes ancres, bonne hitbox) mais le webview
+                // réclamait `shime:///blob/N` — donc les **images** de blob.
+                // Rien ne le signalait : aucune erreur, aucune trace, un
+                // personnage parfaitement animé… avec le mauvais dessin.
+                //
+                // Invisible tant que `blob` était le seul pack livré. Constaté
+                // à l'œil en ajoutant `luffy`, et par aucun autre moyen.
+                tauri::WebviewUrl::App(format!("index.html#{nom_personnage}").into()),
             )
             .title("shimeji-desktop")
             .inner_size(taille.0 as f64, taille.1 as f64)
