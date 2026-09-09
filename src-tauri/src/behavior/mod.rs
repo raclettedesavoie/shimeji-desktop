@@ -33,3 +33,50 @@ pub struct Entrees {
     /// manifeste.
     pub curseur_sur_le_personnage: bool,
 }
+
+/// Un pas de comportement : les trois couches, dans l'ordre, une fois.
+///
+/// C'est la seule fonction que la boucle 60 Hz (Tâche 10) et le mode
+/// simulation (Tâche 9) appellent. Les deux partagent donc **exactement** le
+/// même comportement — c'est ce qui rend la simulation représentative.
+///
+/// Rend le réflexe qui s'est éventuellement imposé, pour la trace.
+pub fn pas(
+    ch: &mut crate::character::Character,
+    world: &crate::world::World,
+    e: &Entrees,
+    table: &desire::TableEnvies,
+    maintenant: std::time::Duration,
+    dt: f32,
+    rng: &mut dyn crate::rng::Rng,
+) -> reflex::Reflexe {
+    // ── Couche 1 : les réflexes ─────────────────────────────────────────
+    // S'ils s'imposent, les couches 2 et 3 ne tournent pas du tout dans
+    // cette image (spec §7.1).
+    let r = reflex::appliquer(ch, world, e, maintenant, dt);
+    if r != reflex::Reflexe::Aucun {
+        return r;
+    }
+
+    // ── Couche 2 : poursuivre l'intention en cours ──────────────────────
+    match intention::poursuivre(ch, world, maintenant, dt, rng) {
+        intention::Issue::EnCours => return r,
+        // Finie ou échouée : on passe à la couche 3.
+        intention::Issue::Finie | intention::Issue::Echouee => {}
+    }
+
+    // ── Couche 3 : tirer une nouvelle envie ─────────────────────────────
+    //
+    // À l'étape 2, le `|_| 1.0` implicite de `tirer` deviendra un
+    // `tirer_avec` dont la fermeture consulte les signaux. C'est le seul
+    // endroit à toucher — d'où « ajouter un signal = ajouter une ligne »
+    // (décision n° 5).
+    if let Some(kind) = table.tirer(&ch.manifest, rng) {
+        ch.intention = Some(intention::ActiveIntention::nouvelle(kind, maintenant));
+    }
+    // `None` = aucune intention jouable (personnage très incomplet). On ne
+    // fait rien : il reste dans sa pose, et on réessaiera à l'image
+    // suivante. Ce n'est pas une erreur.
+
+    r
+}

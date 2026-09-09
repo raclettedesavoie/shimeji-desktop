@@ -5002,8 +5002,22 @@ mod tests {
     fn arrive_au_bord_il_fait_demi_tour_plutot_que_de_tomber() {
         // Le sol du premier écran va de 0 à 1920. On le place à 3 px du bord
         // droit, tourné à droite, en marche forcée.
-        let m = monde();
-        let mut ch = perso(&m, 1917.0);
+        //
+        // ⚠️ **Un monde à UN SEUL écran.** Dans le monde à deux écrans, le
+        // second commence exactement à x = 1920 : `face_voisine` le
+        // trouverait et il enjamberait la frontière au lieu de faire
+        // demi-tour. Le test contredirait alors
+        // `il_passe_sur_l_ecran_voisin_quand_il_y_en_a_un`.
+        let m = World::from_screens(&FakeProbe::un_ecran().screens());
+        let mut ch = Character::new(
+            manifeste(),
+            Attachment::On {
+                platform: m.platforms()[0].id,
+                face: Face::Top,
+                offset: 1917.0,
+            },
+            Point::new(1917.0, 1032.0),
+        );
         ch.facing = crate::character::Facing::Right;
         let mut rng = XorShift32::seeded(5);
         ch.intention = Some(ActiveIntention {
@@ -5105,7 +5119,9 @@ mod tests {
         for kind in [Intention::Flaner, Intention::SeReposer] {
             ch.intention = Some(ActiveIntention::nouvelle(kind, Duration::ZERO));
 
-            // Juste avant le délai : toujours en cours.
+            // Juste avant le délai : l'intention n'a pas EXPIRÉ. On ne peut
+            // pas exiger `EnCours` : un repos dure au plus 15 s, il serait
+            // donc légitimement `Finie` à 19,9 s. Seul l'échec est exclu.
             let avant = poursuivre(
                 &mut ch,
                 &m,
@@ -5113,9 +5129,11 @@ mod tests {
                 DT,
                 &mut rng,
             );
-            assert_eq!(avant, Issue::EnCours, "{kind:?} a expiré trop tôt");
+            assert_ne!(avant, Issue::Echouee, "{kind:?} a expiré trop tôt");
 
-            // Juste après : expirée.
+            // Juste après : expirée. On réarme l'intention, la ligne
+            // précédente ayant pu la consommer.
+            ch.intention = Some(ActiveIntention::nouvelle(kind, Duration::ZERO));
             let apres = poursuivre(
                 &mut ch,
                 &m,
@@ -5361,13 +5379,22 @@ pub fn poursuivre(
             // `Copy`), donc modifier `ai.etat` ne touche pas `ch.intention`
             // tant qu'on ne le réaffecte pas. Oublier cette ligne donnerait
             // un personnage qui retire une allure à chaque image.
-            ch.intention = Some(ai);
+            //
+            // ⚠️ `if` indispensable : la sous-fonction a pu ANNULER
+            // l'intention (`ch.intention = None` quand elle se termine ou
+            // échoue). Réécrire sans ce test la ressusciterait, et le
+            // personnage resterait assis pour toujours.
+            if ch.intention.is_some() {
+                ch.intention = Some(ai);
+            }
             issue
         }
 
         Intention::SeReposer => {
             let issue = se_reposer(ch, &mut ai, maintenant, rng);
-            ch.intention = Some(ai);
+            if ch.intention.is_some() {
+                ch.intention = Some(ai);
+            }
             issue
         }
     }
@@ -5436,7 +5463,7 @@ fn flaner(
 
     // ── Le déplacement, et ce qui arrive au bord ────────────────────────
     if allure != Allure::Arret {
-        avancer(ch, world, allure.vitesse() * ch.facing.signe() * dt, rng);
+        avancer(ch, world, allure.vitesse() * ch.facing.signe() * dt);
     }
 
     ai.etat = EtatIntention::Flanerie { allure, jusqu_a };
@@ -5448,7 +5475,7 @@ fn flaner(
 /// **Décision locale, pas de plan** (décision n° 4) : au bord, on regarde
 /// s'il existe une face voisine dans la direction du mouvement, et sinon on
 /// fait demi-tour. Aucun itinéraire n'est calculé.
-fn avancer(ch: &mut Character, world: &World, pas: f32, rng: &mut dyn Rng) {
+fn avancer(ch: &mut Character, world: &World, pas: f32) {
     let Attachment::On {
         platform,
         face,
@@ -5504,12 +5531,13 @@ fn avancer(ch: &mut Character, world: &World, pas: f32, rng: &mut dyn Rng) {
     // se laisser tomber du bord de l'écran ne mènerait qu'au garde-fou :
     // le demi-tour est la seule issue qui ait du sens ici. Le tirage entre
     // les trois arrive à l'étape 4.
-    let _ = rng; // gardé pour ce tirage à venir
     ch.facing = ch.facing.inverse();
+    // On rabat `nouveau` et non `offset` : le personnage se recale
+    // exactement SUR le bord, au lieu de rester où il était avant le pas.
     ch.attachment = Attachment::On {
         platform,
         face,
-        offset: offset.clamp(0.0, longueur),
+        offset: nouveau.clamp(0.0, longueur),
     };
 }
 

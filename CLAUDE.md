@@ -482,9 +482,34 @@ Quatre conséquences à respecter en écrivant l'étape 1 :
    majeures de cette crate donnent deux types `HWND` **distincts**, et l'erreur de
    compilation parle alors de deux types de même nom.
 
-La seule inconnue laissée ouverte est le **multi-DPI** : les deux écrans de cette machine
-sont à l'échelle 1, le spike ne pouvait donc pas l'éprouver. C'est un risque ouvert, pas
-un acquis ; il ne se manifestera qu'à l'étape 4 ou sur une autre machine.
+### ⚠️ Correction du 2026-09-08 : l'« échelle 1 » du spike était un artefact
+
+Le spike avait conclu « multi-DPI non observable sur cette machine, les deux écrans sont à
+l'échelle 1 ». **C'est faux** : l'écran est à **125 %**, et le spike mesurait à travers la
+virtualisation DPI de Windows.
+
+Un processus qui n'a pas déclaré sa conscience du DPI se fait **mentir** : Windows lui rend
+des pixels *logiques* en les présentant comme des pixels d'écran, et annonce 96 ppp quel
+que soit le réglage réel. Mesuré côte à côte sur le même écran :
+
+| | largeur | hauteur utile | échelle annoncée |
+|---|---|---|---|
+| processus **non** conscient du DPI | 1536 | 816 | 1 |
+| processus conscient (`PER_MONITOR_AWARE_V2`) | **1920** | **1020** | **1,25** |
+
+**Cinquième conséquence, donc, et la plus facile à oublier :**
+
+5. **`SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2)` doit être la PREMIÈRE
+   instruction de `main`** — pas laissée à Tauri, qui ne la fixe qu'à la création de sa
+   boucle d'événements, alors que la sonde système sert avant (diagnostic) et après
+   (boucle 60 Hz). Sans appel explicite, les deux ne verraient pas le même bureau : la
+   pire forme du bug, reproductible seulement à moitié. C'est fait dans
+   `probe::win32::activer_conscience_dpi`.
+
+Bonne nouvelle au passage : le multi-DPI n'est **plus un risque dormant**, la mise à
+l'échelle du sprite étant exercée dès le premier lancement. Reste non éprouvé : **deux
+écrans d'échelles différentes** — `FakeProbe::ecran_a_gauche_hidpi()` couvre l'hypothèse
+côté tests.
 
 ### La prochaine action
 
