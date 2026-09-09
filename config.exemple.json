@@ -19,5 +19,22 @@
     "dureeMarche": [1.5, 5.0],
     "dureeCourse": [0.6, 1.8],
     "chanceDemiTour": 0.25
+  },
+
+  "signaux": {
+    "inactiviteSecondes": 120,
+    "inactifFlaner": 0.2,
+    "inactifSeReposer": 8.0,
+    "soirDebut": 22,
+    "soirFin": 6,
+    "soirSeReposer": 3.0,
+    "batterieSeuil": 20,
+    "batterieSeReposer": 2.0,
+    "seuilSommeil": 2.0
+  },
+
+  "applications": {
+    "Code.exe": { "flaner": 0.5 },
+    "chrome.exe": { "flaner": 1.5, "seReposer": 2.0 }
   }
 }

@@ -75,6 +75,67 @@ impl Default for Allures {
     }
 }
 
+/// Les seuils et multiplicateurs des signaux (design de l'étape 2, §4).
+///
+/// Tout est ici plutôt qu'en dur dans `signals.rs` : c'est la décision n° 5,
+/// et c'est aussi ce qui permet de régler « à partir de combien de temps
+/// d'absence il s'endort » sans recompiler — le réglage qu'on voudra
+/// certainement toucher après une journée d'usage.
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct SignauxReglages {
+    /// Au-delà de cette durée sans aucune entrée, l'utilisateur est
+    /// considéré comme parti.
+    pub inactivite_secondes: f32,
+    pub inactif_flaner: f32,
+    pub inactif_se_reposer: f32,
+
+    /// Le créneau « tard le soir », en heures locales. **Il passe par
+    /// minuit** quand `debut > fin`, ce qui est le cas par défaut.
+    pub soir_debut: u8,
+    pub soir_fin: u8,
+    pub soir_se_reposer: f32,
+
+    /// En dessous de ce pourcentage **et** sur batterie, il fatigue.
+    pub batterie_seuil: u8,
+    pub batterie_se_reposer: f32,
+
+    /// À partir de quel biais de repos il s'affale au lieu de rester assis
+    /// (Tâche 4). 2,0 = « il faut qu'un signal ait au moins doublé l'envie
+    /// de repos ».
+    pub seuil_sommeil: f32,
+}
+
+impl Default for SignauxReglages {
+    fn default() -> Self {
+        // Les valeurs de départ de la spec §7.2.
+        SignauxReglages {
+            inactivite_secondes: 120.0,
+            inactif_flaner: 0.2,
+            inactif_se_reposer: 8.0,
+            soir_debut: 22,
+            soir_fin: 6,
+            soir_se_reposer: 3.0,
+            batterie_seuil: 20,
+            batterie_se_reposer: 2.0,
+            seuil_sommeil: 2.0,
+        }
+    }
+}
+
+/// Ce qu'une application au premier plan change au caractère du personnage.
+///
+/// Des `Option<f32>` et non des `f32` nus : une ligne qui ne parle que de
+/// `flaner` ne doit pas remettre les autres poids à zéro. Avec des `f32`, un
+/// champ absent vaudrait `0.0` — ce qui **interdirait** l'intention, le
+/// contraire d'un défaut inoffensif.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ModifsAppli {
+    pub flaner: Option<f32>,
+    pub se_reposer: Option<f32>,
+}
+
 /// Le contenu de `config.json`.
 ///
 /// `#[serde(default)]` **au niveau de la structure** : chaque champ absent
@@ -99,6 +160,20 @@ pub struct Config {
     pub demarrage_automatique: bool,
     pub envies: Envies,
     pub allures: Allures,
+
+    pub signaux: SignauxReglages,
+
+    /// Les modificateurs par application, `"Code.exe"` → ses poids.
+    ///
+    /// Une table associative, donc **ajouter une application ne demande
+    /// aucun code** : c'est la forme la plus littérale de « ajouter un
+    /// signal = ajouter une ligne » (décision n° 5).
+    ///
+    /// `BTreeMap` et non `HashMap` : l'ordre d'itération est stable, donc un
+    /// message de diagnostic qui les liste ne change pas d'ordre d'une
+    /// exécution à l'autre. Le coût de recherche est sans importance — la
+    /// table a trois entrées et n'est consultée que 2 fois par seconde.
+    pub applications: std::collections::BTreeMap<String, ModifsAppli>,
 }
 
 impl Default for Config {
@@ -111,6 +186,11 @@ impl Default for Config {
             demarrage_automatique: false,
             envies: Envies::default(),
             allures: Allures::default(),
+            signaux: SignauxReglages::default(),
+            // Vide par défaut : aucun modificateur d'application n'est
+            // imposé. Le fichier d'exemple en montre deux, commentés par
+            // leur seule présence.
+            applications: std::collections::BTreeMap::new(),
         }
     }
 }

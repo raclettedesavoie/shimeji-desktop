@@ -110,6 +110,9 @@ pub fn executer(
         echelle_affichage: 1.0,
         bouton_gauche: false,
         curseur_sur_le_personnage: false,
+        // Neutre jusqu'à la Tâche 7, qui jouera une journée entière.
+        biais: crate::signals::Biais::neutre(),
+        utilisateur_actif: true,
     };
 
     // ── La boucle ───────────────────────────────────────────────────────

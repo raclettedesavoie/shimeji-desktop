@@ -46,6 +46,22 @@ pub struct Entrees {
     /// Le passer tout cuit garde les réflexes purs et testables sans
     /// manifeste.
     pub curseur_sur_le_personnage: bool,
+
+    /// Les multiplicateurs d'envie du moment (décision n° 3).
+    ///
+    /// Recalculés à ~2 Hz par `signals::biais_de` et transportés tels quels
+    /// jusqu'ici. Le comportement ne voit **jamais** un signal : il ne voit
+    /// que des poids déjà multipliés, ce qui rend impossible d'écrire « si
+    /// inactif alors dormir ».
+    pub biais: crate::signals::Biais,
+
+    /// L'utilisateur vient-il de toucher à quelque chose ?
+    ///
+    /// Dérivé du même seuil que le biais (`inactiviteSecondes`), mais gardé
+    /// à part parce qu'il ne sert pas à la même chose : le biais **pondère un
+    /// tirage**, celui-ci **interrompt un sommeil** (Tâche 5). Deux usages,
+    /// deux champs — les fondre obligerait à deviner l'un depuis l'autre.
+    pub utilisateur_actif: bool,
 }
 
 /// Un pas de comportement : les trois couches, dans l'ordre, une fois.
@@ -82,11 +98,11 @@ pub fn pas(
 
     // ── Couche 3 : tirer une nouvelle envie ─────────────────────────────
     //
-    // À l'étape 2, le `|_| 1.0` implicite de `tirer` deviendra un
-    // `tirer_avec` dont la fermeture consulte les signaux. C'est le seul
-    // endroit à toucher — d'où « ajouter un signal = ajouter une ligne »
-    // (décision n° 5).
-    if let Some(kind) = table.tirer(&ch.manifest, rng) {
+    // **La ligne que l'étape 1a avait écrite pour ce moment.** `tirer_avec`
+    // existait déjà, avec son test (`un_multiplicateur_biaise_sans_commander`) :
+    // brancher les signaux ne touche donc ni `desire.rs`, ni `intention.rs`,
+    // ni `reflex.rs`. C'est la décision n° 5 qui se paie ici.
+    if let Some(kind) = table.tirer_avec(&ch.manifest, rng, |i| e.biais.pour(i)) {
         ch.intention = Some(intention::ActiveIntention::nouvelle(kind, maintenant));
     }
     // `None` = aucune intention jouable (personnage très incomplet). On ne

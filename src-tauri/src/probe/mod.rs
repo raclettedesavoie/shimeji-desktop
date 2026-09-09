@@ -40,6 +40,59 @@ pub struct MouseState {
     pub left_down: bool,
 }
 
+/// L'état du système à un instant, tel que le comportement a besoin de le
+/// connaître (design de l'étape 2, §3).
+///
+/// **Un instantané et non cinq accesseurs.** La raison est la cohérence :
+/// lues à cinq instants différents, ces valeurs pourraient montrer « session
+/// verrouillée » et « actif il y a 10 ms » dans la même image du
+/// comportement. Un instantané rend cet état impossible par construction.
+///
+/// Pas `Copy` : `appli_active` est une `String`. C'est exactement pourquoi le
+/// comportement ne reçoit PAS cette structure mais un `signals::Biais`, qui
+/// est `Copy` — voir `Entrees`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Signaux {
+    /// Depuis combien de temps l'utilisateur n'a touché à rien.
+    ///
+    /// ⚠️ `GetLastInputInfo` rend un **compteur de millisecondes**, jamais
+    /// une touche. C'est la seule voie compatible avec « aucune capture de
+    /// frappe », qui est une exclusion explicite du besoin.
+    pub inactivite: std::time::Duration,
+
+    /// Le nom de fichier de l'exécutable au premier plan — `"Code.exe"`.
+    ///
+    /// Le nom seul, jamais le chemin complet : c'est ce que l'utilisateur
+    /// écrira dans `config.json`, et un chemin serait impossible à deviner.
+    /// `None` quand la fenêtre au premier plan n'appartient à aucun processus
+    /// interrogeable — écran de connexion, fenêtre d'élévation UAC.
+    pub appli_active: Option<String>,
+
+    /// L'heure locale, de 0 à 23. Rien de plus fin : aucun signal du projet
+    /// ne dépend de la minute.
+    pub heure: u8,
+
+    pub batterie: Batterie,
+
+    /// Vrai pendant que la session est verrouillée (Win+L, veille avec mot de
+    /// passe, changement d'utilisateur).
+    pub session_verrouillee: bool,
+}
+
+/// L'état de la batterie.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Batterie {
+    /// `None` sur une machine **sans** batterie, ou quand Windows dit ne pas
+    /// savoir.
+    ///
+    /// ⚠️ **Ce n'est pas `Some(100)`.** `GetSystemPowerStatus` rend 255 quand
+    /// il n'y a pas de batterie ; confondre les deux ferait fatiguer un pet
+    /// sur une tour de bureau, en permanence et sans raison visible.
+    pub pourcent: Option<u8>,
+
+    pub sur_secteur: bool,
+}
+
 /// Ce que le programme sait du système.
 ///
 /// `&self` partout : interroger le système ne modifie rien côté programme.

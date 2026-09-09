@@ -371,6 +371,8 @@ mod tests {
             echelle_affichage: 1.0,
             bouton_gauche: false,
             curseur_sur_le_personnage: false,
+            biais: crate::signals::Biais::neutre(),
+            utilisateur_actif: true,
         }
     }
 
@@ -453,6 +455,8 @@ mod tests {
             echelle_affichage: 1.0,
             bouton_gauche: true,
             curseur_sur_le_personnage: true,
+            biais: crate::signals::Biais::neutre(),
+            utilisateur_actif: true,
         };
 
         let r = appliquer(&mut ch, &m, &e, Duration::ZERO, DT);
@@ -477,6 +481,8 @@ mod tests {
             echelle_affichage: 1.0,
             bouton_gauche: true,
             curseur_sur_le_personnage: true,
+            biais: crate::signals::Biais::neutre(),
+            utilisateur_actif: true,
         };
         appliquer(&mut ch, &m, &e, Duration::ZERO, DT);
         assert_eq!(ch.pose, POSE_DRAGGED);
@@ -500,6 +506,8 @@ mod tests {
                 echelle_affichage: 1.0,
                 bouton_gauche: true,
                 curseur_sur_le_personnage: true,
+                biais: crate::signals::Biais::neutre(),
+                utilisateur_actif: true,
             };
             appliquer(ch, m, &e, t, DT);
             t += Duration::from_micros(16_667);
@@ -582,6 +590,8 @@ mod tests {
                 echelle_affichage: 1.0,
                 bouton_gauche: true,
                 curseur_sur_le_personnage: true,
+                biais: crate::signals::Biais::neutre(),
+                utilisateur_actif: true,
             };
             appliquer(&mut ch, &m, &e, t, DT);
             vues.insert(ch.pose.clone());
@@ -613,6 +623,8 @@ mod tests {
             echelle_affichage: 1.0,
             bouton_gauche: true,
             curseur_sur_le_personnage: true,
+            biais: crate::signals::Biais::neutre(),
+            utilisateur_actif: true,
         };
         appliquer(&mut ch, &m, &e, Duration::ZERO, DT);
 
@@ -633,6 +645,8 @@ mod tests {
             echelle_affichage: 1.0,
             bouton_gauche: true,
             curseur_sur_le_personnage: false,
+            biais: crate::signals::Biais::neutre(),
+            utilisateur_actif: true,
         };
         assert_eq!(
             appliquer(&mut ch, &m, &e, Duration::ZERO, DT),
@@ -657,6 +671,8 @@ mod tests {
             echelle_affichage: 1.0,
             bouton_gauche: true,
             curseur_sur_le_personnage: true,
+            biais: crate::signals::Biais::neutre(),
+            utilisateur_actif: true,
         };
         appliquer(&mut ch, &m, &e, Duration::ZERO, DT);
 
@@ -694,6 +710,8 @@ mod tests {
             echelle_affichage: 1.0,
             bouton_gauche: false,
             curseur_sur_le_personnage: true,
+            biais: crate::signals::Biais::neutre(),
+            utilisateur_actif: true,
         };
         let r = appliquer(&mut ch, &m, &e, Duration::ZERO, DT);
         assert_eq!(r, Reflexe::Chute);
@@ -737,6 +755,8 @@ mod tests {
             echelle_affichage: 1.0,
             bouton_gauche: false,
             curseur_sur_le_personnage: true,
+            biais: crate::signals::Biais::neutre(),
+            utilisateur_actif: true,
         };
         appliquer(&mut ch, &m, &e, Duration::from_millis(500), DT);
 
@@ -772,6 +792,8 @@ mod tests {
                 echelle_affichage: 1.0,
                 bouton_gauche: false,
                 curseur_sur_le_personnage: true,
+                biais: crate::signals::Biais::neutre(),
+                utilisateur_actif: true,
             };
             appliquer(&mut ch, &m, &e, Duration::from_millis(500), DT);
             ch.facing
@@ -815,6 +837,8 @@ mod tests {
             echelle_affichage: 1.0,
             bouton_gauche: false,
             curseur_sur_le_personnage: true,
+            biais: crate::signals::Biais::neutre(),
+            utilisateur_actif: true,
         };
         appliquer(&mut ch, &m, &e, Duration::from_millis(500), DT);
 
@@ -838,6 +862,8 @@ mod tests {
             echelle_affichage: 1.0,
             bouton_gauche: true,
             curseur_sur_le_personnage: false, // il a glissé sous le curseur
+            biais: crate::signals::Biais::neutre(),
+            utilisateur_actif: true,
         };
         let r = appliquer(&mut ch, &m, &e, Duration::ZERO, DT);
 

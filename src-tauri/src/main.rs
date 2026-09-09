@@ -36,6 +36,7 @@ mod probe;
 mod rechargement;
 mod render;
 mod rng;
+mod signals;
 mod sim;
 mod tray;
 mod world;
@@ -692,6 +693,9 @@ fn boucle(
             echelle_affichage,
             bouton_gauche: m.left_down,
             curseur_sur_le_personnage: sur_le_personnage,
+            // Neutre jusqu'à la Tâche 6, qui branche la sonde à 2 Hz.
+            biais: signals::Biais::neutre(),
+            utilisateur_actif: true,
         };
 
         // ── 60 Hz : le comportement ─────────────────────────────────────
