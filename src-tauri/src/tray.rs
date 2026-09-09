@@ -188,9 +188,27 @@ pub fn installer(
                 }
 
                 ID_DEMARRAGE => {
-                    // Tâche 4.
-                    let _voulu = demarrage_pour_evenement.is_checked().unwrap_or(false);
-                    println!("démarrage automatique : Tâche 4 du plan 1b");
+                    let voulu = demarrage_pour_evenement.is_checked().unwrap_or(false);
+
+                    let resultat = if voulu {
+                        crate::autostart::activer()
+                    } else {
+                        crate::autostart::desactiver()
+                    };
+
+                    match resultat {
+                        Ok(()) => println!(
+                            "démarrage avec Windows : {}",
+                            if voulu { "activé" } else { "désactivé" }
+                        ),
+                        Err(e) => {
+                            eprintln!("démarrage automatique : {e}");
+                            // On remet la case dans son état RÉEL : laisser
+                            // une case cochée alors que l'écriture a échoué
+                            // serait un mensonge affiché en permanence.
+                            let _ = demarrage_pour_evenement.set_checked(!voulu);
+                        }
+                    }
                 }
 
                 ID_DOSSIER => {

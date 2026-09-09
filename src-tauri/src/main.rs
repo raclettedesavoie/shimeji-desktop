@@ -11,6 +11,7 @@
 // comportement). Le plan 1b la supprimera, une fois le tray disponible pour
 // quitter proprement.
 
+mod autostart;
 mod behavior;
 mod character;
 mod clock;
@@ -73,6 +74,43 @@ fn main() {
                 eprintln!("simulation impossible : {e}");
                 std::process::exit(1);
             }
+        }
+        return;
+    }
+
+    // Sous-commande de diagnostic du démarrage automatique.
+    //
+    // Elle existe pour une raison précise : le basculement se fait par une
+    // case du tray, donc **un clic humain**, et le code du registre ne
+    // serait autrement vérifiable qu'à la main. Un test unitaire ne convient
+    // pas non plus — il modifierait le registre de la machine qui exécute la
+    // suite.
+    //
+    // Effet de bord utile : elle rend le réglage scriptable.
+    if let Some(i) = args.iter().position(|a| a == "--demarrage") {
+        match args.get(i + 1).map(|s| s.as_str()) {
+            Some("on") => match autostart::activer() {
+                Ok(()) => println!("démarrage avec Windows : activé"),
+                Err(e) => {
+                    eprintln!("échec : {e}");
+                    std::process::exit(1);
+                }
+            },
+            Some("off") => match autostart::desactiver() {
+                Ok(()) => println!("démarrage avec Windows : désactivé"),
+                Err(e) => {
+                    eprintln!("échec : {e}");
+                    std::process::exit(1);
+                }
+            },
+            _ => println!(
+                "démarrage avec Windows : {}",
+                if autostart::est_actif() {
+                    "actif"
+                } else {
+                    "inactif"
+                }
+            ),
         }
         return;
     }
@@ -212,10 +250,11 @@ fn lancer_application() {
             if let Err(e) = tray::installer(
                 &app.handle().clone(),
                 &dossier,
-                // ⬜ Tâche 4 : lira le registre. En dur ici, ce serait un
-                // mensonge durable — la case afficherait « décoché » alors
-                // que le démarrage pourrait être actif.
-                false,
+                // Le REGISTRE et non la config : les deux divergent dès que
+                // l'utilisateur retire l'entrée à la main ou par le
+                // gestionnaire des tâches, et c'est le registre qui dit la
+                // vérité.
+                autostart::est_actif(),
                 visibilite.clone(),
             ) {
                 eprintln!("tray non installé : {e}");
