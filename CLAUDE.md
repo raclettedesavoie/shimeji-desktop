@@ -150,11 +150,14 @@ remplacent un clic dans le tray :
 chaud, puis le fichier est supprimé.
 
 > **Le principe, récurrent sur ce projet : tout ce qui demanderait un clic reçoit un
-> équivalent scriptable.** Le tray, le démarrage automatique et le rechargement se
-> constatent normalement à la souris ; à ce jour, seule **la dépêche d'un clic de menu**
-> par le tray n'a pas d'équivalent, tout le reste se vérifie sans humain — sonde de
-> styles Win32, `--demarrage etat`, fichier témoin, `SHIMEJI_CACHE`,
-> `SHIMEJI_QUITTER_APRES`, énumération des fenêtres, lecture de l'en-tête PE.
+> équivalent scriptable.** Sonde de styles Win32, `--demarrage etat`, fichier témoin,
+> `SHIMEJI_CACHE`, `SHIMEJI_QUITTER_APRES`, énumération des fenêtres, lecture de
+> l'en-tête PE — **tout se vérifie sans humain**.
+>
+> ✅ **La seule exception a été levée le 2026-09-10** : que le menu du tray *dépêche*
+> ses clics ne se script pas, et un humain a donc cliqué « Quitter » une fois, sur le
+> build release. Processus disparu, aucun résidu. Un seul clic suffisait : les cinq
+> entrées partagent le même gestionnaire d'événements.
 
 > ⚠️ **`cargo test` ne reconstruit pas l'exe.** Il compile le harnais de test. Après une
 > correction, `cargo build` avant de relancer l'application — sinon on vérifie un binaire
@@ -729,10 +732,17 @@ Trois choses apprises en exécutant, qui valent plus que le code :
    négatif — le personnage finissait chaque glisser légèrement penché. Corrigé ici en
    testant la bande neutre d'abord, symétriquement.
 
-> **Reste un clic que personne n'a fait :** que le menu du tray **dépêche** ses clics.
-> Chaque action est prouvée autrement (`--demarrage etat`, `recharger.txt`,
-> `SHIMEJI_CACHE`, `SHIMEJI_QUITTER_APRES`), mais le clic lui-même ne se script pas. Un
-> clic sur « Quitter » couvre les cinq entrées : c'est le même gestionnaire.
+> ✅ **Le dernier clic a été fait le 2026-09-10.** Chaque action du tray était déjà
+> prouvée autrement (`--demarrage etat`, `recharger.txt`, `SHIMEJI_CACHE`,
+> `SHIMEJI_QUITTER_APRES`), mais la **dépêche** du clic, non — c'est la seule chose du
+> projet qui ne se script pas. Un clic sur « Quitter », sur le build release : processus
+> disparu, aucun résidu. Les cinq entrées partageant le même gestionnaire, ce clic les
+> couvre toutes.
+>
+> Détail utile pour la suite : **Windows 11 masque par défaut l'icône des applications
+> qu'il ne connaît pas.** Elle est derrière le chevron `^` de la zone de notification,
+> pas directement visible — ce qui se confond facilement avec « le tray ne s'installe
+> pas ».
 
 ### La prochaine action
 

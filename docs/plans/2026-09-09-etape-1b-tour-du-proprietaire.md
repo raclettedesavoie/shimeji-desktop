@@ -1944,10 +1944,11 @@ qui valide le retrait de la console : un processus GUI sans console, dont la
 fenêtre est sans bordure, non focalisable, hors taskbar et hors Alt+Tab, ne se
 ferme par **aucun** moyen normal — il fallait donc le prouver, pas le supposer.
 
-> ⬜ **Ce qui reste hors de portée d'un script : la dépêche du clic de menu par
-> le tray.** L'action de « Quitter » est prouvée ; que le menu la déclenche
-> demande un clic. C'est aujourd'hui le **seul** point du projet sans
-> équivalent scriptable.
+> ✅ **Le clic a été fait le 2026-09-10, et il passe.** L'action de « Quitter »
+> était prouvée par script ; que le **menu la déclenche** demandait un humain.
+> Clic sur « Quitter » dans le build release → processus disparu, aucun résidu.
+> Les cinq entrées partagent le même gestionnaire, donc ce clic les couvre
+> toutes. Le projet n'a plus aucun point sans vérification.
 
 - [x] **Step 7 : Commit** — **FAIT** : `77811fc`.
 
