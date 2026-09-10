@@ -26,6 +26,12 @@ use std::path::{Path, PathBuf};
 pub struct Envies {
     pub flaner: f32,
     pub se_reposer: f32,
+
+    /// Le poids des DEUX animations de jeu (Tâche 3) : `desire.rs` en fait
+    /// deux lignes de table qui partagent cette même valeur. Un réglage par
+    /// jeu serait un réglage de plus sans effet observable, puisque rien ne
+    /// les distingue pour l'utilisateur.
+    pub jouer: f32,
 }
 
 impl Default for Envies {
@@ -34,6 +40,7 @@ impl Default for Envies {
         Envies {
             flaner: 5.0,
             se_reposer: 1.0,
+            jouer: 1.0,
         }
     }
 }
@@ -134,6 +141,10 @@ impl Default for SignauxReglages {
 pub struct ModifsAppli {
     pub flaner: Option<f32>,
     pub se_reposer: Option<f32>,
+
+    /// Le biais de jeu ne distingue pas les deux animations (voir
+    /// `Envies::jouer`) : un seul champ suffit ici aussi.
+    pub jouer: Option<f32>,
 }
 
 /// Le contenu de `config.json`.

@@ -38,6 +38,17 @@ pub const POSE_SIT: &str = "sit";
 pub const POSE_FALL: &str = "fall";
 pub const POSE_LAND: &str = "land";
 
+/// Assis, il se tourne la tête. Source : `SitAndSpinHeadAction`.
+pub const POSE_SPIN_HEAD: &str = "spinHead";
+
+/// Assis à balancer les jambes. Source : `SitAndDangleLegs`.
+///
+/// ⚠️ Son ancre est `64,112` et non `64,128` : les jambes pendent **sous** la
+/// ligne de contact. Sur le sol, elles descendent donc de 16 px dans la barre
+/// des tâches — c'est ce que fait Shimeji-ee, qui déclare bien cette action
+/// avec `BorderType="Floor"`.
+pub const POSE_SIT_DANGLE: &str = "sitDangle";
+
 /// Porté, au repos : il pend droit. Frame 1.
 pub const POSE_DRAGGED: &str = "dragged";
 

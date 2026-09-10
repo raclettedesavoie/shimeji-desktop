@@ -18,7 +18,9 @@
 //! calcule l'itinéraire optimal a l'air d'un robot (spec §7.3).
 
 use crate::character::attach::Attachment;
-use crate::character::manifest::{POSE_RUN, POSE_SIT, POSE_STAND, POSE_WALK};
+use crate::character::manifest::{
+    POSE_RUN, POSE_SIT, POSE_SIT_DANGLE, POSE_SPIN_HEAD, POSE_STAND, POSE_WALK,
+};
 use crate::config::Reglages;
 use crate::character::Character;
 use crate::geom::Face;
@@ -34,15 +36,59 @@ use std::time::Duration;
 /// gratuite.
 pub const DELAI_ABANDON: Duration = Duration::from_secs(20);
 
+/// À quoi il joue.
+///
+/// Un `enum` et non un nom de pose libre : la table d'envies a besoin d'une
+/// clé `Copy + Eq`, et une variante par animation permet à la couverture
+/// partielle de les retirer **séparément** (spec §8.6).
+///
+/// C'est la lecture littérale de `Jouer(action)` de la spec §7.1.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Jeu {
+    /// Assis, la tête qui tourne — 8 frames, 200 ms chacune.
+    TeteQuiTourne,
+    /// Assis à balancer les jambes — 4 frames, 400 ms, en boucle.
+    JambesQuiBalancent,
+}
+
+impl Jeu {
+    /// La pose que ce jeu demande. **Une seule** : c'est ce qui rend le
+    /// retrait par couverture partielle exact — une animation absente ne
+    /// retire que son propre jeu.
+    pub fn pose(&self) -> &'static str {
+        match self {
+            Jeu::TeteQuiTourne => POSE_SPIN_HEAD,
+            Jeu::JambesQuiBalancent => POSE_SIT_DANGLE,
+        }
+    }
+
+    /// Les poses requises, sous la forme attendue par la table d'envies.
+    ///
+    /// `&'static [&'static str]` : la table stocke des tranches statiques
+    /// pour n'allouer jamais. Une constante par jeu, donc, plutôt qu'un
+    /// `Vec` construit à la volée.
+    pub fn poses_requises(&self) -> &'static [&'static str] {
+        match self {
+            Jeu::TeteQuiTourne => &[POSE_SPIN_HEAD],
+            Jeu::JambesQuiBalancent => &[POSE_SIT_DANGLE],
+        }
+    }
+}
+
 /// Ce que le personnage est en train d'essayer de faire.
 ///
 /// **Une seule à la fois** (spec §7.1). `AllerA(surface)` arrive à l'étape 5
-/// et `Jouer(action)` à l'étape 2 — ce seront deux variantes de plus, et deux
-/// lignes de plus dans la table d'envies.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// — ce sera une variante de plus, et une ligne de plus dans la table
+/// d'envies.
+///
+/// `PartialOrd, Ord` : uniquement pour que les tests puissent ranger des
+/// intentions dans un `BTreeSet` (« quelles intentions ai-je vues ? »). Le
+/// comportement lui-même ne compare jamais deux intentions par ordre.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Intention {
     Flaner,
     SeReposer,
+    Jouer(Jeu),
 }
 
 /// À quelle vitesse il se déplace pendant une flânerie.
@@ -87,6 +133,7 @@ impl Allure {
 pub enum EtatIntention {
     Flanerie { allure: Allure, jusqu_a: Duration },
     Repos { jusqu_a: Duration },
+    Jeu { jusqu_a: Duration },
 }
 
 /// Une intention en cours, avec le moment où elle a commencé — c'est de là
@@ -112,6 +159,9 @@ impl ActiveIntention {
                 jusqu_a: Duration::ZERO,
             },
             Intention::SeReposer => EtatIntention::Repos {
+                jusqu_a: Duration::ZERO,
+            },
+            Intention::Jouer(_) => EtatIntention::Jeu {
                 jusqu_a: Duration::ZERO,
             },
         };
@@ -179,6 +229,14 @@ pub fn poursuivre(
 
         Intention::SeReposer => {
             let issue = se_reposer(ch, &mut ai, maintenant, rng);
+            if ch.intention.is_some() {
+                ch.intention = Some(ai);
+            }
+            issue
+        }
+
+        Intention::Jouer(jeu) => {
+            let issue = jouer(ch, jeu, &mut ai, maintenant, rng);
             if ch.intention.is_some() {
                 ch.intention = Some(ai);
             }
@@ -384,6 +442,49 @@ fn face_voisine(
     None
 }
 
+/// Jouer : poser une animation assise et la laisser tourner.
+///
+/// Plus simple que `se_reposer`, dont il ne partage pas la logique de phases :
+/// un jeu n'a pas d'étape. Les deux fonctions restent séparées pour cette
+/// raison — les fondre demanderait un paramètre « as-tu des phases ? », qui
+/// est le signe d'une mauvaise abstraction.
+fn jouer(
+    ch: &mut Character,
+    jeu: Jeu,
+    ai: &mut ActiveIntention,
+    maintenant: Duration,
+    rng: &mut dyn Rng,
+) -> Issue {
+    let EtatIntention::Jeu { mut jusqu_a } = ai.etat else {
+        ch.intention = None;
+        return Issue::Echouee;
+    };
+
+    // Défense en profondeur : `desire.rs` filtre déjà sur la pose, mais une
+    // config bricolée pourrait proposer ce jeu à un personnage qui n'a pas
+    // l'animation — et un personnage posé sur une pose inexistante serait
+    // invisible. Mieux vaut échouer et re-tirer.
+    if !ch.manifest.has_pose(jeu.pose()) {
+        ch.intention = None;
+        return Issue::Echouee;
+    }
+
+    if jusqu_a == Duration::ZERO {
+        // Première image : on tire la durée du jeu.
+        //
+        // 4 à 15 s, la même plage que le repos : bornée sous
+        // `DELAI_ABANDON` pour que l'issue soit `Finie` et non `Echouee`.
+        jusqu_a = maintenant + Duration::from_secs_f32(rng.range(4.0, 15.0));
+        ai.etat = EtatIntention::Jeu { jusqu_a };
+    } else if maintenant >= jusqu_a {
+        ch.intention = None;
+        return Issue::Finie;
+    }
+
+    ch.set_pose(jeu.pose(), maintenant);
+    Issue::EnCours
+}
+
 /// Se reposer : s'asseoir, et ne rien faire pendant un moment.
 ///
 /// À l'étape 2, l'inactivité prolongée enchaînera sur `sleep` — ce sera une
@@ -445,6 +546,16 @@ mod tests {
         Reglages::depuis(&crate::config::Config::default())
     }
 
+    // Les deux animations de jeu ajoutées ci-dessous ont des numéros de
+    // frame ARBITRAIRES (9, 10, 11) : ce manifeste est un DOUBLE, il ne sert
+    // qu'à dire quelles poses existent pour les tests. Les vraies frames de
+    // `blob` sont déclarées dans `characters/blob/mascot.json`.
+    //
+    // ⚠️ Le JSON ne supporte aucun commentaire : contrairement à du Rust
+    // normal, `//` à l'intérieur du `r#"..."#` ci-dessous ferait échouer
+    // `serde_json` avec un message peu clair (« key must be a string »).
+    // D'où ce commentaire ici, en dehors de la chaîne, plutôt qu'au milieu
+    // des clés `spinHead` / `sitDangle`.
     fn manifeste() -> Manifest {
         let json = r#"{
             "id": "t", "name": "T", "frameSize": [128,128], "scale": 1,
@@ -455,7 +566,9 @@ mod tests {
                 "run":   { "frames": [4, 5], "frameMs": 80,  "loop": true },
                 "sit":   { "frames": [6] },
                 "fall":  { "frames": [7], "anchor": [64, 64] },
-                "land":  { "frames": [8], "frameMs": 150 }
+                "land":  { "frames": [8], "frameMs": 150 },
+                "spinHead":  { "frames": [9, 10], "frameMs": 200 },
+                "sitDangle": { "frames": [11], "anchor": [64, 112] }
             }
         }"#;
         serde_json::from_str(json).unwrap()
@@ -706,6 +819,115 @@ mod tests {
         assert_eq!(
             poursuivre(&mut ch, &m, &reglages(), Duration::ZERO, DT, &mut rng),
             Issue::Finie
+        );
+    }
+
+    #[test]
+    fn jouer_pose_l_animation_du_jeu_tire() {
+        let m = monde();
+        let mut ch = perso(&m, 500.0);
+        let mut rng = XorShift32::seeded(1);
+
+        for (jeu, pose) in [
+            (Jeu::TeteQuiTourne, POSE_SPIN_HEAD),
+            (Jeu::JambesQuiBalancent, POSE_SIT_DANGLE),
+        ] {
+            ch.intention = Some(ActiveIntention::nouvelle(
+                Intention::Jouer(jeu),
+                Duration::ZERO,
+            ));
+            let issue = poursuivre(&mut ch, &m, &reglages(), Duration::ZERO, DT, &mut rng);
+            assert_eq!(issue, Issue::EnCours);
+            assert_eq!(ch.pose, pose, "jeu {jeu:?}");
+        }
+    }
+
+    #[test]
+    fn jouer_ne_deplace_pas_le_personnage() {
+        // Les deux jeux sont des animations assises : `Velocity="0,0"` dans
+        // `actions.xml`. Si le personnage dérivait, c'est qu'une vitesse
+        // traîne quelque part.
+        let m = monde();
+        let mut ch = perso(&m, 500.0);
+        let mut rng = XorShift32::seeded(1);
+        ch.intention = Some(ActiveIntention::nouvelle(
+            Intention::Jouer(Jeu::TeteQuiTourne),
+            Duration::ZERO,
+        ));
+
+        let ou = offset_de(&ch);
+        for i in 0..120 {
+            poursuivre(
+                &mut ch,
+                &m,
+                &reglages(),
+                Duration::from_secs_f32(i as f32 * DT),
+                DT,
+                &mut rng,
+            );
+        }
+        assert_eq!(offset_de(&ch), ou);
+    }
+
+    #[test]
+    fn jouer_se_termine_avant_le_delai_d_abandon() {
+        // Comme le repos : la durée est bornée sous `DELAI_ABANDON`, sinon
+        // l'issue serait `Echouee` au lieu de `Finie` et la trace du mode
+        // simulation mentirait.
+        let m = monde();
+        let mut ch = perso(&m, 500.0);
+        let mut rng = XorShift32::seeded(1);
+        ch.intention = Some(ActiveIntention::nouvelle(
+            Intention::Jouer(Jeu::TeteQuiTourne),
+            Duration::ZERO,
+        ));
+
+        let mut issue = Issue::EnCours;
+        for i in 0..(20 * 60) {
+            issue = poursuivre(
+                &mut ch,
+                &m,
+                &reglages(),
+                Duration::from_secs_f32(i as f32 * DT),
+                DT,
+                &mut rng,
+            );
+            if issue != Issue::EnCours {
+                break;
+            }
+        }
+        assert_eq!(issue, Issue::Finie);
+    }
+
+    #[test]
+    fn jouer_sans_la_pose_echoue_au_lieu_de_figer() {
+        // Défense en profondeur, comme `se_reposer_sans_pose_sit_echoue` :
+        // le tirage filtre déjà, mais une config bricolée ne doit pas
+        // produire un personnage invisible.
+        let json = r#"{
+            "id": "t", "name": "T", "frameSize": [128,128], "scale": 1,
+            "hitbox": [40,20,48,100],
+            "poses": { "stand": { "frames": [1] }, "walk": { "frames": [2] } }
+        }"#;
+        let m = monde();
+        let mut ch = Character::new(
+            serde_json::from_str(json).unwrap(),
+            Attachment::On {
+                platform: m.platforms()[0].id,
+                face: Face::Top,
+                offset: 500.0,
+            },
+            Point::new(500.0, 1032.0),
+        );
+        let mut rng = XorShift32::seeded(1);
+        ch.intention = Some(ActiveIntention::nouvelle(
+            Intention::Jouer(Jeu::TeteQuiTourne),
+            Duration::ZERO,
+        ));
+
+        assert_eq!(
+            poursuivre(&mut ch, &m, &reglages(), Duration::ZERO, DT, &mut rng),
+            Issue::Echouee
         );
     }
 

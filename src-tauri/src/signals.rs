@@ -39,6 +39,7 @@ use std::time::Duration;
 pub struct Biais {
     pub flaner: f32,
     pub se_reposer: f32,
+    pub jouer: f32,
 }
 
 impl Biais {
@@ -49,6 +50,7 @@ impl Biais {
         Biais {
             flaner: 1.0,
             se_reposer: 1.0,
+            jouer: 1.0,
         }
     }
 
@@ -56,6 +58,10 @@ impl Biais {
         match i {
             Intention::Flaner => self.flaner,
             Intention::SeReposer => self.se_reposer,
+            // `Jouer(_)` : le biais ne distingue pas les animations. « jouer
+            // ×3 » vaut pour les deux, et les distinguer serait un réglage de
+            // plus sans effet observable.
+            Intention::Jouer(_) => self.jouer,
         }
     }
 }
@@ -122,6 +128,9 @@ pub fn biais_de(s: &Signaux, c: &Config) -> Biais {
             }
             if let Some(x) = m.se_reposer {
                 b.se_reposer *= x;
+            }
+            if let Some(x) = m.jouer {
+                b.jouer *= x;
             }
         }
     }

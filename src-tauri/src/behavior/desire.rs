@@ -17,7 +17,7 @@
 //!   · les poids étant de la donnée, on règle son caractère sans recompiler
 //!     (le plan 1b les sortira dans `config.json`).
 
-use super::intention::Intention;
+use super::intention::{Intention, Jeu};
 use crate::character::manifest::{Manifest, POSE_SIT, POSE_WALK};
 use crate::rng::Rng;
 
@@ -84,6 +84,24 @@ impl TableEnvies {
                     intention: Intention::SeReposer,
                     base: config.envies.se_reposer,
                     poses_requises: &[POSE_SIT],
+                },
+                // **Deux lignes et non une**, pour que la couverture partielle
+                // joue par animation (spec §8.6) : un pack qui n'a que l'une
+                // des deux joue quand même.
+                //
+                // Les deux partagent le poids `envies.jouer` : « jouer ×3 »
+                // dans un modificateur d'application ne distingue pas les
+                // animations, et devoir régler chaque jeu séparément serait
+                // du réglage pour rien.
+                EntreeEnvie {
+                    intention: Intention::Jouer(Jeu::TeteQuiTourne),
+                    base: config.envies.jouer,
+                    poses_requises: Jeu::TeteQuiTourne.poses_requises(),
+                },
+                EntreeEnvie {
+                    intention: Intention::Jouer(Jeu::JambesQuiBalancent),
+                    base: config.envies.jouer,
+                    poses_requises: Jeu::JambesQuiBalancent.poses_requises(),
                 },
             ],
         }
@@ -166,6 +184,15 @@ mod tests {
             match table.tirer(m, &mut rng) {
                 Some(Intention::Flaner) => flaner += 1,
                 Some(Intention::SeReposer) => reposer += 1,
+                // `compter` ne sert qu'aux tests d'étape 1a, dont les
+                // manifestes (via `manifeste_avec`) ne déclarent jamais
+                // `spinHead` ni `sitDangle` : le poids des deux lignes
+                // `Jouer` est donc TOUJOURS nul, et cette branche ne peut
+                // pas être atteinte. `unreachable!` plutôt qu'un compteur
+                // muet : si un jour un manifeste de test gagnait ces poses
+                // par erreur, on veut un panic bruyant, pas un total qui ne
+                // correspond plus à `n`.
+                Some(Intention::Jouer(_)) => unreachable!("aucune pose de jeu dans ce manifeste"),
                 None => rien += 1,
             }
         }
@@ -230,6 +257,10 @@ mod tests {
             match table.tirer_avec(&m, &mut rng, mult) {
                 Some(Intention::Flaner) => flaner += 1,
                 Some(Intention::SeReposer) => reposer += 1,
+                // Même raison que dans `compter` : ce manifeste n'a ni
+                // `spinHead` ni `sitDangle`, le poids des lignes `Jouer` est
+                // nul, la branche est inatteignable.
+                Some(Intention::Jouer(_)) => unreachable!("aucune pose de jeu dans ce manifeste"),
                 None => {}
             }
         }
@@ -270,6 +301,12 @@ mod tests {
             envies: crate::config::Envies {
                 flaner: 1.0,
                 se_reposer: 9.0,
+                // `..Default::default()` : la Tâche 3 a ajouté `jouer` à
+                // cette structure, et un littéral exhaustif ferait alors
+                // échouer la compilation de CE test — pour rien (même
+                // raison que le commentaire sur `ModifsAppli` dans
+                // `signals.rs`).
+                ..crate::config::Envies::default()
             },
             ..crate::config::Config::default()
         };
@@ -282,6 +319,10 @@ mod tests {
             match table.tirer(&m, &mut rng) {
                 Some(Intention::Flaner) => flaner += 1,
                 Some(Intention::SeReposer) => reposer += 1,
+                // Même raison que dans `compter` : ce manifeste n'a ni
+                // `spinHead` ni `sitDangle`, le poids des lignes `Jouer` est
+                // nul, la branche est inatteignable.
+                Some(Intention::Jouer(_)) => unreachable!("aucune pose de jeu dans ce manifeste"),
                 None => {}
             }
         }
@@ -313,5 +354,61 @@ mod tests {
         let m = manifeste_avec(&["stand", "walk", "sit"]);
         let t = TableEnvies::defaut();
         assert_eq!(compter(&t, &m, 999, 500), compter(&t, &m, 999, 500));
+    }
+
+    #[test]
+    fn chaque_jeu_est_retire_separement_du_tirage() {
+        // **LE test des deux lignes.** Un pack qui n'a que `spinHead` doit
+        // jouer quand même — avec cette animation seulement. Une intention
+        // `Jouer` unique exigeant les deux poses ne jouerait pas du tout.
+        use crate::behavior::intention::Jeu;
+
+        let m = manifeste_avec(&["stand", "walk", "sit", "spinHead"]);
+        let table = TableEnvies::defaut();
+        let mut rng = XorShift32::seeded(3);
+
+        let mut vus = std::collections::BTreeSet::new();
+        for _ in 0..2_000 {
+            if let Some(i) = table.tirer(&m, &mut rng) {
+                vus.insert(i);
+            }
+        }
+
+        assert!(
+            vus.contains(&Intention::Jouer(Jeu::TeteQuiTourne)),
+            "il a spinHead : il doit pouvoir se tourner la tête"
+        );
+        assert!(
+            !vus.contains(&Intention::Jouer(Jeu::JambesQuiBalancent)),
+            "il n'a pas sitDangle : cette animation doit être retirée"
+        );
+    }
+
+    #[test]
+    fn le_biais_de_jeu_porte_sur_les_deux_animations() {
+        // Le modificateur par application dit « jouer ×3 » sans distinguer
+        // les animations : les deux lignes doivent donc en profiter.
+        use crate::behavior::intention::Jeu;
+
+        let m = manifeste_avec(&["stand", "walk", "sit", "spinHead", "sitDangle"]);
+        let table = TableEnvies::defaut();
+        let mut rng = XorShift32::seeded(11);
+
+        let (mut jeux, mut autres) = (0, 0);
+        for _ in 0..10_000 {
+            let mult = |i: Intention| match i {
+                Intention::Jouer(_) => 3.0,
+                _ => 1.0,
+            };
+            match table.tirer_avec(&m, &mut rng, mult) {
+                Some(Intention::Jouer(_)) => jeux += 1,
+                Some(_) => autres += 1,
+                None => {}
+            }
+        }
+
+        // Poids : flâner 5, reposer 1, deux jeux à 1 × 3 = 6. Donc 6 / 12.
+        let part = jeux as f32 / (jeux + autres) as f32;
+        assert!((part - 0.5).abs() < 0.03, "part des jeux : {part}");
     }
 }

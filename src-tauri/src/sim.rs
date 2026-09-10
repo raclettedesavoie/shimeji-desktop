@@ -163,6 +163,15 @@ pub fn executer(
                 let jeton = match kind {
                     behavior::intention::Intention::Flaner => 1u64,
                     behavior::intention::Intention::SeReposer => 2u64,
+                    // Deux jetons distincts : deux histoires qui jouent à des
+                    // choses différentes doivent donner des signatures
+                    // différentes.
+                    behavior::intention::Intention::Jouer(
+                        behavior::intention::Jeu::TeteQuiTourne,
+                    ) => 3u64,
+                    behavior::intention::Intention::Jouer(
+                        behavior::intention::Jeu::JambesQuiBalancent,
+                    ) => 4u64,
                 };
                 resume.signature = resume
                     .signature
