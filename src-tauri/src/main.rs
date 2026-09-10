@@ -636,8 +636,10 @@ fn boucle(
 
             // « Actif » se dérive du MÊME seuil que le biais, pour qu'il soit
             // impossible d'être « actif » et « inactif » dans la même image.
-            utilisateur_actif = s.inactivite
-                < Duration::from_secs_f32(config_courante.signaux.inactivite_secondes);
+            // La fonction vit dans `signals.rs`, à côté de `biais_de`, et pas
+            // recopiée ici : c'est la SEULE définition de « actif », partagée
+            // avec `sim.rs` — sans quoi les deux finiraient par diverger.
+            utilisateur_actif = signals::utilisateur_actif(&s, &config_courante);
 
             // ── Le verrouillage : le quatrième réflexe ──────────────────
             //

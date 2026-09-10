@@ -388,8 +388,13 @@ mod tests {
     fn le_biais_de_jeu_porte_sur_les_deux_animations() {
         // Le modificateur par application dit « jouer ×3 » sans distinguer
         // les animations : les deux lignes doivent donc en profiter.
-        use crate::behavior::intention::Jeu;
-
+        //
+        // Pas d'import de `Jeu` ici : contrairement à
+        // `chaque_jeu_est_retire_separement_du_tirage`, ce test ne nomme
+        // jamais une variante précise — il ne regarde que
+        // `Intention::Jouer(_)` — et un import inutilisé laissé en place est
+        // un avertissement permanent, qui est exactement ce qui masque le
+        // prochain avertissement réel.
         let m = manifeste_avec(&["stand", "walk", "sit", "spinHead", "sitDangle"]);
         let table = TableEnvies::defaut();
         let mut rng = XorShift32::seeded(11);

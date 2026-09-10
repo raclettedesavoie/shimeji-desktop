@@ -44,8 +44,28 @@ pub struct Resume {
     pub poses_vues: BTreeSet<String>,
 
     /// La plus longue période pendant laquelle **rien n'a bougé et aucune
-    /// décision n'a été prise**. **C'est le chiffre qui compte** : il doit
-    /// rester sous le délai d'abandon (décision n° 4).
+    /// décision n'a été prise**.
+    ///
+    /// ⚠️ **Ce que ce chiffre peut, et ne peut pas, détecter** (précisé par
+    /// la vague de correction finale, point 7e — le commentaire précédent en
+    /// promettait plus). L'empreinte comparée à chaque image inclut
+    /// `intentions_tirees` ; or toute intention expire au plus tard à
+    /// `DELAI_ABANDON` (décision n° 4), ce qui incrémente ce compteur et
+    /// change l'empreinte. `blocage_max` ne peut donc **structurellement
+    /// pas** dépasser le délai d'abandon tant qu'au moins UNE intention
+    /// continue d'être tirée de temps en temps, quelle qu'elle soit. Le seul
+    /// cas que ce chiffre détecte réellement est **« plus aucune intention
+    /// n'est tirée du tout »** — un personnage sans aucune pose jouable
+    /// (spec §8.6).
+    ///
+    /// Ce que ce chiffre ne détecte PAS : un tirage qui se répète très vite
+    /// sans jamais laisser une intention progresser. C'est exactement ce qui
+    /// s'est produit dans la boucle pathologique du point 1 de cette même
+    /// vague — la couche 3 re-tirait `SeReposer` à chaque changement
+    /// d'identité d'intention, ce qui change l'empreinte à CHAQUE image et
+    /// maintient `blocage_max` proche de zéro, alors même que le personnage
+    /// restait visuellement figé. Cette régression-là n'a été révélée que
+    /// par l'assertion sur le sommeil des heures 22-23, pas par ce champ.
     pub blocage_max: Duration,
 
     /// Empreinte de la suite des intentions tirées.
@@ -86,9 +106,17 @@ pub fn signaux_de_la_journee(minute: u32) -> crate::probe::Signaux {
     const DEBUT: u32 = 9;
     let heure = ((DEBUT + minute / 60) % 24) as u8;
 
-    // Présent : 9 h-12 h, 14 h-18 h, 20 h-22 h. Absent le reste du temps —
-    // pause déjeuner, soirée, nuit.
-    let present = matches!(heure, 9..=11 | 14..=17 | 20..=21);
+    // Présent : 9 h-12 h, 14 h-18 h, 20 h-minuit (il travaille tard, un soir).
+    // Absent le reste du temps — pause déjeuner, début de soirée, nuit.
+    //
+    // Le créneau 22-23 h a été ajouté par la vague de correction finale : sans
+    // lui, aucune minute de présence ne tombait dans le créneau « soir »
+    // (22 h→6 h, `SignauxReglages::soir_debut/fin`), et la combinaison
+    // « signal de sommeil actif + utilisateur présent » n'était donc jamais
+    // jouée. C'est exactement le trou qui cachait la contradiction entre
+    // l'entrée en sommeil et l'interruption du sommeil (voir `intention.rs`,
+    // le commentaire sur `veut_dormir` dans `se_reposer`).
+    let present = matches!(heure, 9..=11 | 14..=17 | 20..=23);
 
     // Combien de temps s'est-il écoulé depuis la dernière minute de présence ?
     //
@@ -114,6 +142,17 @@ pub fn signaux_de_la_journee(minute: u32) -> crate::probe::Signaux {
         // Une application au premier plan pendant les heures de travail : la
         // table des modificateurs est vide par défaut, donc ça ne change rien
         // — mais un utilisateur qui ajoute une ligne le verra dans la trace.
+        //
+        // ⚠️ **C'est aussi le SEUL canal, dans cette simulation, par lequel un
+        // modificateur d'application mal réglé ferait fuiter du sommeil aux
+        // heures de présence.** Si un `config.json` d'utilisateur donnait à
+        // `Code.exe` un `seReposer` démesuré (par erreur de saisie, un `80`
+        // au lieu d'un `0.8`), ce serait précisément aux heures « présent »
+        // ci-dessus que cette simulation le révélerait — parce que c'est la
+        // seule application active jouée ici. La table par défaut étant vide,
+        // rien ne l'exerce aujourd'hui ; mais si `une_journee_entiere_dort_...`
+        // se mettait un jour à rougir sans qu'aucun autre changement
+        // n'explique pourquoi, c'est le premier endroit à soupçonner.
         appli_active: if present {
             Some("Code.exe".to_string())
         } else {
@@ -237,8 +276,10 @@ pub fn executer(
             let minute = (i / (60 * 60)) as u32;
             let s = signaux_de_la_journee(minute);
             biais = crate::signals::biais_de(&s, config);
-            utilisateur_actif =
-                s.inactivite < Duration::from_secs_f32(config.signaux.inactivite_secondes);
+            // Même fonction que `main.rs` (`signals::utilisateur_actif`), et
+            // pas recopiée ici : c'est justement la divergence que ce
+            // partage empêche — voir son commentaire dans `signals.rs`.
+            utilisateur_actif = crate::signals::utilisateur_actif(&s, config);
             heure_courante = s.heure;
         }
 
@@ -524,8 +565,52 @@ mod tests {
             "il dort autant le matin que la nuit : le signal ne mord pas              (matin {matin} s, nuit {nuit} s)"
         );
 
-        // ── 3. Il se réveille ───────────────────────────────────────────
-        // La chronologie compte cinq retours de l'utilisateur.
+        // ── 2 bis. Présent le soir, il ne dort PAS profondément ──────────
+        //
+        // Aux heures 22-23, la chronologie le dit PRÉSENT (voir le
+        // commentaire de `signaux_de_la_journee`) alors que le signal du soir
+        // (22 h→6 h, ×3 sur le repos) est déjà actif. Sans l'invariant
+        // « phase Endormi ⇒ utilisateur absent » (`intention.rs`), le sommeil
+        // profond resterait atteignable : le ×3 du soir suffit à franchir
+        // `seuilSommeil = 2.0` à lui seul, présence ou pas.
+        //
+        // Ce n'est PAS une redite de l'assertion précédente : `matin` ne
+        // couvre que 9 h-11 h, où aucun signal de sommeil ne mord — elle ne
+        // pouvait donc rien dire de la contradiction entre le signal du soir
+        // et la présence.
+        let soir_present: u32 = (22..=23).map(|h| r.endormi_par_heure[h]).sum();
+        assert_eq!(
+            soir_present, 0,
+            "il dort profondément à 22-23 h alors que l'utilisateur est présent : \
+             l'entrée en sommeil ne doit pas être possible utilisateur actif"
+        );
+
+        // ── 3. Il sort du sommeil, par un moyen ou un autre ─────────────
+        //
+        // La chronologie compte DEUX retours de l'utilisateur : à 14 h
+        // (après la pause déjeuner) et à 20 h (après la soirée). 9 h est le
+        // DÉBUT de la journée simulée, pas un retour — il n'y a personne
+        // avant. Vérifié en rejouant `signaux_de_la_journee` sur les 1440
+        // minutes et en comptant les transitions absent → présent (vague de
+        // correction finale, point 4 : l'ancien commentaire disait « cinq »,
+        // ce qui était faux).
+        //
+        // ⚠️ **Cette assertion ne teste PAS le mécanisme d'interruption.**
+        // `resume.reveils` compte TOUTE transition de la pose `sleep` vers
+        // autre chose — y compris la fin naturelle d'un sommeil (20-60 s,
+        // `PhaseRepos::Endormi`) ou l'expiration au délai d'abandon (20 s).
+        // L'assertion resterait verte même si le bloc d'interruption de
+        // `behavior::mod::pas` disparaissait entièrement : un sommeil finit
+        // toujours par se terminer tout seul. Le vrai mécanisme du réveil
+        // (« redevenir actif termine le sommeil, sans le choisir ») est
+        // couvert ailleurs, par les tests unitaires de `behavior/mod.rs`
+        // (`redevenir_actif_reveille_le_personnage_endormi`,
+        // `le_reveil_ne_choisit_pas_la_suite`,
+        // `etre_actif_n_empeche_pas_de_s_asseoir`). Ici, on vérifie
+        // seulement qu'il ne reste pas coincé en sommeil pour toujours — et
+        // la vraie propriété de l'étape, « il ne dort pas profondément
+        // pendant que l'utilisateur travaille », est déjà couverte par
+        // l'assertion sur les heures 22-23 ci-dessus.
         assert!(r.reveils > 0, "il ne s'est jamais réveillé");
 
         // ── 4. LA MARGE SURVIT — le test de la décision n° 3 ────────────

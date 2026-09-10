@@ -138,6 +138,21 @@ pub fn biais_de(s: &Signaux, c: &Config) -> Biais {
     b
 }
 
+/// L'utilisateur vient-il de toucher à quelque chose ?
+///
+/// Vit ici, à côté de `biais_de`, et pas dans les deux boucles (`main.rs` et
+/// `sim.rs`) : c'est la **définition** de « actif », et la seule chose que le
+/// comportement sait de l'inactivité. Recopiée dans les deux boucles, elle
+/// finirait par diverger — et la divergence se lirait « la simulation prouve
+/// un comportement que l'application n'a pas », soit précisément ce que le
+/// mode simulation existe pour empêcher.
+///
+/// Même seuil que `biais_de` (`inactiviteSecondes`) : c'est ce qui rend
+/// impossible d'être « actif » et « inactif » à la même image.
+pub fn utilisateur_actif(s: &Signaux, c: &Config) -> bool {
+    s.inactivite < Duration::from_secs_f32(c.signaux.inactivite_secondes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -296,6 +311,24 @@ mod tests {
         let mut s = rien_de_special();
         s.appli_active = Some("notepad.exe".to_string());
         assert_eq!(biais_de(&s, &Config::default()), Biais::neutre());
+    }
+
+    #[test]
+    fn utilisateur_actif_partage_le_seuil_du_biais() {
+        // **Le seuil est franc** : juste avant, actif ; juste après, plus.
+        // Le même test existe pour `biais_de`
+        // (`le_seuil_d_inactivite_est_franc`) — c'est volontaire, ce sont
+        // deux fonctions distinctes qui doivent rester d'accord sur le même
+        // seuil, sans quoi « actif » et « inactif » pourraient être vrais à
+        // la même image.
+        let c = Config::default();
+        let mut s = rien_de_special();
+
+        s.inactivite = Duration::from_secs(119);
+        assert!(utilisateur_actif(&s, &c), "119 s : encore actif");
+
+        s.inactivite = Duration::from_secs(121);
+        assert!(!utilisateur_actif(&s, &c), "121 s : plus actif");
     }
 
     #[test]

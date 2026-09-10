@@ -550,7 +550,31 @@ fn se_reposer(
     // Noter la forme : on ne teste PAS « est-ce que l'utilisateur est
     // parti ». On teste un poids. C'est la décision n° 3 appliquée à la
     // lettre : le comportement ne sait pas ce qu'est l'inactivité.
-    let veut_dormir = e.biais.pour(Intention::SeReposer) >= reglages.seuil_sommeil;
+    //
+    // ⚠️ **Sauf pour `!e.utilisateur_actif`, ajouté par la vague de
+    // correction finale.** Ce terme-là consulte un FAIT et non un poids, et
+    // c'est délibéré : `veut_dormir` (le poids) décide s'il VEUT dormir,
+    // `utilisateur_actif` (le fait) décide si dormir est POSSIBLE. La
+    // décision n° 3 n'est pas entamée — le signal ne CHOISIT toujours pas
+    // l'intention, il ferme une porte, exactement comme une pose manquante en
+    // ferme une (couverture partielle, spec §8.6).
+    //
+    // Sans ce terme, deux règles correctes séparément se contredisaient à
+    // l'assemblage : le soir (22 h→6 h, ×3 par défaut) franchit `seuilSommeil`
+    // à lui seul, SANS exiger d'absence — contrairement à ce que le design
+    // §6 affirmait (« le sommeil n'est atteint que si un signal a poussé le
+    // biais au-dessus du seuil […] parce que l'utilisateur était parti »,
+    // corrigé depuis). Un utilisateur au clavier après 22 h pouvait donc
+    // entrer en sommeil profond, puis `behavior::mod::pas` l'en faisait
+    // aussitôt sortir (l'interruption ne s'applique qu'à `Endormi`), et la
+    // continuité de pose ci-dessous le replongeait dedans : un flash de
+    // quelques images à chaque fin de repos avec `blob`, et **une boucle qui
+    // ne se termine jamais** avec un pack sans pose de jeu ni de marche —
+    // 30 intentions tirées par seconde, personnage figé. L'invariant retenu
+    // pour empêcher cela structurellement : **phase `Endormi` ⇒ utilisateur
+    // absent.**
+    let veut_dormir = e.biais.pour(Intention::SeReposer) >= reglages.seuil_sommeil
+        && !e.utilisateur_actif;
 
     // ── La continuité de pose, et sa condition ──────────────────────────
     //
@@ -577,8 +601,16 @@ fn se_reposer(
     // ne sait toujours pas ce qu'est l'inactivité (décision n° 3).
     if phase == PhaseRepos::Assis && ch.pose == POSE_SLEEP && veut_dormir {
         phase = PhaseRepos::Endormi;
-        // On repart sur une durée de sommeil fraîche : c'est bien un nouveau
-        // repos, seulement il ne recommence pas par la position assise.
+        // ⚠️ Cette ligne n'a AUCUN EFFET ICI, et c'est normal : ce bloc ne se
+        // déclenche que sur une intention FRAÎCHE (voir le commentaire
+        // au-dessus, « comme après un re-tirage »), dont `jusqu_a` vaut déjà
+        // `Duration::ZERO` depuis `ActiveIntention::nouvelle`. Elle reste
+        // écrite pour que l'intention soit explicite — « ce repos tirera sa
+        // propre durée à l'image suivante » — même si le compilateur ne voit
+        // ici qu'une affectation redondante. Corrigé le commentaire, pas le
+        // code (vague de correction finale, point 7c) : la version
+        // précédente prétendait que cette ligne « repartait sur une durée
+        // fraîche », ce qui laissait croire qu'elle changeait quelque chose.
         jusqu_a = Duration::ZERO;
     }
 
@@ -725,15 +757,27 @@ mod tests {
         }
     }
 
-    /// Des `Entrees` complètement neutres (biais de repos à 1, comme
-    /// `Biais::neutre()`).
+    /// Des `Entrees` complètement neutres.
     ///
     /// `poursuivre` prend désormais des `Entrees` quelle que soit
     /// l'intention en cours — y compris `Flaner` et `Jouer`, qui ne les
     /// consultent jamais. Ce raccourci évite de répéter la même valeur
     /// neutre dans chacun des tests écrits avant cette tâche.
+    ///
+    /// Construit le biais via `signals::Biais::neutre()` plutôt qu'en
+    /// recopiant `{ flaner: 1.0, se_reposer: 1.0, jouer: 1.0 }` : deux
+    /// définitions du neutre auraient fini par diverger, et celle de
+    /// `Biais::neutre()` sert de référence à toute la Tâche 4 (vague de
+    /// correction finale, point 7b).
     fn entrees_neutres() -> Entrees {
-        entrees_avec_biais_repos(1.0)
+        Entrees {
+            souris: Point::new(0.0, 0.0),
+            echelle_affichage: 1.0,
+            bouton_gauche: false,
+            curseur_sur_le_personnage: false,
+            biais: crate::signals::Biais::neutre(),
+            utilisateur_actif: true,
+        }
     }
 
     #[test]

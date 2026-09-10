@@ -113,6 +113,44 @@ pub struct SignauxReglages {
     pub seuil_sommeil: f32,
 }
 
+/// Bornes de `inactivite_secondes` (vague de correction finale).
+///
+/// La valeur vient d'un `config.json` édité à la main, et
+/// `Duration::from_secs_f32` **panique** sur un flottant négatif —
+/// `{"signaux": {"inactiviteSecondes": -1}}` est du JSON parfaitement valide,
+/// que `serde_json` désérialise sans erreur. Le panique arrive ensuite, dans
+/// `signals::biais_de` et `signals::utilisateur_actif`, au premier battement
+/// de la boucle à 2 Hz — et en `release`, il n'y a pas de console : le
+/// symptôme est « le personnage s'est figé, sans raison », rien de plus.
+///
+/// Une borne haute existe aussi, généreuse (24 h) : elle n'empêche rien
+/// d'utile, elle écarte seulement les valeurs qui trahissent une faute de
+/// frappe (un zéro de trop).
+const INACTIVITE_SECONDES_MIN: f32 = 0.0;
+const INACTIVITE_SECONDES_MAX: f32 = 24.0 * 3600.0;
+
+impl SignauxReglages {
+    /// Ramène les champs qui peuvent faire paniquer un appelant dans une
+    /// plage sûre.
+    ///
+    /// **Appelée une seule fois, à la sortie de `charger_depuis`** — c'est
+    /// l'endroit choisi pour couvrir tous les sites d'appel à la fois :
+    /// `signals::biais_de` et `signals::utilisateur_actif` lisent tous deux
+    /// `Config::signaux` directement, sans passer par `Reglages::depuis` (qui
+    /// ne borne que ce qu'il recopie lui-même, comme le facteur de vitesse).
+    /// Borner ici, une fois, évite d'avoir à se souvenir de le refaire à
+    /// chaque nouveau consommateur de ce champ.
+    ///
+    /// `seuilSommeil` négatif n'est volontairement PAS bordé ici : une
+    /// comparaison (`>=`) ne panique jamais sur une valeur négative, borner
+    /// n'y gagnerait rien.
+    fn borner(&mut self) {
+        self.inactivite_secondes = self
+            .inactivite_secondes
+            .clamp(INACTIVITE_SECONDES_MIN, INACTIVITE_SECONDES_MAX);
+    }
+}
+
 impl Default for SignauxReglages {
     fn default() -> Self {
         // Les valeurs de départ de la spec §7.2.
@@ -357,7 +395,13 @@ pub fn charger_depuis(chemin: &Path) -> Config {
     };
 
     match serde_json::from_str(&texte) {
-        Ok(c) => c,
+        Ok(mut c) => {
+            // Un JSON valide peut quand même contenir une valeur absurde
+            // (voir `SignauxReglages::borner`) : un fichier malformé n'est
+            // pas la seule façon de casser la promesse de la spec §9.3.
+            c.signaux.borner();
+            c
+        }
         Err(e) => {
             // **Bruyant, celui-là.** L'utilisateur a écrit un fichier et
             // s'attend à ce qu'il serve ; s'il est malformé il doit le
@@ -439,6 +483,28 @@ mod tests {
         let avec_bom = format!("{}{}", '\u{feff}', r#"{ "vitesse": 0.3 }"#);
         let f = fichier_de_test(&avec_bom);
         assert_eq!(charger_depuis(&f).vitesse, 0.3);
+    }
+
+    #[test]
+    fn une_inactivite_negative_ne_fait_pas_paniquer() {
+        // **Le test de la vague de correction finale, point 3.**
+        // `{"inactiviteSecondes": -1}` est du JSON parfaitement valide :
+        // `serde_json` le désérialise sans erreur, mais
+        // `Duration::from_secs_f32(-1.0)` PANIQUE. Sans le bornage, ce
+        // fichier passerait `un_json_malforme_donne_les_defauts_sans_paniquer`
+        // haut la main (il n'est pas malformé) et ferait quand même figer
+        // le personnage au premier battement de la boucle à 2 Hz.
+        let f = fichier_de_test(r#"{ "signaux": { "inactiviteSecondes": -1 } }"#);
+        let c = charger_depuis(&f);
+
+        assert!(
+            c.signaux.inactivite_secondes >= 0.0,
+            "la valeur négative n'a pas été bornée : {}",
+            c.signaux.inactivite_secondes
+        );
+        // La preuve directe : l'appel qui panique dans `signals.rs` ne
+        // panique plus sur la valeur bornée.
+        let _ = std::time::Duration::from_secs_f32(c.signaux.inactivite_secondes);
     }
 
     #[test]

@@ -30,7 +30,7 @@
     "sitDangle":    { "frames": [31, 32, 31, 33], "frameMs": 400, "loop": true, "anchor": [64, 112] },
     "sitLegsUp":    { "frames": [30], "anchor": [64, 112] },
     "sitLookUp":    { "frames": [26] },
-    "spinHead":     { "frames": [26, 15, 27, 16, 28, 17, 29, 11], "frameMs": 200 },
+    "spinHead":     { "frames": [26, 15, 27, 16, 28, 17, 29, 11], "frameMs": 200, "loop": true },
     "jump":         { "frames": [22] },
 
     "grabWall":     { "frames": [13] },

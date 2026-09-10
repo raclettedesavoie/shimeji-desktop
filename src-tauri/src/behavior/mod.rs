@@ -59,8 +59,11 @@ pub struct Entrees {
     ///
     /// Dérivé du même seuil que le biais (`inactiviteSecondes`), mais gardé
     /// à part parce qu'il ne sert pas à la même chose : le biais **pondère un
-    /// tirage**, celui-ci **interrompt un sommeil** (Tâche 5). Deux usages,
-    /// deux champs — les fondre obligerait à deviner l'un depuis l'autre.
+    /// tirage**, celui-ci **interrompt un sommeil** (Tâche 5) **et conditionne
+    /// l'entrée en sommeil** (`intention::se_reposer`, vague de correction
+    /// finale — voir l'invariant « phase `Endormi` ⇒ utilisateur absent »).
+    /// Deux usages, deux champs — les fondre obligerait à deviner l'un depuis
+    /// l'autre.
     pub utilisateur_actif: bool,
 }
 

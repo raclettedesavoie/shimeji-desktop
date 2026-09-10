@@ -284,10 +284,30 @@ La règle retenue :
 > jamais aux heures où l'on regarde l'écran, ce qui est précisément le moment où on
 > le voit.
 >
-> Le sommeil, lui, n'est **atteint** que si un signal a poussé le biais au-dessus du
-> seuil (§5) — c'est-à-dire, en pratique, parce que l'utilisateur était parti. En
-> réveiller le personnage à son retour est donc cohérent, et sans effet de bord sur
-> les siestes ordinaires.
+> ⚠️ **Correction (vague de correction finale) : la phrase ci-dessous a été écrite,
+> puis démentie par la mesure.** Elle disait : « le sommeil, lui, n'est atteint que si
+> un signal a poussé le biais au-dessus du seuil — c'est-à-dire, en pratique, parce
+> que l'utilisateur était parti. » **C'est faux pour deux signaux sur quatre** : le
+> créneau du soir (×3 par défaut) et la batterie faible (×2 par défaut) franchissent
+> `seuilSommeil = 2.0` **sans exiger d'absence** — seul « inactif > 2 min » (×8) le
+> fait. Un utilisateur au clavier après 22 h pouvait donc entrer en sommeil profond,
+> que l'interruption ci-dessus faisait aussitôt cesser, et que la continuité de pose
+> (§5) replongeait dedans à l'image suivante — sur un pack sans pose de marche ni de
+> jeu, une boucle qui **ne se termine jamais** (30 intentions tirées par seconde,
+> personnage figé dans la pose de sommeil).
+>
+> **L'invariant retenu à la place : phase `Endormi` ⇒ utilisateur absent.** La
+> condition de sommeil (`veut_dormir` dans `intention::se_reposer`) porte donc
+> désormais aussi `&& !utilisateur_actif`, en plus du seuil de biais. Ce n'est pas une
+> entorse à la décision n° 3 : `veut_dormir` (un poids) décide s'il VEUT dormir,
+> `utilisateur_actif` (un fait) décide si dormir est POSSIBLE — le signal ne CHOISIT
+> toujours pas l'intention, il ferme une porte, exactement comme une pose manquante en
+> ferme une (couverture partielle, §8.6). Conséquence sur le comportement affiché : le
+> soir, utilisateur présent, il ne s'endort plus profondément, mais il s'assoit plus
+> souvent — le ×3 du soir continue de peser sur le tirage de `SeReposer`. La promesse
+> « tard le soir, il traîne et dort davantage » reste tenue, par le poids et non par le
+> sommeil profond ; et « il se réveille au retour » redevient vraie en toutes
+> circonstances.
 
 La frontière que ça trace, et qu'il faut garder :
 
