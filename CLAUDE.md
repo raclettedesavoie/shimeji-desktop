@@ -134,9 +134,10 @@ cargo run -- --sim 30    # 30 min de comportement sans écran (spec §10.3)
 cargo run -- --demarrage etat|on|off   # le démarrage avec Windows, scriptable
 ```
 
-**Cinq variables d'environnement de diagnostic.** Les trois premières ont chacune servi
-à démentir une hypothèse fausse — voir « Mesurer le CPU » plus bas ; les deux dernières
-remplacent un clic dans le tray :
+**Six variables d'environnement de diagnostic.** Les trois premières ont chacune servi
+à démentir une hypothèse fausse — voir « Mesurer le CPU » plus bas ; les trois dernières
+remplacent un clic dans le tray ou rendent observable un calcul qui, sinon, ne se verrait
+qu'à l'œil et sur plusieurs minutes :
 
 | Variable | Ce qu'elle fait |
 |---|---|
@@ -145,6 +146,7 @@ remplacent un clic dans le tray :
 | `SHIMEJI_TRACE=1` | trace chaque image servie par le schéma URI |
 | `SHIMEJI_CACHE=1` | démarre caché, comme si « Afficher » était décoché |
 | `SHIMEJI_QUITTER_APRES=<s>` | appelle `exit(0)` — la ligne de « Quitter » — après *s* secondes |
+| `SHIMEJI_SIGNAUX=1` | imprime, deux fois par seconde, les cinq signaux et le biais qu'ils produisent — étape 2 |
 
 **Et un fichier témoin** : créer `characters/recharger.txt` déclenche un rechargement à
 chaud, puis le fichier est supprimé.
@@ -230,6 +232,7 @@ hypothèses 2 et 3 :
 | **`set_position` seulement si la position a changé au pixel** | **12,3 %** |
 | **la même chose, build `release`** (exe de 2,7 Mo) | **12 %** |
 | **caché** (`SHIMEJI_CACHE=1`), build `release` | **0,9 %** |
+| **étape 2, release, en marche** (signaux à 2 Hz branchés) | **6,4 % puis 3,9 %** sur deux mesures de 60 s — sous la référence de 12 %, voir la note ci-dessous |
 
 > **Le relevé « caché » chiffre enfin le partage.** En mode caché la boucle tourne
 > *entièrement* — sonde du curseur, hit-testing, physique, comportement, 60 fois par
@@ -248,10 +251,25 @@ hypothèses 2 et 3 :
 > de l'exe — un objectif de la spec §4, tenu ici à 2,7 Mo contre ~10 Mo visés — pour un
 > gain nul.
 
+> **La mesure « étape 2, en marche » est PLUS BASSE que la référence de 12 %, pas plus
+> haute — et c'est cohérent, pas suspect.** La machine qui mesure est celle où l'auteur
+> travaille : entre les deux runs de 60 s, personne n'a touché souris ni clavier pendant
+> un moment, donc `GetLastInputInfo` a fait monter l'inactivité réelle, et le biais
+> (décision n° 3) a multiplié l'envie de se reposer par 8 — le personnage passe alors une
+> bonne partie des deux minutes assis ou endormi, donc **immobile**, donc sans
+> `set_position` à envoyer. C'est exactement le levier que cette section explique : le
+> coût est proportionnel au nombre de déplacements, et un personnage qui bouge moins coûte
+> moins. Les cinq appels système des signaux, eux, restent du bruit (deux fois par
+> seconde contre 60 `SetWindowPos` par seconde) : rien n'indique qu'`appli_active` (le
+> seul des cinq à ouvrir un handle de processus) pèse quoi que ce soit ici.
+
 **Pistes restantes**, par rentabilité décroissante :
 
-1. **Suspendre la boucle quand la session est verrouillée** — prévu comme réflexe à
-   l'étape 2, et c'est aussi une optimisation.
+1. ~~Suspendre la boucle quand la session est verrouillée~~ — **appliqué** (étape 2,
+   Tâche 6) : le verrouillage emprunte le même chemin que « caché », donc le même
+   **0,9 %** mesuré plus haut. Non re-mesuré séparément ici : verrouiller la session
+   demande le mot de passe de l'auteur au déverrouillage, et cette vérification lui est
+   laissée (voir le rapport de la Tâche 6).
 2. **Descendre à 8 Hz les images où la position ne change pas** — le personnage à l'arrêt
    n'a besoin ni de 60 déplacements ni de 60 décisions par seconde. Gain modeste, le
    travail de calcul étant déjà négligeable.

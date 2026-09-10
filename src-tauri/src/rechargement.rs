@@ -41,6 +41,14 @@ pub struct Rechargement {
     /// Le réglage `echelle`, à recombiner avec celui du moniteur.
     pub echelle_config: f32,
 
+    /// La config complète, pour `signals::biais_de` — la table des
+    /// applications en fait partie.
+    ///
+    /// Redondante avec `reglages` et `table`, qui en sont dérivés. On la
+    /// transporte quand même plutôt que de reconstruire : `preparer` l'a déjà
+    /// lue, et la relire dans la boucle serait une entrée-sortie à 8 Hz.
+    pub config: crate::config::Config,
+
     /// Numéro de version, incrémenté à chaque rechargement.
     ///
     /// Sert **uniquement** à contourner le cache du webview : les images sont
@@ -94,6 +102,7 @@ pub fn preparer(demande: &Demande, dossier: &Path, personnage: &str) -> Result<u
         reglages,
         table,
         echelle_config: config.echelle,
+        config,
         version,
     });
 

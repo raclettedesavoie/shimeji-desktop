@@ -403,6 +403,11 @@ fn lancer_application() {
             if std::env::var("SHIMEJI_SANS_BOUCLE").is_ok() {
                 println!("SHIMEJI_SANS_BOUCLE : aucune animation, fenêtre seule");
             } else {
+                // La config complète est clonée pour la boucle : `setup`
+                // continue de s'en servir plus haut (le tray, notamment), et
+                // la boucle a besoin de sa propre copie pour la remplacer
+                // au rechargement à chaud (Tâche 6).
+                let configuration_boucle = configuration.clone();
                 std::thread::spawn(move || {
                     boucle(
                     handle,
@@ -417,6 +422,7 @@ fn lancer_application() {
                     demande,
                     temoin,
                     nom_personnage,
+                    configuration_boucle,
                 );
                 });
             }
@@ -506,7 +512,8 @@ fn servir_frame(dossier: &std::path::Path, chemin: &str) -> tauri::http::Respons
 /// Les trois horloges de la spec, dont deux sont ici :
 ///   · **60 Hz** — comportement, rendu, position
 ///   · **~8 Hz** — recensement du monde
-///   · **~2 Hz** — les signaux : étape 2, pas encore
+///   · **~2 Hz** — les signaux (inactivité, appli active, heure, batterie,
+///     verrouillage) — spec §5.5, design étape 2 §9
 fn boucle(
     handle: tauri::AppHandle,
     label: String,
@@ -523,6 +530,12 @@ fn boucle(
     demande: rechargement::Demande,
     temoin: std::path::PathBuf,
     nom_personnage: String,
+    // La Config complète (option 1 du brief de la Tâche 6) : `signals::biais_de`
+    // a besoin de la table des applications, que `Reglages` n'expose pas.
+    // Une variable globale aurait été plus courte à écrire, mais la spec
+    // §10.2 l'interdit — et ça rendrait `biais_de` intestable en dehors de
+    // cette boucle.
+    mut config_courante: config::Config,
 ) {
     // Le dossier des personnages, pour le rechargement par témoin.
     let dossier_boucle = config::dossier_personnages();
@@ -544,6 +557,7 @@ fn boucle(
 
     const PERIODE: Duration = Duration::from_micros(16_667); // 60 Hz
     const PERIODE_MONDE: Duration = Duration::from_millis(125); // 8 Hz
+    const PERIODE_SIGNAUX: Duration = Duration::from_millis(500); // 2 Hz
 
     // Pendant ce délai après le démarrage, on pousse la frame à CHAQUE
     // image, sans comparer.
@@ -556,6 +570,22 @@ fn boucle(
     const AMORCAGE: Duration = Duration::from_secs(2);
 
     let mut dernier_recensement = Duration::ZERO;
+    let mut dernier_signal = Duration::ZERO;
+
+    // Le biais courant, recalculé à 2 Hz et transporté à 60 Hz.
+    //
+    // Neutre au démarrage : la première demi-seconde, le personnage se
+    // comporte comme à l'étape 1. Rien à corriger — attendre les signaux
+    // avant de bouger serait une demi-seconde de figement au lancement.
+    let mut biais = signals::Biais::neutre();
+    let mut utilisateur_actif = true;
+
+    // La session est-elle verrouillée ? Mémorisé pour ne basculer les
+    // fenêtres que sur CHANGEMENT.
+    let mut verrouille = false;
+
+    // Diagnostic : `SHIMEJI_SIGNAUX=1`.
+    let trace_signaux = std::env::var("SHIMEJI_SIGNAUX").is_ok();
 
     // L'échelle du moniteur, séparée du réglage de la config : le
     // rechargement à chaud change le second sans redemander le premier.
@@ -592,6 +622,69 @@ fn boucle(
         // rester pilotable par une horloge factice (spec §10.2).
         let debut = Instant::now();
         let maintenant = horloge.elapsed();
+
+        // ── ~2 Hz : les signaux (spec §5.5, design étape 2 §9) ──────────
+        //
+        // Cinq appels système toutes les 500 ms. À comparer aux 60
+        // `SetWindowPos` par seconde qui coûtent 11 points de CPU : c'est du
+        // bruit. Mesuré quand même — voir `CLAUDE.md`.
+        if maintenant.saturating_sub(dernier_signal) >= PERIODE_SIGNAUX {
+            let s = sonde.signaux();
+
+            // Le biais : de la donnée pure, calculée par une fonction pure.
+            biais = signals::biais_de(&s, &config_courante);
+
+            // « Actif » se dérive du MÊME seuil que le biais, pour qu'il soit
+            // impossible d'être « actif » et « inactif » dans la même image.
+            utilisateur_actif = s.inactivite
+                < Duration::from_secs_f32(config_courante.signaux.inactivite_secondes);
+
+            // ── Le verrouillage : le quatrième réflexe ──────────────────
+            //
+            // C'est un réflexe au sens du design (décision n° 5) : non
+            // négociable, immédiat, on ne biaise pas un poids pour
+            // disparaître d'un écran de verrouillage.
+            //
+            // Mais il ne s'implémente PAS dans `reflex.rs`, et c'est
+            // délibéré : son effet porte sur la FENÊTRE, pas sur l'accroche
+            // du personnage. `reflex.rs` ne connaît ni Tauri ni le tray, et
+            // c'est ce qui le garde testable sans écran.
+            if s.session_verrouillee != verrouille {
+                verrouille = s.session_verrouillee;
+
+                // On ne rend visible que si l'utilisateur n'avait pas
+                // lui-même décoché « Afficher » : le déverrouillage ne doit
+                // pas défaire son choix.
+                let voulu = visibilite.load(std::sync::atomic::Ordering::Relaxed);
+                tray::basculer_visibilite(&handle, voulu && !verrouille);
+
+                println!(
+                    "session {} — personnage {}",
+                    if verrouille { "verrouillée" } else { "déverrouillée" },
+                    if verrouille { "planqué" } else { "de retour" }
+                );
+            }
+
+            if trace_signaux {
+                println!(
+                    "signaux : inactif {:.0} s · {} · {} h · batterie {} · verrouillé {} \
+                     → flâner ×{:.2} reposer ×{:.2} jouer ×{:.2}",
+                    s.inactivite.as_secs_f32(),
+                    s.appli_active.as_deref().unwrap_or("-"),
+                    s.heure,
+                    match s.batterie.pourcent {
+                        Some(p) => format!("{p} %"),
+                        None => "-".to_string(),
+                    },
+                    s.session_verrouillee,
+                    biais.flaner,
+                    biais.se_reposer,
+                    biais.jouer,
+                );
+            }
+
+            dernier_signal = maintenant;
+        }
 
         // ── ~8 Hz : recenser le monde ───────────────────────────────────
         // À l'étape 1 c'est la liste des écrans ; à l'étape 4 s'y ajouteront
@@ -640,6 +733,7 @@ fn boucle(
                     reglages = r.reglages;
                     table = r.table;
                     echelle_config = r.echelle_config;
+                    config_courante = r.config;
                     echelle_affichage = ecrans_echelle * echelle_config;
 
                     // Le webview doit oublier ses images, et la taille de la
@@ -716,9 +810,9 @@ fn boucle(
             echelle_affichage,
             bouton_gauche: m.left_down,
             curseur_sur_le_personnage: sur_le_personnage,
-            // Neutre jusqu'à la Tâche 6, qui branche la sonde à 2 Hz.
-            biais: signals::Biais::neutre(),
-            utilisateur_actif: true,
+            // Recalculés à 2 Hz ci-dessus, transportés tels quels à 60 Hz.
+            biais,
+            utilisateur_actif,
         };
 
         // ── 60 Hz : le comportement ─────────────────────────────────────
@@ -738,7 +832,7 @@ fn boucle(
             derniere_taille = Some(taille);
         }
 
-        // ── Caché : rien à dessiner ─────────────────────────────────────
+        // ── Caché par l'utilisateur, OU session verrouillée : rien à dessiner ──
         //
         // Le comportement, lui, continue de tourner : il doit avancer pour
         // qu'on le retrouve ailleurs en le réaffichant, et c'est du calcul
@@ -746,12 +840,14 @@ fn boucle(
         //
         // Ce qui coûte, c'est `SetWindowPos` sur une fenêtre en couche (voir
         // la section « Mesurer le CPU » de CLAUDE.md), et c'est exactement ce
-        // qu'on saute ici.
+        // qu'on saute ici. Le verrouillage emprunte EXACTEMENT ce même chemin,
+        // déjà mesuré à 0,9 % : c'est donc aussi la première des pistes CPU
+        // restantes, et elle se referme ici.
         //
         // `Ordering::Relaxed` : il n'y a aucune autre donnée à synchroniser
         // avec ce booléen, seulement sa propre valeur. Un ordre plus fort
         // n'apporterait qu'un coût.
-        let visible = visibilite.load(std::sync::atomic::Ordering::Relaxed);
+        let visible = visibilite.load(std::sync::atomic::Ordering::Relaxed) && !verrouille;
 
         if !visible {
             // On oublie ce qu'on avait posé : au retour, il faut tout
