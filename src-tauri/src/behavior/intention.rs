@@ -1278,14 +1278,29 @@ mod tests {
             Duration::ZERO,
         ));
 
+        // `issue` sort de la boucle (comme dans
+        // `jouer_se_termine_avant_le_delai_d_abandon`) pour pouvoir
+        // l'affirmer APRÈS coup, et pas seulement à l'intérieur.
+        let mut issue = Issue::EnCours;
         for i in 0..(19 * 60) {
             let t = Duration::from_secs_f32(i as f32 * DT);
-            let issue = poursuivre(&mut ch, &m, &e, &reglages(), t, DT, &mut rng);
+            issue = poursuivre(&mut ch, &m, &e, &reglages(), t, DT, &mut rng);
             assert_ne!(issue, Issue::Echouee, "le repos ne doit pas échouer");
             if issue != Issue::EnCours {
                 break;
             }
             assert_eq!(ch.pose, POSE_SIT);
         }
+
+        // Le repos doit se TERMINER normalement, et pas seulement « ne jamais
+        // échouer ». Sans cette assertion, le test passerait même si la garde
+        // `has_pose(POSE_SLEEP)` disparaissait : la phase basculerait en
+        // `Endormi`, `set_pose` refuserait silencieusement la pose absente, et
+        // `ch.pose` resterait figé sur `sit` par EFFET DE BORD — avec toutes
+        // les assertions de la boucle encore vertes.
+        assert_eq!(
+            issue, Issue::Finie,
+            "sans pose `sleep`, le repos doit se terminer, pas rester en cours"
+        );
     }
 }
