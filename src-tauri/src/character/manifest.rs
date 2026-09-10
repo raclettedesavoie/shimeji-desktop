@@ -38,6 +38,18 @@ pub const POSE_SIT: &str = "sit";
 pub const POSE_FALL: &str = "fall";
 pub const POSE_LAND: &str = "land";
 
+/// Affalé sur le ventre — notre pose de sommeil.
+///
+/// ⚠️ **Shimeji-ee n'a AUCUNE animation de sommeil**, et aucune frame du pack
+/// n'a les yeux fermés : les yeux du blob sont deux points. La frame 21
+/// (`Sprawl`) est le substitut le plus lisible, et elle est déclarée sous le
+/// nom `sleep` **pour que le code ignore qu'il s'agit d'un substitut** — un
+/// pack tiers avec une vraie pose de sommeil la déclarerait au même nom, et
+/// rien ne changerait ici (spec §8.6).
+///
+/// Détail et sprites vérifiés : `docs/specs/2026-09-09-frames-shimeji.md`.
+pub const POSE_SLEEP: &str = "sleep";
+
 /// Assis, il se tourne la tête. Source : `SitAndSpinHeadAction`.
 pub const POSE_SPIN_HEAD: &str = "spinHead";
 

@@ -221,6 +221,10 @@ pub struct Reglages {
     pub vitesse_marche: f32,
     pub vitesse_course: f32,
     pub allures: Allures,
+
+    /// À partir de quel biais de repos il s'affale au lieu de rester assis
+    /// (Tâche 4, `behavior::intention::se_reposer`).
+    pub seuil_sommeil: f32,
 }
 
 /// Bornes du facteur de vitesse.
@@ -244,6 +248,7 @@ impl Reglages {
             vitesse_marche: VITESSE_MARCHE * facteur,
             vitesse_course: VITESSE_COURSE * facteur,
             allures: config.allures,
+            seuil_sommeil: config.signaux.seuil_sommeil,
         }
     }
 }

@@ -19,7 +19,7 @@
 
 use crate::character::attach::Attachment;
 use crate::character::manifest::{
-    POSE_RUN, POSE_SIT, POSE_SIT_DANGLE, POSE_SPIN_HEAD, POSE_STAND, POSE_WALK,
+    POSE_RUN, POSE_SIT, POSE_SIT_DANGLE, POSE_SLEEP, POSE_SPIN_HEAD, POSE_STAND, POSE_WALK,
 };
 use crate::config::Reglages;
 use crate::character::Character;
@@ -123,6 +123,18 @@ impl Allure {
     }
 }
 
+/// Où en est un repos.
+///
+/// Deux phases et non deux intentions : « dormir » n'est pas un choix
+/// distinct de « se reposer », c'est **la suite** de se reposer quand un
+/// signal pousse dans ce sens. En faire deux lignes de table demanderait au
+/// tirage de savoir qu'on est déjà assis, ce qui n'a rien à y faire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PhaseRepos {
+    Assis,
+    Endormi,
+}
+
 /// L'état interne d'une intention en cours.
 ///
 /// Séparé de `Intention` : celle-ci est une **étiquette** (`Copy`, `Eq`),
@@ -132,7 +144,10 @@ impl Allure {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum EtatIntention {
     Flanerie { allure: Allure, jusqu_a: Duration },
-    Repos { jusqu_a: Duration },
+    Repos {
+        phase: PhaseRepos,
+        jusqu_a: Duration,
+    },
     Jeu { jusqu_a: Duration },
 }
 
@@ -159,6 +174,7 @@ impl ActiveIntention {
                 jusqu_a: Duration::ZERO,
             },
             Intention::SeReposer => EtatIntention::Repos {
+                phase: PhaseRepos::Assis,
                 jusqu_a: Duration::ZERO,
             },
             Intention::Jouer(_) => EtatIntention::Jeu {
@@ -190,9 +206,16 @@ pub enum Issue {
 /// Rend `Finie` s'il n'y a aucune intention : l'appelant (`behavior::pas`) en
 /// tire alors une nouvelle. C'est plus simple qu'un `Option<Issue>`, et ça
 /// évite un cas particulier au point d'appel.
+///
+/// `e` porte le biais d'envie (décision n° 3) — seul `se_reposer` le
+/// consulte, pour décider de s'affaler plutôt que de rester assis. Il
+/// descend jusqu'ici, et non directement dans `se_reposer` depuis
+/// `behavior::pas`, pour que les trois intentions gardent la même signature :
+/// c'est `poursuivre` qui aiguille, pas l'appelant.
 pub fn poursuivre(
     ch: &mut Character,
     world: &World,
+    e: &super::Entrees,
     reglages: &Reglages,
     maintenant: Duration,
     dt: f32,
@@ -228,7 +251,7 @@ pub fn poursuivre(
         }
 
         Intention::SeReposer => {
-            let issue = se_reposer(ch, &mut ai, maintenant, rng);
+            let issue = se_reposer(ch, &mut ai, e, reglages, maintenant, rng);
             if ch.intention.is_some() {
                 ch.intention = Some(ai);
             }
@@ -485,17 +508,23 @@ fn jouer(
     Issue::EnCours
 }
 
-/// Se reposer : s'asseoir, et ne rien faire pendant un moment.
+/// Se reposer : s'asseoir, et s'endormir si un signal y pousse.
 ///
-/// À l'étape 2, l'inactivité prolongée enchaînera sur `sleep` — ce sera une
-/// pose de plus et une transition, pas un nouveau chemin de code.
+/// **Le sommeil n'est pas une intention à part** : c'est la seconde phase du
+/// repos. Voir `PhaseRepos`.
 fn se_reposer(
     ch: &mut Character,
     ai: &mut ActiveIntention,
+    e: &super::Entrees,
+    reglages: &Reglages,
     maintenant: Duration,
     rng: &mut dyn Rng,
 ) -> Issue {
-    let EtatIntention::Repos { mut jusqu_a } = ai.etat else {
+    let EtatIntention::Repos {
+        mut phase,
+        mut jusqu_a,
+    } = ai.etat
+    else {
         ch.intention = None;
         return Issue::Echouee;
     };
@@ -509,28 +538,76 @@ fn se_reposer(
         return Issue::Echouee;
     }
 
-    if jusqu_a == Duration::ZERO {
-        // Première image de l'intention : on tire sa durée.
-        //
-        // Bornée sous `DELAI_ABANDON` : au-delà, le délai d'abandon
-        // couperait le repos avant son terme et l'`Issue` serait `Echouee`
-        // au lieu de `Finie`. Rien n'en dépend fonctionnellement, mais la
-        // trace du mode simulation serait trompeuse.
-        jusqu_a = maintenant + Duration::from_secs_f32(rng.range(4.0, 15.0));
-        ai.etat = EtatIntention::Repos { jusqu_a };
-    } else if maintenant >= jusqu_a {
-        // Le repos est arrivé à son terme.
-        ch.intention = None;
-        return Issue::Finie;
+    // ── La continuité de pose ───────────────────────────────────────────
+    //
+    // **C'est ce qui permet de ne PAS toucher au délai d'abandon**
+    // (décision n° 4). Un sommeil dure 20 à 60 s, le délai coupe à 20 s, donc
+    // l'intention est re-tirée — et comme un signal met ×8 sur le repos, elle
+    // est presque toujours re-tirée en `SeReposer`.
+    //
+    // Sans cette reprise, chaque re-tirage repartirait en phase `Assis` et
+    // l'on verrait le personnage se rasseoir puis se raffaler toutes les
+    // 20 secondes. Avec elle, le re-tirage est **invisible**.
+    if phase == PhaseRepos::Assis && ch.pose == POSE_SLEEP {
+        phase = PhaseRepos::Endormi;
+        // On repart sur une durée de sommeil fraîche : c'est bien un nouveau
+        // repos, seulement il ne recommence pas par la position assise.
+        jusqu_a = Duration::ZERO;
     }
 
-    ch.set_pose(POSE_SIT, maintenant);
+    if jusqu_a == Duration::ZERO {
+        // Première image de cette phase : on tire sa durée.
+        let (min, max) = match phase {
+            // Assis : la plage de l'étape 1a, inchangée.
+            PhaseRepos::Assis => (4.0, 15.0),
+
+            // Endormi : 20 à 60 s. Relevé dans `actions.xml`, action
+            // `LieDown` — `Sprawl` pendant `${500+Math.random()*1000}` ticks
+            // à 40 ms. La leçon de l'étape 1a : chercher la constante dans le
+            // source plutôt que de l'inventer.
+            PhaseRepos::Endormi => (20.0, 60.0),
+        };
+        jusqu_a = maintenant + Duration::from_secs_f32(rng.range(min, max));
+        ai.etat = EtatIntention::Repos { phase, jusqu_a };
+    } else if maintenant >= jusqu_a {
+        // ── La phase est écoulée : s'endormir, ou terminer ──────────────
+        //
+        // La condition du sommeil, et **la seule ligne de tout le fichier
+        // qui regarde un biais** : il faut qu'un signal ait au moins doublé
+        // l'envie de repos (`seuilSommeil`, 2,0 par défaut). Sans signal le
+        // biais vaut 1, donc il reste assis — **une sieste ne s'improvise
+        // pas.**
+        //
+        // Noter la forme : on ne teste PAS « est-ce que l'utilisateur est
+        // parti ». On teste un poids. C'est la décision n° 3 appliquée à la
+        // lettre : le comportement ne sait pas ce qu'est l'inactivité.
+        let veut_dormir = e.biais.pour(Intention::SeReposer) >= reglages.seuil_sommeil;
+
+        if phase == PhaseRepos::Assis && veut_dormir && ch.manifest.has_pose(POSE_SLEEP) {
+            phase = PhaseRepos::Endormi;
+            jusqu_a = Duration::ZERO; // sera tirée à l'image suivante
+            ai.etat = EtatIntention::Repos { phase, jusqu_a };
+        } else {
+            // Soit il n'a pas de raison de dormir, soit il n'a pas la pose
+            // (couverture partielle appliquée à une PHASE), soit il vient de
+            // finir sa nuit.
+            ch.intention = None;
+            return Issue::Finie;
+        }
+    }
+
+    let pose = match phase {
+        PhaseRepos::Assis => POSE_SIT,
+        PhaseRepos::Endormi => POSE_SLEEP,
+    };
+    ch.set_pose(pose, maintenant);
     Issue::EnCours
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::behavior::Entrees;
     use crate::character::manifest::Manifest;
     use crate::geom::Point;
     use crate::probe::fake::FakeProbe;
@@ -556,6 +633,11 @@ mod tests {
     // `serde_json` avec un message peu clair (« key must be a string »).
     // D'où ce commentaire ici, en dehors de la chaîne, plutôt qu'au milieu
     // des clés `spinHead` / `sitDangle`.
+    //
+    // `sleep` (frame 12, tout aussi arbitraire) est la pose de sommeil de la
+    // Tâche 4. Le test `sans_la_pose_sleep_il_reste_assis_au_lieu_d_echouer`
+    // construit, lui, son propre manifeste SANS elle — c'est justement ce
+    // qu'il vérifie.
     fn manifeste() -> Manifest {
         let json = r#"{
             "id": "t", "name": "T", "frameSize": [128,128], "scale": 1,
@@ -568,7 +650,8 @@ mod tests {
                 "fall":  { "frames": [7], "anchor": [64, 64] },
                 "land":  { "frames": [8], "frameMs": 150 },
                 "spinHead":  { "frames": [9, 10], "frameMs": 200 },
-                "sitDangle": { "frames": [11], "anchor": [64, 112] }
+                "sitDangle": { "frames": [11], "anchor": [64, 112] },
+                "sleep":     { "frames": [12] }
             }
         }"#;
         serde_json::from_str(json).unwrap()
@@ -604,6 +687,36 @@ mod tests {
         }
     }
 
+    /// Des `Entrees` inertes, avec un biais de repos choisi.
+    ///
+    /// Toutes les autres valeurs sont neutres : la souris est loin, aucun
+    /// bouton n'est enfoncé. Un seul curseur pour tous les tests de sommeil.
+    fn entrees_avec_biais_repos(x: f32) -> Entrees {
+        Entrees {
+            souris: Point::new(0.0, 0.0),
+            echelle_affichage: 1.0,
+            bouton_gauche: false,
+            curseur_sur_le_personnage: false,
+            biais: crate::signals::Biais {
+                flaner: 1.0,
+                se_reposer: x,
+                jouer: 1.0,
+            },
+            utilisateur_actif: true,
+        }
+    }
+
+    /// Des `Entrees` complètement neutres (biais de repos à 1, comme
+    /// `Biais::neutre()`).
+    ///
+    /// `poursuivre` prend désormais des `Entrees` quelle que soit
+    /// l'intention en cours — y compris `Flaner` et `Jouer`, qui ne les
+    /// consultent jamais. Ce raccourci évite de répéter la même valeur
+    /// neutre dans chacun des tests écrits avant cette tâche.
+    fn entrees_neutres() -> Entrees {
+        entrees_avec_biais_repos(1.0)
+    }
+
     #[test]
     fn flaner_finit_par_faire_avancer_le_personnage() {
         let m = monde();
@@ -616,7 +729,7 @@ mod tests {
         // 3 secondes : assez pour qu'au moins une allure de marche soit
         // tirée, quelle que soit la graine.
         for _ in 0..180 {
-            poursuivre(&mut ch, &m, &reglages(), t, DT, &mut rng);
+            poursuivre(&mut ch, &m, &entrees_neutres(), &reglages(), t, DT, &mut rng);
             t += Duration::from_micros(16_667);
         }
 
@@ -635,7 +748,7 @@ mod tests {
         let mut vues = std::collections::BTreeSet::new();
         let mut t = Duration::ZERO;
         for _ in 0..1_800 {
-            poursuivre(&mut ch, &m, &reglages(), t, DT, &mut rng);
+            poursuivre(&mut ch, &m, &entrees_neutres(), &reglages(), t, DT, &mut rng);
             vues.insert(ch.pose.clone());
             t += Duration::from_micros(16_667);
         }
@@ -676,7 +789,7 @@ mod tests {
 
         let mut t = Duration::ZERO;
         for _ in 0..30 {
-            poursuivre(&mut ch, &m, &reglages(), t, DT, &mut rng);
+            poursuivre(&mut ch, &m, &entrees_neutres(), &reglages(), t, DT, &mut rng);
             t += Duration::from_micros(16_667);
         }
 
@@ -711,7 +824,7 @@ mod tests {
         let mut t = Duration::ZERO;
         let mut passe = false;
         for _ in 0..60 {
-            poursuivre(&mut ch, &m, &reglages(), t, DT, &mut rng);
+            poursuivre(&mut ch, &m, &entrees_neutres(), &reglages(), t, DT, &mut rng);
             if plateforme_de(&ch) != premier {
                 passe = true;
                 break;
@@ -738,17 +851,41 @@ mod tests {
         ));
 
         // Première image : il s'assoit.
-        let issue = poursuivre(&mut ch, &m, &reglages(), Duration::ZERO, DT, &mut rng);
+        let issue = poursuivre(
+            &mut ch,
+            &m,
+            &entrees_neutres(),
+            &reglages(),
+            Duration::ZERO,
+            DT,
+            &mut rng,
+        );
         assert_eq!(issue, Issue::EnCours);
         assert_eq!(ch.pose, POSE_SIT);
 
         // Il ne bouge pas pendant le repos.
         let ou = offset_de(&ch);
-        poursuivre(&mut ch, &m, &reglages(), Duration::from_secs(2), DT, &mut rng);
+        poursuivre(
+            &mut ch,
+            &m,
+            &entrees_neutres(),
+            &reglages(),
+            Duration::from_secs(2),
+            DT,
+            &mut rng,
+        );
         assert_eq!(offset_de(&ch), ou);
 
         // Le repos dure au plus 15 s ; à 16 s il est fini.
-        let issue = poursuivre(&mut ch, &m, &reglages(), Duration::from_secs(16), DT, &mut rng);
+        let issue = poursuivre(
+            &mut ch,
+            &m,
+            &entrees_neutres(),
+            &reglages(),
+            Duration::from_secs(16),
+            DT,
+            &mut rng,
+        );
         assert_eq!(issue, Issue::Finie);
         assert!(ch.intention.is_none());
     }
@@ -770,6 +907,7 @@ mod tests {
             let avant = poursuivre(
                 &mut ch,
                 &m,
+                &entrees_neutres(),
                 &reglages(),
                 DELAI_ABANDON - Duration::from_millis(100),
                 DT,
@@ -783,6 +921,7 @@ mod tests {
             let apres = poursuivre(
                 &mut ch,
                 &m,
+                &entrees_neutres(),
                 &reglages(),
                 DELAI_ABANDON + Duration::from_millis(100),
                 DT,
@@ -804,10 +943,26 @@ mod tests {
             Duration::from_secs(100),
         ));
 
-        let issue = poursuivre(&mut ch, &m, &reglages(), Duration::from_secs(110), DT, &mut rng);
+        let issue = poursuivre(
+            &mut ch,
+            &m,
+            &entrees_neutres(),
+            &reglages(),
+            Duration::from_secs(110),
+            DT,
+            &mut rng,
+        );
         assert_eq!(issue, Issue::EnCours);
 
-        let issue = poursuivre(&mut ch, &m, &reglages(), Duration::from_secs(121), DT, &mut rng);
+        let issue = poursuivre(
+            &mut ch,
+            &m,
+            &entrees_neutres(),
+            &reglages(),
+            Duration::from_secs(121),
+            DT,
+            &mut rng,
+        );
         assert_eq!(issue, Issue::Echouee);
     }
 
@@ -817,7 +972,15 @@ mod tests {
         let mut ch = perso(&m, 500.0);
         let mut rng = XorShift32::seeded(1);
         assert_eq!(
-            poursuivre(&mut ch, &m, &reglages(), Duration::ZERO, DT, &mut rng),
+            poursuivre(
+                &mut ch,
+                &m,
+                &entrees_neutres(),
+                &reglages(),
+                Duration::ZERO,
+                DT,
+                &mut rng
+            ),
             Issue::Finie
         );
     }
@@ -836,7 +999,15 @@ mod tests {
                 Intention::Jouer(jeu),
                 Duration::ZERO,
             ));
-            let issue = poursuivre(&mut ch, &m, &reglages(), Duration::ZERO, DT, &mut rng);
+            let issue = poursuivre(
+                &mut ch,
+                &m,
+                &entrees_neutres(),
+                &reglages(),
+                Duration::ZERO,
+                DT,
+                &mut rng,
+            );
             assert_eq!(issue, Issue::EnCours);
             assert_eq!(ch.pose, pose, "jeu {jeu:?}");
         }
@@ -860,6 +1031,7 @@ mod tests {
             poursuivre(
                 &mut ch,
                 &m,
+                &entrees_neutres(),
                 &reglages(),
                 Duration::from_secs_f32(i as f32 * DT),
                 DT,
@@ -887,6 +1059,7 @@ mod tests {
             issue = poursuivre(
                 &mut ch,
                 &m,
+                &entrees_neutres(),
                 &reglages(),
                 Duration::from_secs_f32(i as f32 * DT),
                 DT,
@@ -926,7 +1099,15 @@ mod tests {
         ));
 
         assert_eq!(
-            poursuivre(&mut ch, &m, &reglages(), Duration::ZERO, DT, &mut rng),
+            poursuivre(
+                &mut ch,
+                &m,
+                &entrees_neutres(),
+                &reglages(),
+                Duration::ZERO,
+                DT,
+                &mut rng
+            ),
             Issue::Echouee
         );
     }
@@ -959,8 +1140,152 @@ mod tests {
         ));
 
         assert_eq!(
-            poursuivre(&mut ch, &m, &reglages(), Duration::ZERO, DT, &mut rng),
+            poursuivre(
+                &mut ch,
+                &m,
+                &entrees_neutres(),
+                &reglages(),
+                Duration::ZERO,
+                DT,
+                &mut rng
+            ),
             Issue::Echouee
         );
+    }
+
+    #[test]
+    fn sans_signal_il_reste_assis_et_ne_s_affale_pas() {
+        // **Une sieste ne s'improvise pas.** Sans signal, le biais vaut 1,
+        // donc sous le seuil de 2 : il s'assoit et c'est tout. S'il
+        // s'affalait de lui-même, « il dort quand tu t'en vas » perdrait tout
+        // son sens — il dormirait tout le temps.
+        let m = monde();
+        let mut ch = perso(&m, 500.0);
+        let mut rng = XorShift32::seeded(1);
+        let e = entrees_avec_biais_repos(1.0);
+
+        ch.intention = Some(ActiveIntention::nouvelle(
+            Intention::SeReposer,
+            Duration::ZERO,
+        ));
+
+        for i in 0..(14 * 60) {
+            let t = Duration::from_secs_f32(i as f32 * DT);
+            if poursuivre(&mut ch, &m, &e, &reglages(), t, DT, &mut rng) != Issue::EnCours {
+                break;
+            }
+            assert_eq!(ch.pose, POSE_SIT, "à {:.1} s il devrait être assis", t.as_secs_f32());
+        }
+    }
+
+    #[test]
+    fn avec_un_signal_il_s_assoit_puis_s_affale() {
+        // La promesse de l'étape, dans l'ordre : 11 puis 21. C'est
+        // l'ENCHAÎNEMENT qui dit « il dort », pas la frame 21 seule.
+        let m = monde();
+        let mut ch = perso(&m, 500.0);
+        let mut rng = XorShift32::seeded(1);
+        let e = entrees_avec_biais_repos(8.0); // comme « inactif > 2 min »
+
+        ch.intention = Some(ActiveIntention::nouvelle(
+            Intention::SeReposer,
+            Duration::ZERO,
+        ));
+
+        // Première image : assis.
+        poursuivre(&mut ch, &m, &e, &reglages(), Duration::ZERO, DT, &mut rng);
+        assert_eq!(ch.pose, POSE_SIT);
+
+        // Il finit par s'affaler, et en moins de 20 s (le délai d'abandon).
+        let mut endormi_a = None;
+        for i in 1..(20 * 60) {
+            let t = Duration::from_secs_f32(i as f32 * DT);
+            poursuivre(&mut ch, &m, &e, &reglages(), t, DT, &mut rng);
+            if ch.pose == POSE_SLEEP {
+                endormi_a = Some(t);
+                break;
+            }
+        }
+        assert!(endormi_a.is_some(), "il ne s'est jamais affalé");
+    }
+
+    #[test]
+    fn re_tirer_le_repos_pendant_le_sommeil_ne_le_fait_pas_se_rasseoir() {
+        // **LE test de la continuité de pose**, et le seul qui justifie
+        // qu'on n'ait PAS touché au délai d'abandon (décision n° 4).
+        //
+        // Un sommeil dure 20 à 60 s, le délai d'abandon coupe à 20 s, donc
+        // l'intention est re-tirée. Sans continuité, on le verrait se
+        // rasseoir puis se raffaler toutes les 20 secondes — un tic visible
+        // à l'écran, absurde et inexplicable pour qui regarde.
+        let m = monde();
+        let mut ch = perso(&m, 500.0);
+        let mut rng = XorShift32::seeded(1);
+        let e = entrees_avec_biais_repos(8.0);
+
+        // On le met directement dans l'état « endormi ».
+        ch.set_pose(POSE_SLEEP, Duration::ZERO);
+        assert_eq!(ch.pose, POSE_SLEEP);
+
+        // Une intention de repos FRAÎCHE, comme après un re-tirage.
+        ch.intention = Some(ActiveIntention::nouvelle(
+            Intention::SeReposer,
+            Duration::from_secs(30),
+        ));
+
+        // La première image ne doit PAS le rasseoir.
+        poursuivre(
+            &mut ch,
+            &m,
+            &e,
+            &reglages(),
+            Duration::from_secs(30),
+            DT,
+            &mut rng,
+        );
+        assert_eq!(
+            ch.pose, POSE_SLEEP,
+            "il s'est rassis : la continuité de pose est cassée"
+        );
+    }
+
+    #[test]
+    fn sans_la_pose_sleep_il_reste_assis_au_lieu_d_echouer() {
+        // Couverture partielle appliquée à une PHASE et non à une intention
+        // (spec §8.6). Un pack sans pose de sommeil doit se reposer
+        // normalement — assis — et non voir son repos échouer.
+        let json = r#"{
+            "id": "t", "name": "T", "frameSize": [128,128], "scale": 1,
+            "hitbox": [40,20,48,100],
+            "poses": { "stand": { "frames": [1] }, "walk": { "frames": [2] },
+                       "sit": { "frames": [11] } }
+        }"#;
+        let m = monde();
+        let mut ch = Character::new(
+            serde_json::from_str(json).unwrap(),
+            Attachment::On {
+                platform: m.platforms()[0].id,
+                face: Face::Top,
+                offset: 500.0,
+            },
+            Point::new(500.0, 1032.0),
+        );
+        let mut rng = XorShift32::seeded(1);
+        let e = entrees_avec_biais_repos(8.0);
+
+        ch.intention = Some(ActiveIntention::nouvelle(
+            Intention::SeReposer,
+            Duration::ZERO,
+        ));
+
+        for i in 0..(19 * 60) {
+            let t = Duration::from_secs_f32(i as f32 * DT);
+            let issue = poursuivre(&mut ch, &m, &e, &reglages(), t, DT, &mut rng);
+            assert_ne!(issue, Issue::Echouee, "le repos ne doit pas échouer");
+            if issue != Issue::EnCours {
+                break;
+            }
+            assert_eq!(ch.pose, POSE_SIT);
+        }
     }
 }

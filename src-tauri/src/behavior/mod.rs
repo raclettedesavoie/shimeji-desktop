@@ -90,7 +90,7 @@ pub fn pas(
     }
 
     // ── Couche 2 : poursuivre l'intention en cours ──────────────────────
-    match intention::poursuivre(ch, world, reglages, maintenant, dt, rng) {
+    match intention::poursuivre(ch, world, e, reglages, maintenant, dt, rng) {
         intention::Issue::EnCours => return r,
         // Finie ou échouée : on passe à la couche 3.
         intention::Issue::Finie | intention::Issue::Echouee => {}
