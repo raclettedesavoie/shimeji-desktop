@@ -288,6 +288,25 @@ l'application :
   une arborescence plate, donc `"./ui"` ; l'étape 1 utilisera `src-tauri/`, où le `"../ui"`
   conventionnel sera correct.
 
+### ⚠️ Semer l'aléatoire une seule fois — le piège des graines séquentielles
+
+**Re-semer `XorShift32::seeded(n)` avec de petits entiers séquentiels biaise le PREMIER
+tirage.** L'état initial d'un petit entier laisse `next_u32` dans les bits de poids
+faible, donc `weighted` retombe systématiquement sur l'**index de poids faible** de la
+table. Une boucle `for graine in 1..200` qui n'observe qu'un tirage par graine mesure
+donc toujours la même chose.
+
+Constaté le 2026-09-10, en mesurant si un réveil pouvait replonger dans le sommeil :
+
+| Méthode | Ce qu'elle a rendu |
+|---|---|
+| re-semer par petits entiers, un tirage chacun | **0 sur 199** — un faux négatif complet |
+| semer **une fois**, laisser l'état avancer | **225 sur 2000**, soit le 1/8 attendu |
+
+La première méthode aurait classé un défaut réel comme inexistant. **Semer une fois et
+laisser l'état avancer** est la seule méthode fiable pour mesurer une distribution ; la
+graine explicite reste là pour la **reproductibilité**, pas pour l'échantillonnage.
+
 ### L'auteur apprend Rust sur ce projet
 
 Le choix de Tauri est en partie motivé par l'envie d'apprendre Rust. Conséquence pour
