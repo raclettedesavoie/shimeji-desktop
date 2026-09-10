@@ -232,7 +232,8 @@ hypothèses 2 et 3 :
 | **`set_position` seulement si la position a changé au pixel** | **12,3 %** |
 | **la même chose, build `release`** (exe de 2,7 Mo) | **12 %** |
 | **caché** (`SHIMEJI_CACHE=1`), build `release` | **0,9 %** |
-| **étape 2, release, en marche** (signaux à 2 Hz branchés) | **6,4 % puis 3,9 %** sur deux mesures de 60 s — sous la référence de 12 %, voir la note ci-dessous |
+| **étape 2, release, en marche** (signaux à 2 Hz branchés) | 6,4 % puis 3,9 % — ⚠️ **non comparable**, voir la note |
+| **étape 2, release, caché** (`SHIMEJI_CACHE=1`) | **0,9 %** — identique à l'étape 1b : les signaux à 2 Hz ne coûtent rien |
 
 > **Le relevé « caché » chiffre enfin le partage.** En mode caché la boucle tourne
 > *entièrement* — sonde du curseur, hit-testing, physique, comportement, 60 fois par
@@ -251,17 +252,42 @@ hypothèses 2 et 3 :
 > de l'exe — un objectif de la spec §4, tenu ici à 2,7 Mo contre ~10 Mo visés — pour un
 > gain nul.
 
-> **La mesure « étape 2, en marche » est PLUS BASSE que la référence de 12 %, pas plus
-> haute — et c'est cohérent, pas suspect.** La machine qui mesure est celle où l'auteur
-> travaille : entre les deux runs de 60 s, personne n'a touché souris ni clavier pendant
-> un moment, donc `GetLastInputInfo` a fait monter l'inactivité réelle, et le biais
-> (décision n° 3) a multiplié l'envie de se reposer par 8 — le personnage passe alors une
-> bonne partie des deux minutes assis ou endormi, donc **immobile**, donc sans
-> `set_position` à envoyer. C'est exactement le levier que cette section explique : le
-> coût est proportionnel au nombre de déplacements, et un personnage qui bouge moins coûte
-> moins. Les cinq appels système des signaux, eux, restent du bruit (deux fois par
-> seconde contre 60 `SetWindowPos` par seconde) : rien n'indique qu'`appli_active` (le
-> seul des cinq à ouvrir un handle de processus) pèse quoi que ce soit ici.
+> ### ⚠️⚠️ La quatrième hypothèse, et pourquoi « en marche » ne se compare plus
+>
+> **Depuis l'étape 2, la mesure « en marche » ne veut plus rien dire toute seule**, et
+> c'est une conséquence directe de la décision n° 3.
+>
+> Les deux relevés de 60 s ont donné **6,4 % puis 3,9 %**, sous la référence de 12 %.
+> L'explication est plausible : la machine qui mesure est celle où l'auteur travaille,
+> l'inactivité réelle monte, le biais multiplie par 8 l'envie de se reposer, et un
+> personnage assis ne déplace pas sa fenêtre. Le coût étant proportionnel au **nombre de
+> déplacements**, il baisse.
+>
+> **Mais cette explication ne DÉMONTRE rien.** La charge de travail a changé en même
+> temps que le code : un surcoût de quelques points aurait pu être masqué par la chute du
+> taux de déplacement. C'est précisément le piège que la section « la méthodologie AVANT
+> les chiffres » décrit — appliqué ici à nous-mêmes, une quatrième fois.
+>
+> **L'expérience qui isole, et qu'il faut faire à sa place :** `SHIMEJI_CACHE=1` sur le
+> build release. La boucle tourne **entièrement** — sonde du curseur, hit-testing,
+> physique, comportement, **et les cinq appels système à 2 Hz** — mais ne déplace jamais
+> la fenêtre. La charge est donc **identique par construction**, quoi que fasse le
+> personnage, et le chiffre redevient comparable :
+>
+> | | CPU en mode caché |
+> |---|---|
+> | étape 1b, sans la sonde de signaux | 0,9 % |
+> | **étape 2, sonde à 2 Hz branchée** | **0,9 %** |
+>
+> Verdict : **les cinq appels système ne coûtent rien de mesurable**, et cette fois c'est
+> établi et non supposé. `appli_active` — le seul des cinq à ouvrir un handle de processus
+> — n'y paraît pas davantage.
+>
+> **La leçon, à garder pour les étapes 3 à 5 :** dès qu'un signal modifie le comportement,
+> le CPU « en marche » mesure le **comportement**, pas le code. Pour comparer deux
+> versions, il faut une configuration où la charge ne dépend pas du comportement —
+> `SHIMEJI_CACHE=1` en est une, et le travail par image de `SHIMEJI_CADENCE=1` en est une
+> autre.
 
 **Pistes restantes**, par rentabilité décroissante :
 
