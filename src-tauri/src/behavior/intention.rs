@@ -538,7 +538,21 @@ fn se_reposer(
         return Issue::Echouee;
     }
 
-    // ── La continuité de pose ───────────────────────────────────────────
+    // La condition du sommeil, calculée ici et non plus bas seulement : elle
+    // sert maintenant à DEUX endroits (la continuité juste en dessous, et la
+    // bascule de phase après l'expiration), et deux calculs de la même
+    // condition finiraient par diverger. C'est **la seule ligne de tout le
+    // fichier qui regarde un biais** : il faut qu'un signal ait au moins
+    // doublé l'envie de repos (`seuilSommeil`, 2,0 par défaut). Sans signal
+    // le biais vaut 1, donc il reste assis — **une sieste ne s'improvise
+    // pas.**
+    //
+    // Noter la forme : on ne teste PAS « est-ce que l'utilisateur est
+    // parti ». On teste un poids. C'est la décision n° 3 appliquée à la
+    // lettre : le comportement ne sait pas ce qu'est l'inactivité.
+    let veut_dormir = e.biais.pour(Intention::SeReposer) >= reglages.seuil_sommeil;
+
+    // ── La continuité de pose, et sa condition ──────────────────────────
     //
     // **C'est ce qui permet de ne PAS toucher au délai d'abandon**
     // (décision n° 4). Un sommeil dure 20 à 60 s, le délai coupe à 20 s, donc
@@ -548,7 +562,20 @@ fn se_reposer(
     // Sans cette reprise, chaque re-tirage repartirait en phase `Assis` et
     // l'on verrait le personnage se rasseoir puis se raffaler toutes les
     // 20 secondes. Avec elle, le re-tirage est **invisible**.
-    if phase == PhaseRepos::Assis && ch.pose == POSE_SLEEP {
+    //
+    // ⚠️ **Mais elle est conditionnée au biais**, et pas seulement à la pose.
+    // Après un réveil (Tâche 5), la pose est encore `sleep` le temps d'une
+    // image : sans cette condition, un tirage qui retombe sur `SeReposer`
+    // replongerait le personnage en sommeil profond au lieu de l'asseoir — le
+    // réveil serait annulé une fois sur huit.
+    //
+    // La formule tient en une phrase : **on ne continue de dormir que si l'on
+    // choisirait encore de s'endormir.** C'est la MÊME condition qui autorise
+    // à entrer en sommeil, donc rien de nouveau à retenir.
+    //
+    // Et noter la forme : on teste un POIDS, jamais un signal. `se_reposer`
+    // ne sait toujours pas ce qu'est l'inactivité (décision n° 3).
+    if phase == PhaseRepos::Assis && ch.pose == POSE_SLEEP && veut_dormir {
         phase = PhaseRepos::Endormi;
         // On repart sur une durée de sommeil fraîche : c'est bien un nouveau
         // repos, seulement il ne recommence pas par la position assise.
@@ -572,17 +599,9 @@ fn se_reposer(
     } else if maintenant >= jusqu_a {
         // ── La phase est écoulée : s'endormir, ou terminer ──────────────
         //
-        // La condition du sommeil, et **la seule ligne de tout le fichier
-        // qui regarde un biais** : il faut qu'un signal ait au moins doublé
-        // l'envie de repos (`seuilSommeil`, 2,0 par défaut). Sans signal le
-        // biais vaut 1, donc il reste assis — **une sieste ne s'improvise
-        // pas.**
-        //
-        // Noter la forme : on ne teste PAS « est-ce que l'utilisateur est
-        // parti ». On teste un poids. C'est la décision n° 3 appliquée à la
-        // lettre : le comportement ne sait pas ce qu'est l'inactivité.
-        let veut_dormir = e.biais.pour(Intention::SeReposer) >= reglages.seuil_sommeil;
-
+        // `veut_dormir` est calculé plus haut, avant le bloc de continuité :
+        // c'est la même condition aux deux endroits, et la recalculer ici
+        // aurait fini par diverger d'elle au premier réglage touché.
         if phase == PhaseRepos::Assis && veut_dormir && ch.manifest.has_pose(POSE_SLEEP) {
             phase = PhaseRepos::Endormi;
             jusqu_a = Duration::ZERO; // sera tirée à l'image suivante
