@@ -55,6 +55,81 @@ pub struct Resume {
     /// simples compteurs ne suffirait pas — deux histoires différentes
     /// peuvent tirer le même nombre d'intentions.
     pub signature: u64,
+
+    /// Combien de secondes il a passées dans la pose de sommeil.
+    pub secondes_endormi: u64,
+
+    /// Combien de fois il est passé de la pose de sommeil à autre chose.
+    pub reveils: u64,
+
+    /// Les secondes de sommeil, ventilées par heure locale.
+    ///
+    /// **C'est le chiffre qui prouve l'étape** : il ne suffit pas qu'il
+    /// dorme, il faut qu'il dorme quand l'utilisateur n'est pas là. Un total
+    /// ne le dirait pas.
+    pub endormi_par_heure: [u32; 24],
+}
+
+/// La journée scriptée que la simulation joue.
+///
+/// **Pourquoi une chronologie et pas des signaux constants :** un biais
+/// constant ne se distingue pas d'un biais absent. Ce qu'on veut prouver,
+/// c'est que le personnage dort **au bon moment** — donc il faut des moments.
+///
+/// Déterministe et sans aléatoire : à `minute` égale, mêmes signaux. C'est ce
+/// qui garde la simulation comparable d'une exécution à l'autre, comme la
+/// graine du générateur.
+///
+/// La journée commence à **9 h** — l'heure à laquelle on lance son ordinateur,
+/// donc celle qui rend la trace lisible.
+pub fn signaux_de_la_journee(minute: u32) -> crate::probe::Signaux {
+    const DEBUT: u32 = 9;
+    let heure = ((DEBUT + minute / 60) % 24) as u8;
+
+    // Présent : 9 h-12 h, 14 h-18 h, 20 h-22 h. Absent le reste du temps —
+    // pause déjeuner, soirée, nuit.
+    let present = matches!(heure, 9..=11 | 14..=17 | 20..=21);
+
+    // Combien de temps s'est-il écoulé depuis la dernière minute de présence ?
+    //
+    // On le calcule en remontant plutôt qu'en gardant un état : la fonction
+    // reste pure, donc appelable pour n'importe quelle minute dans n'importe
+    // quel ordre — ce qu'un test fait justement.
+    let inactivite = if present {
+        std::time::Duration::ZERO
+    } else {
+        let mut recul = 1u32;
+        while recul <= minute {
+            let h = ((DEBUT + (minute - recul) / 60) % 24) as u8;
+            if matches!(h, 9..=11 | 14..=17 | 20..=21) {
+                break;
+            }
+            recul += 1;
+        }
+        std::time::Duration::from_secs(recul as u64 * 60)
+    };
+
+    crate::probe::Signaux {
+        inactivite,
+        // Une application au premier plan pendant les heures de travail : la
+        // table des modificateurs est vide par défaut, donc ça ne change rien
+        // — mais un utilisateur qui ajoute une ligne le verra dans la trace.
+        appli_active: if present {
+            Some("Code.exe".to_string())
+        } else {
+            None
+        },
+        heure,
+        // Sur secteur : la batterie a ses propres tests unitaires, et la
+        // faire varier ici brouillerait la lecture du signal d'inactivité.
+        batterie: crate::probe::Batterie {
+            pourcent: None,
+            sur_secteur: true,
+        },
+        // Le verrouillage n'est pas un signal de comportement : il porte sur
+        // la fenêtre (Tâche 6), que la simulation n'a pas.
+        session_verrouillee: false,
+    }
 }
 
 /// Déroule `minutes` de comportement et rend le résumé.
@@ -105,15 +180,16 @@ pub fn executer(
     // La souris ne bouge pas et le bouton reste relâché : on simule le
     // comportement autonome, pas l'interaction. L'attrapage est vérifié par
     // les tests de `reflex.rs`, et à l'œil en Tâche 11.
-    let entrees = Entrees {
-        souris: Point::new(0.0, 0.0),
-        echelle_affichage: 1.0,
-        bouton_gauche: false,
-        curseur_sur_le_personnage: false,
-        // Neutre jusqu'à la Tâche 7, qui jouera une journée entière.
-        biais: crate::signals::Biais::neutre(),
-        utilisateur_actif: true,
-    };
+    //
+    // `biais` et `utilisateur_actif` sont recalculés dans la boucle, aux
+    // mêmes 2 Hz que la vraie boucle (spec §5.5) : c'est
+    // `signaux_de_la_journee` qui les fait varier au fil de la journée
+    // scriptée.
+    const IMAGES_PAR_SIGNAL: u64 = 30; // 60 Hz / 2 Hz
+
+    let mut biais = crate::signals::Biais::neutre();
+    let mut utilisateur_actif = true;
+    let mut heure_courante: u8 = 9;
 
     // ── La boucle ───────────────────────────────────────────────────────
     let total_images = minutes as u64 * 60 * 60;
@@ -125,7 +201,17 @@ pub fn executer(
         poses_vues: BTreeSet::new(),
         blocage_max: Duration::ZERO,
         signature: 0,
+        secondes_endormi: 0,
+        reveils: 0,
+        endormi_par_heure: [0; 24],
     };
+
+    // Le sommeil, compté en images puis converti en secondes une seule fois
+    // à la fin — accumuler des `f32` sur 5 millions d'images introduirait une
+    // erreur d'arrondi qu'un compteur entier n'a pas.
+    let mut images_endormi: u64 = 0;
+    let mut images_endormi_par_heure = [0u64; 24];
+    let mut dormait = false;
 
     // Pour la détection de blocage : ce qu'on observait au dernier
     // changement, et quand.
@@ -144,11 +230,46 @@ pub fn executer(
     for i in 0..total_images {
         let maintenant = Duration::from_secs_f64(i as f64 * DT as f64);
 
+        // Recalcul des signaux à 2 Hz (spec §5.5) : la simulation doit
+        // exercer le comportement au même rythme que la vraie boucle, sinon
+        // elle vérifierait autre chose que ce qui tourne réellement.
+        if i % IMAGES_PAR_SIGNAL == 0 {
+            let minute = (i / (60 * 60)) as u32;
+            let s = signaux_de_la_journee(minute);
+            biais = crate::signals::biais_de(&s, config);
+            utilisateur_actif =
+                s.inactivite < Duration::from_secs_f32(config.signaux.inactivite_secondes);
+            heure_courante = s.heure;
+        }
+
+        let entrees = Entrees {
+            souris: Point::new(0.0, 0.0),
+            echelle_affichage: 1.0,
+            bouton_gauche: false,
+            curseur_sur_le_personnage: false,
+            biais,
+            utilisateur_actif,
+        };
+
         let r = behavior::pas(&mut ch, &monde, &entrees, &table, &reglages, maintenant, DT, &mut rng);
 
         if r != behavior::reflex::Reflexe::Aucun {
             resume.reflexes += 1;
         }
+
+        // ── Le sommeil, compté par heure ────────────────────────────────
+        let dort = ch.pose == crate::character::manifest::POSE_SLEEP;
+        if dort {
+            // Une image vaut DT seconde ; on compte en images et on convertit
+            // à la fin pour ne pas accumuler d'erreur de flottant sur
+            // 5 millions d'images.
+            images_endormi += 1;
+            images_endormi_par_heure[heure_courante as usize] += 1;
+        }
+        if dormait && !dort {
+            resume.reveils += 1;
+        }
+        dormait = dort;
 
         // Une intention tirée = l'identité `(type, depuis)` a changé.
         let intention_actuelle = ch.intention.map(|ai| (ai.kind, ai.depuis));
@@ -212,6 +333,12 @@ pub fn executer(
         resume.images += 1;
     }
 
+    // Images → secondes, une seule fois.
+    resume.secondes_endormi = (images_endormi as f32 * DT) as u64;
+    for h in 0..24 {
+        resume.endormi_par_heure[h] = (images_endormi_par_heure[h] as f32 * DT) as u32;
+    }
+
     Ok(resume)
 }
 
@@ -238,6 +365,19 @@ pub fn imprimer(r: &Resume) {
         "blocage le plus long : {:.1} s",
         r.blocage_max.as_secs_f32()
     );
+    println!("endormi           : {} s au total", r.secondes_endormi);
+    println!("réveils           : {}", r.reveils);
+    println!("sommeil par heure :");
+    for h in 0..24 {
+        let s = r.endormi_par_heure[h];
+        if s == 0 {
+            continue;
+        }
+        // Une barre par tranche de 2 minutes, pour que 24 lignes tiennent
+        // dans un terminal.
+        let barre = "#".repeat((s / 120).min(60) as usize);
+        println!("  {h:02} h {s:5} s {barre}");
+    }
 
     // Le verdict, plutôt que de laisser le lecteur comparer à 20 s.
     let limite = crate::behavior::intention::DELAI_ABANDON;
@@ -328,5 +468,86 @@ mod tests {
         let e =
             executer(1, 1, Path::new("../characters/inexistant"), &defauts()).expect_err("doit échouer");
         assert!(e.contains("mascot.json"), "message peu clair : {e}");
+    }
+
+    #[test]
+    fn la_chronologie_couvre_une_journee_entiere() {
+        // L'heure doit avancer, faire le tour, et rester dans 0..24.
+        let h = |min| signaux_de_la_journee(min).heure;
+        assert_eq!(h(0), 9, "la journée commence à 9 h");
+        assert_eq!(h(60), 10);
+        assert_eq!(h(15 * 60), 0, "9 h + 15 h = minuit");
+        for min in 0..(24 * 60) {
+            assert!(signaux_de_la_journee(min).heure < 24);
+        }
+    }
+
+    #[test]
+    fn la_chronologie_alterne_presence_et_absence() {
+        // Aux heures de travail il est là ; la nuit il est parti. Sans cette
+        // alternance, la simulation ne prouverait rien : un biais constant ne
+        // se distingue pas d'un biais absent.
+        let inactif = |min| signaux_de_la_journee(min).inactivite;
+        assert_eq!(inactif(30), std::time::Duration::ZERO, "10 h : il travaille");
+        assert!(
+            inactif(15 * 60) > std::time::Duration::from_secs(120),
+            "minuit : il est parti depuis longtemps"
+        );
+    }
+
+    #[test]
+    fn une_journee_entiere_dort_au_bon_moment() {
+        // **LE test de l'étape**, et il vérifie quatre choses d'un coup.
+        //
+        // Une seule simulation pour les quatre : dérouler 24 h fait
+        // 5,2 millions d'images, soit une à trois secondes en debug. La
+        // lancer quatre fois multiplierait par quatre le temps de la suite
+        // entière, qui tient aujourd'hui en 0,43 s.
+        //
+        // > Si ce test dépasse ~10 s sur la machine, le marquer `#[ignore]`
+        // > et s'appuyer sur `--sim 1440` (Step 8), qui est de toute façon
+        // > l'artefact qu'on lit.
+        let r = executer(24 * 60, 42, blob(), &defauts()).expect("la simulation doit aboutir");
+
+        // ── 1. Il dort ──────────────────────────────────────────────────
+        // 2 h, 3 h, 4 h : personne devant la machine.
+        let nuit: u32 = (2..=4).map(|h| r.endormi_par_heure[h]).sum();
+        assert!(nuit > 0, "il n'a pas dormi de la nuit");
+
+        // ── 2. Il dort AU BON MOMENT ────────────────────────────────────
+        // C'est la différence entre un signal branché et un signal qui
+        // marche : un total de sommeil ne dirait rien, seule la ventilation
+        // par heure le dit. 9 h-11 h, il est au clavier.
+        let matin: u32 = (9..=11).map(|h| r.endormi_par_heure[h]).sum();
+        assert!(
+            nuit > matin * 5,
+            "il dort autant le matin que la nuit : le signal ne mord pas              (matin {matin} s, nuit {nuit} s)"
+        );
+
+        // ── 3. Il se réveille ───────────────────────────────────────────
+        // La chronologie compte cinq retours de l'utilisateur.
+        assert!(r.reveils > 0, "il ne s'est jamais réveillé");
+
+        // ── 4. LA MARGE SURVIT — le test de la décision n° 3 ────────────
+        //
+        // Même avec ×8 sur le repos pendant toute la nuit, il ne doit PAS
+        // avoir dormi 100 % du temps. « Cette marge est le produit. » Si
+        // elle disparaissait, le signal COMMANDERAIT au lieu de biaiser, et
+        // aucun autre test ne s'en apercevrait.
+        let nuit_complete: u32 = (0..6).map(|h| r.endormi_par_heure[h]).sum();
+        let six_heures: u32 = 6 * 3600;
+        assert!(
+            nuit_complete < (six_heures as f32 * 0.95) as u32,
+            "il a dormi {nuit_complete} s sur {six_heures} : la marge a disparu"
+        );
+
+        // ── Et la décision n° 4 tient toujours ──────────────────────────
+        // Le sommeil est la plus longue immobilité du programme : c'est ici
+        // qu'un blocage se verrait.
+        assert!(
+            r.blocage_max < crate::behavior::intention::DELAI_ABANDON,
+            "blocage de {:?}, au-delà du délai d'abandon",
+            r.blocage_max
+        );
     }
 }

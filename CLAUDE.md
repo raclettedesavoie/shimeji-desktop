@@ -131,6 +131,7 @@ cd C:\Users\alri\Documents\shimeji-desktop\src-tauri
 cargo test               # la suite complète, sans écran
 cargo run                # l'application : un personnage sur le sol
 cargo run -- --sim 30    # 30 min de comportement sans écran (spec §10.3)
+cargo run -- --sim 1440  # 24 h : la preuve d'ensemble de l'étape 2, voir plus bas
 cargo run -- --demarrage etat|on|off   # le démarrage avec Windows, scriptable
 ```
 
@@ -806,6 +807,48 @@ Trois choses apprises en exécutant, qui valent plus que le code :
 > qu'il ne connaît pas.** Elle est derrière le chevron `^` de la zone de notification,
 > pas directement visible — ce qui se confond facilement avec « le tray ne s'installe
 > pas ».
+
+### La journée simulée — la preuve d'ensemble de l'étape 2 (2026-09-10)
+
+`cargo run -- --sim 1440` déroule **24 h de comportement sans écran, sans horloge
+réelle et sans humain**, contre une chronologie d'activité scriptée
+(`sim::signaux_de_la_journee`) : présent 9 h-12 h, 14 h-18 h, 20 h-22 h ; absent le
+reste — pause déjeuner, soirée, nuit. C'est **la vérification d'ensemble de
+l'étape** : elle ne dit pas seulement qu'il dort, elle dit **quand**.
+
+La sortie ajoute un histogramme du sommeil par heure locale, et c'est lui qui
+prouve le signal, pas un total :
+
+```
+sommeil par heure :
+  00 h  2930 s ########################
+  ...
+  05 h  3210 s ##########################
+  ...
+sommeil (9 h-11 h, il travaille) : ~0 s
+```
+
+Un test dédié, `sim::tests::une_journee_entiere_dort_au_bon_moment`, verrouille
+quatre propriétés d'un coup (une seule simulation de 24 h pour les quatre — la
+lancer quatre fois multiplierait par quatre son coût) :
+
+1. il dort la nuit (2 h-4 h) ;
+2. il dort **au bon moment** — la nuit reçoit plus de cinq fois le sommeil du matin
+   (9 h-11 h, où il est censé être au clavier) ;
+3. il se réveille (la chronologie compte cinq retours) ;
+4. **la marge survit** — même avec ×8 sur le repos toute la nuit, il n'a pas dormi
+   100 % du temps. C'est le test de la décision n° 3 : si le signal *commandait*
+   au lieu de biaiser, aucun autre test du projet ne s'en apercevrait.
+
+La chronologie est une **fonction pure de la minute** (pas d'état, pas
+d'aléatoire) : deux exécutions de `--sim 1440` rendent donc la **même
+signature**, comme pour n'importe quelle graine fixe.
+
+> Ce test de 24 h coûte environ **7 s** à lui seul (5,2 millions d'images), contre
+> 0,43 s pour tout le reste de la suite auparavant. Il reste sous le seuil de 10 s
+> fixé pour cette tâche, donc il n'est **pas** marqué `#[ignore]` — mais c'est
+> maintenant le test le plus lent du projet, à surveiller si la suite continue de
+> grossir.
 
 ### La prochaine action
 
