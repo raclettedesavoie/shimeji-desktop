@@ -389,13 +389,53 @@ mod tests {
     fn dossier_de_test(json: &str, frames_presentes: &[u32]) -> std::path::PathBuf {
         // `std::env::temp_dir()` plus un nom unique : pas de dépendance à une
         // crate de fichiers temporaires pour douze tests.
+        //
+        // Le nom était shimeji-test-<pid>-<compteur>, mais Windows RECYCLE les
+        // PID. Conséquence : une exécution qui retombe sur un PID déjà utilisé
+        // réutilisait le dossier laissé par une exécution PRÉCÉDENTE. Le
+        // compteur n'y changeait rien : il était distribué dans un ordre NON
+        // DÉTERMINISTE entre les threads de test parallèles, donc plusieurs
+        // tests sur la même exécution partageaient le même dossier. Tous les
+        // tests d'une exécution N héritaient de la poubelle de la PREMIÈRE
+        // exécution qui avait eu ce PID.
+        //
+        // Symptôme : un_manifeste_sans_aucune_pose_jouable_est_une_erreur
+        // échouait environ une fois sur quatre — assez rare pour être attribué
+        // au test lui-même plutôt qu'à son helper, ce qui aurait envoyé
+        // chercher un bug inexistant.
+        //
+        // La morale : partager un dossier, c'est se partager aussi SES FICHIERS.
+        // Si le test A crée shime1.png et ferme le dossier, le test B qui le
+        // réutilise y trouve shime1.png dont il attend précisément l'ABSENCE.
+        //
+        // Deux corrections :
+        // 1. Ajouter un grain UNIQUE par exécution (nanosecondes depuis
+        //    l'époque). Un PID recyclé ne peut plus collisionner sur le même
+        //    nom de dossier.
+        // 2. SUPPRIMER le dossier s'il existe avant de le créer, comme défense
+        //    en profondeur. Cette ligne garantit qu'un test PART TOUJOURS d'un
+        //    dossier vide, même si le grain échouait un jour.
+        //
+        // La distinction : laisser des dossiers dans %TEMP% est acceptable
+        // (c'est un artefact), les RÉUTILISER ne l'est pas (c'est la source du
+        // bug). Le nettoyage à la sortie du test n'aurait rien changé — une
+        // autre exécution aurait pu écrire dans le dossier entre sa création et
+        // son nettoyage. C'est la SÉPARATION (un nom unique) qui répare le bug.
+        let nanos_unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
         let base = std::env::temp_dir().join(format!(
-            "shimeji-test-{}-{}",
+            "shimeji-test-{}-{}-{}",
             std::process::id(),
-            // Un compteur croissant : deux appels dans le même test ne
-            // doivent pas se marcher dessus.
-            COMPTEUR.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            COMPTEUR.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            nanos_unique
         ));
+
+        // Défense en profondeur : si le dossier existait, le supprimer.
+        // L'échec est sans importance (le dossier n'existait pas).
+        let _ = std::fs::remove_dir_all(&base);
+
         std::fs::create_dir_all(base.join("img")).unwrap();
         std::fs::write(base.join("mascot.json"), json).unwrap();
         for n in frames_presentes {
