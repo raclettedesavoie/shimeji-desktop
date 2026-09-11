@@ -146,6 +146,77 @@ pub fn pas(
         }
     }
 
+    // ── La règle de sécurité du monde vertical ──────────────────────────
+    //
+    // > **Un personnage accroché à une face autre que `Top`, et qui n'a
+    // > PAS d'intention `Grimper`, se lâche.** (design §4.5, corrigé après
+    // > analyse — voir ci-dessous.)
+    //
+    // ⚠️ **Correction au plan de la Tâche 3.** Le plan initial plaçait
+    // cette règle entre la couche 2 et la couche 3, déclenchée seulement
+    // quand l'intention en cours SE TERMINE. C'est insuffisant : le bloc
+    // `e.commande` ci-dessus pose une intention et sort par un `return`
+    // AVANT d'atteindre ce point. Un clic droit sur « Flâner » pendant que
+    // le personnage est sur un mur poserait donc l'intention `Flaner` sans
+    // jamais passer par cette règle — et `avancer` déplace l'offset LE
+    // LONG DE LA FACE COURANTE : le personnage « marcherait »
+    // verticalement le long du mur, en pose de marche, avec des
+    // demi-tours. C'est exactement le bug que cette tâche doit rendre
+    // impossible.
+    //
+    // La règle est donc placée ICI — après le `return` de la commande, et
+    // avant les couches 2 et 3 — et elle est TOTALE : elle se redéclenche
+    // à CHAQUE image tant que le personnage est accroché à une face
+    // verticale sans intention `Grimper`, pas seulement au moment où une
+    // intention se termine. C'est ce qui couvre le chemin de la commande
+    // en plus du chemin normal des couches 2/3.
+    //
+    // ⚠️⚠️ **TÂCHE 4** : `Intention::Grimper` n'existe pas encore. En
+    // attendant, la condition ci-dessous teste seulement `ch.intention.is_none()`
+    // — donc, pour l'instant, TOUTE intention (pas seulement `Grimper`)
+    // empêche de se lâcher. Le jour où `Intention::Grimper` existera
+    // (Tâche 4), cette condition DOIT devenir « l'intention n'est pas
+    // `Grimper` », sans quoi grimper lui-même déclencherait cette règle et
+    // le ferait tomber du mur qu'il est justement en train d'escalader.
+    //
+    // Conséquence à retenir : **le sol est le seul endroit où l'on peut ne
+    // rien faire.** C'est aussi ce qui rend le délai d'abandon lisible à
+    // l'œil — au bout de deux minutes il en a marre, il lâche, il tombe.
+    // C'est `FallFromWall` de Shimeji-ee.
+    //
+    // `if let Attachment::On { … } = ch.attachment` : `Attachment` est
+    // `Copy` (voir son en-tête dans `attach.rs`), donc ce `if let` en
+    // prend une COPIE — on peut réassigner `ch.attachment` dans le corps
+    // sans conflit d'emprunt. Les états `Falling` et `Dragged` ne sont pas
+    // concernés : on ne lâche pas ce qu'on ne tient pas, et écraser une
+    // chute déjà en cours remettrait sa vitesse à zéro (voir le test
+    // `lacher_un_mur_n_ecrase_pas_une_chute_deja_en_cours`).
+    if let crate::character::attach::Attachment::On {
+        platform,
+        face,
+        offset,
+    } = ch.attachment
+    {
+        if face != crate::geom::Face::Top && ch.intention.is_none() {
+            // On repart du rectangle COURANT pour savoir d'où il tombe
+            // (décision n° 1). `if let Some(…)` : si la plateforme a
+            // disparu dans le même souffle, le Réflexe 1 s'en occupera à
+            // l'image suivante — il n'y a rien à faire ici.
+            if let Some(plat) = world.get(platform) {
+                ch.attachment = crate::character::attach::Attachment::Falling {
+                    pos: plat.rect.point_on(face, offset),
+                    vel: crate::geom::Vec2::zero(),
+                };
+
+                // On rend la main : la chute est un réflexe, et c'est lui
+                // qui posera la pose `fall` à l'image suivante. Tirer une
+                // envie maintenant la ferait s'appliquer à un personnage
+                // en l'air.
+                return r;
+            }
+        }
+    }
+
     // ── L'interruption : un signal ARRÊTE, il ne CHOISIT pas ────────────
     //
     // Ajout à la décision n° 3, documenté dans le design de l'étape 2 §6.
@@ -259,6 +330,128 @@ mod tests {
             },
             utilisateur_actif: actif,
             commande: None,
+        }
+    }
+
+    // ── La règle de sécurité du monde vertical (Tâche 3, étape 4a) ──────
+    //
+    // Ces trois tests verrouillent la règle « accroché à une face autre
+    // que `Top`, sans intention `Grimper` (pour l'instant : sans AUCUNE
+    // intention — voir le ⚠️ TÂCHE 4 sur la règle elle-même), il se
+    // lâche ». Ils couvrent : le cas nominal, le contre-exemple (le sol
+    // ne doit jamais déclencher la règle), et la non-régression d'une
+    // chute déjà en cours.
+
+    /// Le mur gauche du monde de test (`FakeProbe::un_ecran`), face
+    /// `Right` — la face regarde vers l'intérieur de l'écran (spec du
+    /// design §2.1).
+    fn mur_gauche(m: &World) -> &crate::world::Platform {
+        m.platforms()
+            .iter()
+            .find(|p| p.has_face(Face::Right))
+            .expect("un écran isolé a un mur gauche")
+    }
+
+    #[test]
+    fn une_intention_finie_sur_un_mur_le_fait_lacher() {
+        let m = monde();
+        let mut ch = perso(&m);
+        let mur = mur_gauche(&m);
+
+        // Accroché à mi-hauteur, sans intention : la couche 2 rendra donc
+        // `Finie` dès la première image, et c'est notre règle, juste
+        // après, qui doit le faire tomber.
+        ch.attachment = Attachment::On {
+            platform: mur.id,
+            face: Face::Right,
+            offset: 400.0,
+        };
+        ch.intention = None;
+
+        let mut rng = XorShift32::seeded(1);
+        pas(
+            &mut ch,
+            &m,
+            &entrees(true, 1.0),
+            &desire::TableEnvies::defaut(),
+            &crate::config::Reglages::depuis(&crate::config::Config::default()),
+            Duration::from_secs(1),
+            DT,
+            &mut rng,
+        );
+
+        // Il tombe, et il tombe DE LÀ OÙ IL ÉTAIT — pas d'un point
+        // recalculé ailleurs (décision n° 1) : on repart du rectangle
+        // courant de la plateforme, avec sa face et son offset.
+        match ch.attachment {
+            Attachment::Falling { pos, vel } => {
+                assert_eq!(pos, Point::new(0.0, 400.0));
+                assert_eq!(vel, crate::geom::Vec2::zero());
+            }
+            autre => panic!("il devrait tomber, il est {autre:?}"),
+        }
+    }
+
+    #[test]
+    fn une_intention_finie_sur_le_sol_ne_le_fait_pas_lacher() {
+        // Le contre-exemple, indispensable : sans lui, un bug qui
+        // détacherait TOUT LE MONDE (pas seulement les faces verticales)
+        // passerait inaperçu. Le sol reste le seul endroit où l'on peut
+        // ne rien faire.
+        let m = monde();
+        let mut ch = perso(&m);
+        ch.intention = None;
+
+        let mut rng = XorShift32::seeded(1);
+        pas(
+            &mut ch,
+            &m,
+            &entrees(true, 1.0),
+            &desire::TableEnvies::defaut(),
+            &crate::config::Reglages::depuis(&crate::config::Config::default()),
+            Duration::from_secs(1),
+            DT,
+            &mut rng,
+        );
+
+        assert!(
+            matches!(ch.attachment, Attachment::On { face: Face::Top, .. }),
+            "il ne doit pas quitter le sol"
+        );
+        assert!(ch.intention.is_some(), "la couche 3 doit lui en tirer une");
+    }
+
+    #[test]
+    fn lacher_un_mur_n_ecrase_pas_une_chute_deja_en_cours() {
+        // Le cas du personnage qui s'est lâché lui-même à l'image
+        // précédente : il est déjà `Falling` avec une vitesse. La règle
+        // ne doit pas la remettre à zéro — elle ne concerne QUE
+        // `Attachment::On` (voir la note d'emprunt dans `pas`).
+        let m = monde();
+        let mut ch = perso(&m);
+        ch.attachment = Attachment::Falling {
+            pos: Point::new(100.0, 200.0),
+            vel: crate::geom::Vec2::new(0.0, 300.0),
+        };
+        ch.intention = None;
+
+        let mut rng = XorShift32::seeded(1);
+        pas(
+            &mut ch,
+            &m,
+            &entrees(true, 1.0),
+            &desire::TableEnvies::defaut(),
+            &crate::config::Reglages::depuis(&crate::config::Config::default()),
+            Duration::from_secs(1),
+            DT,
+            &mut rng,
+        );
+
+        match ch.attachment {
+            // Le Réflexe 3 (la chute) l'a fait avancer : la vitesse a
+            // grandi, elle n'a pas été effacée par notre règle.
+            Attachment::Falling { vel, .. } => assert!(vel.y > 300.0),
+            autre => panic!("il devrait toujours tomber, il est {autre:?}"),
         }
     }
 
