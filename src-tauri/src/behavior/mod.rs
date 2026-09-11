@@ -179,6 +179,19 @@ pub fn pas(
     // `Grimper` », sans quoi grimper lui-même déclencherait cette règle et
     // le ferait tomber du mur qu'il est justement en train d'escalader.
     //
+    // Conséquence de PLACEMENT, à ne pas confondre avec ce qui précède :
+    // cette règle s'exécute AVANT la couche 2, donc `intention::poursuivre`
+    // n'est même pas appelée quand elle tire. Le scénario « une intention
+    // se termine PENDANT la couche 2, puis la couche 3 en tire une
+    // nouvelle, dans la même image » n'est donc rattrapé qu'à l'image
+    // SUIVANTE — le temps qu'`is_none()` (au tout début de CETTE image) le
+    // voie. Une image de retard (16 ms à 60 Hz), sans conséquence visible,
+    // et qui ne se referme complètement qu'à la Tâche 4 : avec la
+    // condition « pas `Grimper` », même une intention fraîchement tirée
+    // (autre que `Grimper`) sera rattrapée dès l'image suivante — ce qui
+    // est déjà le cas aujourd'hui, cette remarque ne change donc rien au
+    // comportement, elle documente juste le délai qui existe déjà.
+    //
     // Conséquence à retenir : **le sol est le seul endroit où l'on peut ne
     // rien faire.** C'est aussi ce qui rend le délai d'abandon lisible à
     // l'œil — au bout de deux minutes il en a marre, il lâche, il tombe.
@@ -358,9 +371,10 @@ mod tests {
         let mut ch = perso(&m);
         let mur = mur_gauche(&m);
 
-        // Accroché à mi-hauteur, sans intention : la couche 2 rendra donc
-        // `Finie` dès la première image, et c'est notre règle, juste
-        // après, qui doit le faire tomber.
+        // Accroché à mi-hauteur, sans intention. La règle est placée AVANT
+        // la couche 2 (correction 1 de la Tâche 3) : ici `intention` est
+        // déjà `None`, donc elle tire et fait `return` dès cette première
+        // image, sans même que `intention::poursuivre` soit appelé.
         ch.attachment = Attachment::On {
             platform: mur.id,
             face: Face::Right,
