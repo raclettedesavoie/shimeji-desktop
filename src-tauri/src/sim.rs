@@ -290,6 +290,10 @@ pub fn executer(
             curseur_sur_le_personnage: false,
             biais,
             utilisateur_actif,
+            // Aucune commande : la simulation n'a ni souris ni menu. C'est
+            // voulu — elle mesure la vie AUTONOME du personnage, et une
+            // commande injectée fausserait l'histogramme de sommeil.
+            commande: None,
         };
 
         let r = behavior::pas(&mut ch, &monde, &entrees, &table, &reglages, maintenant, DT, &mut rng);

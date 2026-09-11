@@ -373,6 +373,7 @@ mod tests {
             curseur_sur_le_personnage: false,
             biais: crate::signals::Biais::neutre(),
             utilisateur_actif: true,
+            commande: None,
         }
     }
 
@@ -457,6 +458,7 @@ mod tests {
             curseur_sur_le_personnage: true,
             biais: crate::signals::Biais::neutre(),
             utilisateur_actif: true,
+            commande: None,
         };
 
         let r = appliquer(&mut ch, &m, &e, Duration::ZERO, DT);
@@ -483,6 +485,7 @@ mod tests {
             curseur_sur_le_personnage: true,
             biais: crate::signals::Biais::neutre(),
             utilisateur_actif: true,
+            commande: None,
         };
         appliquer(&mut ch, &m, &e, Duration::ZERO, DT);
         assert_eq!(ch.pose, POSE_DRAGGED);
@@ -508,6 +511,7 @@ mod tests {
                 curseur_sur_le_personnage: true,
                 biais: crate::signals::Biais::neutre(),
                 utilisateur_actif: true,
+                commande: None,
             };
             appliquer(ch, m, &e, t, DT);
             t += Duration::from_micros(16_667);
@@ -592,6 +596,7 @@ mod tests {
                 curseur_sur_le_personnage: true,
                 biais: crate::signals::Biais::neutre(),
                 utilisateur_actif: true,
+                commande: None,
             };
             appliquer(&mut ch, &m, &e, t, DT);
             vues.insert(ch.pose.clone());
@@ -625,6 +630,7 @@ mod tests {
             curseur_sur_le_personnage: true,
             biais: crate::signals::Biais::neutre(),
             utilisateur_actif: true,
+            commande: None,
         };
         appliquer(&mut ch, &m, &e, Duration::ZERO, DT);
 
@@ -647,6 +653,7 @@ mod tests {
             curseur_sur_le_personnage: false,
             biais: crate::signals::Biais::neutre(),
             utilisateur_actif: true,
+            commande: None,
         };
         assert_eq!(
             appliquer(&mut ch, &m, &e, Duration::ZERO, DT),
@@ -673,6 +680,7 @@ mod tests {
             curseur_sur_le_personnage: true,
             biais: crate::signals::Biais::neutre(),
             utilisateur_actif: true,
+            commande: None,
         };
         appliquer(&mut ch, &m, &e, Duration::ZERO, DT);
 
@@ -712,6 +720,7 @@ mod tests {
             curseur_sur_le_personnage: true,
             biais: crate::signals::Biais::neutre(),
             utilisateur_actif: true,
+            commande: None,
         };
         let r = appliquer(&mut ch, &m, &e, Duration::ZERO, DT);
         assert_eq!(r, Reflexe::Chute);
@@ -757,6 +766,7 @@ mod tests {
             curseur_sur_le_personnage: true,
             biais: crate::signals::Biais::neutre(),
             utilisateur_actif: true,
+            commande: None,
         };
         appliquer(&mut ch, &m, &e, Duration::from_millis(500), DT);
 
@@ -794,6 +804,7 @@ mod tests {
                 curseur_sur_le_personnage: true,
                 biais: crate::signals::Biais::neutre(),
                 utilisateur_actif: true,
+                commande: None,
             };
             appliquer(&mut ch, &m, &e, Duration::from_millis(500), DT);
             ch.facing
@@ -839,6 +850,7 @@ mod tests {
             curseur_sur_le_personnage: true,
             biais: crate::signals::Biais::neutre(),
             utilisateur_actif: true,
+            commande: None,
         };
         appliquer(&mut ch, &m, &e, Duration::from_millis(500), DT);
 
@@ -864,6 +876,7 @@ mod tests {
             curseur_sur_le_personnage: false, // il a glissé sous le curseur
             biais: crate::signals::Biais::neutre(),
             utilisateur_actif: true,
+            commande: None,
         };
         let r = appliquer(&mut ch, &m, &e, Duration::ZERO, DT);
 

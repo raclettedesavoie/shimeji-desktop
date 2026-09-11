@@ -1,12 +1,19 @@
 //! Le tray et son menu (spec §9.1).
 //!
-//! Responsabilité unique : construire le menu, et traduire un clic en action.
-//! **Aucune logique de personnage ici** — les actions se contentent
-//! d'appeler ailleurs.
+//! Responsabilité unique : construire le menu du tray. Ce qu'une entrée
+//! **fait** est dans `actions.rs`, partagé avec le menu du clic droit sur le
+//! personnage (`menu_perso.rs`).
 //!
-//! Fichier à part plutôt que dans `main.rs` : le menu, ses identifiants et
-//! ses actions font une centaine de lignes qui n'ont rien à voir avec
-//! l'amorçage, et `main.rs` en fait déjà 400.
+//! Fichier à part plutôt que dans `main.rs` : le menu et sa construction
+//! n'ont rien à voir avec l'amorçage, et `main.rs` en fait déjà 400.
+//!
+//! # ⚠️ C'est ici qu'est installé l'UNIQUE gestionnaire d'événements de menu
+//!
+//! Tauri livre tout événement de menu à **tous** les gestionnaires, quel que
+//! soit le menu d'origine (`tauri-2.11.5`, `src/tray/mod.rs:326`). Un second
+//! `on_menu_event` ailleurs exécuterait donc chaque action deux fois — et
+//! deux bascules s'annulent. Le menu du personnage n'a volontairement pas de
+//! gestionnaire : ses clics arrivent ici. Voir l'en-tête d'`actions.rs`.
 //!
 //! Signatures vérifiées dans tauri 2.11.5 :
 //!   TrayIconBuilder                src/tray/mod.rs:216
@@ -17,22 +24,16 @@
 //!   Manager::webview_windows       src/lib.rs:588
 //!   AppHandle::exit                src/app.rs:574
 
-use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Manager};
 
-// Les identifiants des entrées. Des constantes plutôt que des littéraux :
-// l'identifiant est écrit à la construction du menu ET lu dans le
-// gestionnaire d'événements, donc une faute de frappe donnerait une entrée
-// qui ne fait silencieusement rien.
-pub const ID_AFFICHER: &str = "afficher";
-pub const ID_RECHARGER: &str = "recharger";
-pub const ID_DEMARRAGE: &str = "demarrage";
-pub const ID_DOSSIER: &str = "dossier";
-pub const ID_QUITTER: &str = "quitter";
+// Les identifiants vivent dans `actions.rs` avec ceux du menu du personnage :
+// c'est là qu'ils sont lus, et les tenir à deux endroits inviterait à en
+// ajouter un sans son cas de traitement.
+use crate::actions::{ID_AFFICHER, ID_DEMARRAGE, ID_DOSSIER, ID_QUITTER, ID_RECHARGER};
 
 /// Partagé entre le tray et les boucles : les personnages sont-ils visibles ?
 ///
@@ -66,17 +67,14 @@ pub fn basculer_visibilite(app: &AppHandle, visible: bool) {
 
 /// Installe l'icône du tray et son menu.
 ///
-/// `dossier_personnages` est capturé par la fermeture du menu, pour l'entrée
-/// « ouvrir le dossier ». `demarrage_actif` initialise la case à cocher
+/// `actions` porte tout ce dont les entrées ont besoin pour agir, et sert
+/// aussi au menu du personnage. `demarrage_actif` initialise la case à cocher
 /// d'après ce que dit vraiment le registre — pas d'après la config, qui
 /// pourrait mentir si l'utilisateur a retiré l'entrée à la main.
 pub fn installer(
     app: &AppHandle,
-    dossier_personnages: &Path,
     demarrage_actif: bool,
-    visibilite: Visibilite,
-    demande: crate::rechargement::Demande,
-    personnage: String,
+    actions: std::sync::Arc<crate::actions::Actions>,
 ) -> Result<(), String> {
     // ── Les entrées ─────────────────────────────────────────────────────
     // `with_id` et non `new` : c'est l'identifiant qui reviendra dans
@@ -146,16 +144,22 @@ pub fn installer(
     )
     .map_err(|e| format!("menu : {e}"))?;
 
-    // ── Le gestionnaire d'événements ────────────────────────────────────
+    // ── Le gestionnaire d'événements — le SEUL du programme ─────────────
+    //
     // `move` : la fermeture doit posséder ce qu'elle utilise, puisqu'elle
-    // survit à cette fonction. D'où le `to_path_buf` — on ne peut pas
-    // capturer un `&Path` emprunté.
-    let dossier_a_ouvrir = dossier_personnages.to_path_buf();
-
+    // survit à cette fonction. D'où les clones — un emprunt ne pourrait pas
+    // en sortir.
+    //
     // Les deux entrées à cocher sont capturées pour pouvoir lire leur état :
     // `is_checked()` dit si l'utilisateur vient de cocher ou de décocher.
-    let afficher_pour_evenement = afficher.clone();
-    let demarrage_pour_evenement = demarrage.clone();
+    let cases = crate::actions::CasesTray {
+        afficher: afficher.clone(),
+        demarrage: demarrage.clone(),
+    };
+
+    // Les mêmes cases sont confiées à `actions`, pour que le menu du
+    // personnage puisse les remettre d'accord après avoir agi.
+    actions.enregistrer_cases(cases.clone());
 
     TrayIconBuilder::new()
         .menu(&menu)
@@ -168,81 +172,10 @@ pub fn installer(
                 .clone(),
         )
         .tooltip("shimeji-desktop")
+        // Reçoit AUSSI les clics du menu du personnage : voir l'avertissement
+        // en tête de ce fichier. `executer` répartit sur l'identifiant.
         .on_menu_event(move |app, evenement| {
-            match evenement.id().as_ref() {
-                ID_AFFICHER => {
-                    // `is_checked` rend l'état APRÈS le clic : c'est
-                    // directement la visibilité voulue.
-                    let visible = afficher_pour_evenement.is_checked().unwrap_or(true);
-
-                    // L'ordre compte : on prévient d'abord la boucle, pour
-                    // qu'elle arrête de dessiner, puis on cache. L'inverse
-                    // laisserait une image poussée à une fenêtre déjà
-                    // masquée — inoffensif, mais gratuit.
-                    visibilite.store(visible, Ordering::Relaxed);
-                    basculer_visibilite(app, visible);
-                }
-
-                ID_RECHARGER => {
-                    match crate::rechargement::preparer(
-                        &demande,
-                        &dossier_a_ouvrir,
-                        &personnage,
-                    ) {
-                        Ok(v) => println!("rechargement demandé (version {v})"),
-                        // **Bruyant.** Un rechargement silencieusement raté
-                        // est le pire des cas : on croit tester son nouveau
-                        // timing et on regarde l'ancien.
-                        Err(e) => eprintln!("rechargement impossible : {e}"),
-                    }
-                }
-
-                ID_DEMARRAGE => {
-                    let voulu = demarrage_pour_evenement.is_checked().unwrap_or(false);
-
-                    let resultat = if voulu {
-                        crate::autostart::activer()
-                    } else {
-                        crate::autostart::desactiver()
-                    };
-
-                    match resultat {
-                        Ok(()) => println!(
-                            "démarrage avec Windows : {}",
-                            if voulu { "activé" } else { "désactivé" }
-                        ),
-                        Err(e) => {
-                            eprintln!("démarrage automatique : {e}");
-                            // On remet la case dans son état RÉEL : laisser
-                            // une case cochée alors que l'écriture a échoué
-                            // serait un mensonge affiché en permanence.
-                            let _ = demarrage_pour_evenement.set_checked(!voulu);
-                        }
-                    }
-                }
-
-                ID_DOSSIER => {
-                    // `explorer` plutôt qu'un plugin Tauri : c'est une ligne,
-                    // ça n'ajoute aucune dépendance, et l'échec (dossier
-                    // absent) n'a pas de conséquence.
-                    let _ = std::process::Command::new("explorer")
-                        .arg(&dossier_a_ouvrir)
-                        .spawn();
-                }
-
-                ID_QUITTER => {
-                    // `exit` termine le processus. Les threads des boucles
-                    // 60 Hz meurent avec lui — ils ne détiennent aucune
-                    // ressource à libérer proprement, seulement un
-                    // `AppHandle`.
-                    app.exit(0);
-                }
-
-                // Un identifiant inconnu ne peut venir que d'une entrée
-                // ajoutée sans son cas ici. On le signale plutôt que de
-                // l'ignorer.
-                autre => eprintln!("entrée de tray non gérée : {autre}"),
-            }
+            crate::actions::executer(&actions, app, evenement.id().as_ref(), &cases);
         })
         .build(app)
         .map_err(|e| format!("tray : {e}"))?;

@@ -154,6 +154,29 @@ impl TableEnvies {
         let index = rng.weighted(&poids)?;
         Some(self.entrees[index].intention)
     }
+
+    /// Ce personnage-là sait-il faire cette intention-là ?
+    ///
+    /// Même règle que la couverture partielle du tirage (spec §8.6), mais
+    /// posée en question plutôt qu'appliquée à un poids. **Deux appelants,
+    /// et c'est la raison de l'extraire** :
+    ///
+    /// · le menu contextuel, pour ne proposer que ce qui est jouable — une
+    ///   entrée grisée « Balancer les jambes » sur un pack qui n'a pas la
+    ///   pose serait un mensonge affiché ;
+    /// · `behavior::pas`, pour refuser une commande devenue injouable entre
+    ///   le clic et l'image suivante. Ce n'est pas théorique : un
+    ///   rechargement à chaud vers un pack plus pauvre peut se produire
+    ///   pendant que le menu est ouvert.
+    ///
+    /// Une intention absente de la table rend `false` : on ne peut pas jouer
+    /// ce qu'on ne sait pas décrire.
+    pub fn jouable(&self, manifest: &Manifest, intention: Intention) -> bool {
+        match self.entrees.iter().find(|e| e.intention == intention) {
+            Some(e) => e.poses_requises.iter().all(|p| manifest.has_pose(p)),
+            None => false,
+        }
+    }
 }
 
 #[cfg(test)]

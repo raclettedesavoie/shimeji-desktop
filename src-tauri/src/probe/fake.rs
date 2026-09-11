@@ -34,6 +34,7 @@ impl FakeProbe {
             mouse: Cell::new(MouseState {
                 pos: Point::new(0.0, 0.0),
                 left_down: false,
+                right_down: false,
             }),
 
             // Le défaut est délibérément « rien de spécial » : aucun signal
@@ -103,8 +104,24 @@ impl FakeProbe {
         ])
     }
 
+    /// Le cas courant des tests : seule la position et le bouton gauche
+    /// comptent. Le bouton droit n'intéresse que la boucle 60 Hz, qui n'est
+    /// pas testable hors Windows — l'imposer ici alourdirait des dizaines
+    /// d'appels pour rien.
     pub fn set_mouse(&self, pos: Point, left_down: bool) {
-        self.mouse.set(MouseState { pos, left_down });
+        self.mouse.set(MouseState {
+            pos,
+            left_down,
+            right_down: false,
+        });
+    }
+
+    pub fn set_mouse_droit(&self, pos: Point, right_down: bool) {
+        self.mouse.set(MouseState {
+            pos,
+            left_down: false,
+            right_down,
+        });
     }
 
     pub fn set_signaux(&self, s: Signaux) {
@@ -159,6 +176,14 @@ mod tests {
         let m = vue.mouse();
         assert_eq!(m.pos, Point::new(300.0, 400.0));
         assert!(m.left_down);
+        // Le bouton droit reste au repos : `set_mouse` ne parle que du
+        // gauche, et les deux ne doivent pas se contaminer.
+        assert!(!m.right_down);
+
+        p.set_mouse_droit(Point::new(10.0, 20.0), true);
+        let m = vue.mouse();
+        assert!(m.right_down);
+        assert!(!m.left_down);
     }
 
     #[test]

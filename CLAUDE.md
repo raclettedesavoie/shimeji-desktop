@@ -428,6 +428,26 @@ fichier fait trop de choses.
 Un nom mal choisi ne se rattrape pas par un commentaire. Nommer d'abord, commenter
 ensuite.
 
+### ⚠️ Toute nouvelle action se branche au menu du clic droit
+
+**Dès qu'une intention jouable est ajoutée, elle est ajoutée au menu contextuel du
+personnage — dans la même tâche, pas « plus tard ».** C'est une ligne dans la table
+`ENVIES` de `src-tauri/src/menu_perso.rs`, et rien d'autre : l'identifiant est décodé
+par `intention_de`, la disponibilité est déduite du manifeste (couverture partielle,
+spec §8.6), et `actions::executer` n'a aucun cas à ajouter.
+
+L'oubli ne casse **aucun test** et ne produit **aucun message** : l'intention existe
+pour le tirage aléatoire, mais reste à jamais hors de portée de l'utilisateur. C'est
+précisément pourquoi la règle est écrite ici plutôt que laissée au bon sens.
+
+> **Et une seconde règle, non négociable : un seul `on_menu_event` dans tout le
+> programme.** Tauri livre *tout* événement de menu à *tous* les gestionnaires, quel que
+> soit le menu d'origine (`tauri-2.11.5`, `src/tray/mod.rs:326`). Un second gestionnaire
+> exécuterait donc chaque action **deux fois** — et deux bascules s'annulent, si bien que
+> le clic paraîtrait sans effet. Le gestionnaire unique est installé par `tray.rs` et
+> délègue à `actions.rs` ; `menu_perso.rs` ne fait que **proposer**, il ne déclenche
+> rien.
+
 ---
 
 ## Architecture

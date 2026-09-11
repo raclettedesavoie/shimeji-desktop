@@ -65,6 +65,31 @@ pub struct Entrees {
     /// Deux usages, deux champs — les fondre obligerait à deviner l'un depuis
     /// l'autre.
     pub utilisateur_actif: bool,
+
+    /// Ce que l'utilisateur vient de **demander** par le menu contextuel.
+    ///
+    /// `Some(i)` remplace l'intention en cours, cette image-ci, sans passer
+    /// par le tirage. Rempli par la boucle 60 Hz depuis la boîte aux lettres
+    /// du menu (`menu_perso::Commande`), et remis à `None` l'image suivante :
+    /// c'est une impulsion, pas un état.
+    ///
+    /// # Pourquoi ce n'est PAS une entorse à la décision n° 3
+    ///
+    /// « Les signaux biaisent, ils ne commandent pas » parle des signaux
+    /// **système** — inactivité, heure, batterie. La raison en est qu'un
+    /// signal qui déclencherait ferait du personnage un afficheur d'état
+    /// déguisé, prévisible et mort en trois jours.
+    ///
+    /// Un clic de l'utilisateur n'a rien de commun avec ça : c'est une
+    /// **interaction**, et le besoin la veut directe — « cliquer dessus pour
+    /// le faire réagir ». Un menu dont l'entrée « S'asseoir » ne ferait
+    /// qu'augmenter une probabilité serait un menu cassé, pas un menu subtil.
+    ///
+    /// La marge est préservée autrement : le délai d'abandon de 20 s
+    /// s'applique à l'intention forcée comme à toute autre, donc il obéit
+    /// puis **reprend sa vie tout seul**. On commande un instant, jamais
+    /// durablement.
+    pub commande: Option<intention::Intention>,
 }
 
 /// Un pas de comportement : les trois couches, dans l'ordre, une fois.
@@ -90,6 +115,35 @@ pub fn pas(
     let r = reflex::appliquer(ch, world, e, maintenant, dt);
     if r != reflex::Reflexe::Aucun {
         return r;
+    }
+
+    // ── La commande de l'utilisateur : elle, elle CHOISIT ───────────────
+    //
+    // Avant l'interruption et avant les couches 2 et 3 : un clic sur
+    // « S'asseoir » doit l'asseoir, pas augmenter ses chances de s'asseoir.
+    // Le long commentaire du champ `Entrees::commande` dit pourquoi ce n'est
+    // pas une entorse à la décision n° 3 — en deux mots, un signal système
+    // biaise, une interaction commande.
+    //
+    // **Après les réflexes, en revanche.** Un personnage qu'on tient à la
+    // souris ou qui tombe ne doit pas se mettre à jouer en plein vol : les
+    // réflexes sont « non négociables » (décision n° 5), et ils le restent
+    // pour le menu comme pour tout le reste. En pratique le cas ne se
+    // présente guère — ouvrir le menu demande un clic droit, pas un
+    // glisser — mais l'ordre des blocs suffit à le rendre impossible.
+    if let Some(voulue) = e.commande {
+        // `jouable` : entre le clic et cette image, un rechargement à chaud
+        // a pu remplacer le manifeste par un pack plus pauvre. Forcer une
+        // intention dont la pose manque figerait le personnage sur une image
+        // absente — la couverture partielle (spec §8.6) vaut ici aussi.
+        if table.jouable(&ch.manifest, voulue) {
+            ch.intention = Some(intention::ActiveIntention::nouvelle(voulue, maintenant));
+
+            // On rend la main tout de suite : l'intention neuve sera
+            // poursuivie à l'image suivante. La poursuivre ici aussi ne
+            // casserait rien, mais ferait avancer de deux images en une.
+            return r;
+        }
     }
 
     // ── L'interruption : un signal ARRÊTE, il ne CHOISIT pas ────────────
@@ -204,6 +258,7 @@ mod tests {
                 jouer: 1.0,
             },
             utilisateur_actif: actif,
+            commande: None,
         }
     }
 
@@ -409,5 +464,220 @@ mod tests {
             ch.intention
         );
         assert_eq!(ch.pose, POSE_SLEEP, "il dort encore au bout d'une seconde");
+    }
+
+    // ── Le menu contextuel : une commande CHOISIT ───────────────────────
+    //
+    // Les quatre tests ci-dessous verrouillent la frontière entre « un signal
+    // biaise » (décision n° 3) et « une interaction commande ». Elle est
+    // subtile, et le commentaire du champ `Entrees::commande` l'explique ;
+    // ces tests la rendent impossible à défaire par accident.
+
+    /// Le test central : cliquer « S'asseoir » l'assoit, **tout de suite**.
+    ///
+    /// Pas « augmente ses chances de s'asseoir » : le tirage pondéré n'a
+    /// aucune part ici, et c'est vérifié en donnant au repos un biais NUL.
+    /// Si la commande passait par la couche 3, ce poids de 0 l'empêcherait
+    /// d'être tirée et le test échouerait.
+    #[test]
+    fn une_commande_impose_l_intention_sans_passer_par_le_tirage() {
+        let m = monde();
+        let mut ch = perso(&m);
+        let table = desire::TableEnvies::defaut();
+        let reglages = crate::config::Reglages::depuis(&crate::config::Config::default());
+        let mut rng = XorShift32::seeded(7);
+
+        let mut e = entrees(true, 0.0);
+        e.commande = Some(intention::Intention::SeReposer);
+
+        pas(
+            &mut ch,
+            &m,
+            &e,
+            &table,
+            &reglages,
+            Duration::from_secs(1),
+            DT,
+            &mut rng,
+        );
+
+        assert_eq!(
+            ch.intention.map(|i| i.kind),
+            Some(intention::Intention::SeReposer),
+            "un clic sur « S'asseoir » doit asseoir, pas pondérer"
+        );
+    }
+
+    /// Une commande remplace ce qu'il était en train de faire.
+    ///
+    /// Sans ça, cliquer « Flâner » pendant une sieste ne ferait rien avant
+    /// l'expiration du délai d'abandon — jusqu'à 20 s d'attente, que
+    /// l'utilisateur lirait comme un menu cassé.
+    #[test]
+    fn une_commande_interrompt_l_intention_en_cours() {
+        let m = monde();
+        let mut ch = perso(&m);
+        let table = desire::TableEnvies::defaut();
+        let reglages = crate::config::Reglages::depuis(&crate::config::Config::default());
+        let mut rng = XorShift32::seeded(11);
+
+        ch.intention = Some(intention::ActiveIntention::nouvelle(
+            intention::Intention::SeReposer,
+            Duration::ZERO,
+        ));
+
+        let mut e = entrees(true, 1.0);
+        e.commande = Some(intention::Intention::Flaner);
+
+        pas(
+            &mut ch,
+            &m,
+            &e,
+            &table,
+            &reglages,
+            Duration::from_secs(2),
+            DT,
+            &mut rng,
+        );
+
+        assert_eq!(
+            ch.intention.map(|i| i.kind),
+            Some(intention::Intention::Flaner)
+        );
+    }
+
+    /// **La marge survit** : il obéit, puis il reprend sa vie tout seul.
+    ///
+    /// C'est ce qui empêche le menu de transformer le personnage en
+    /// marionnette. Le délai d'abandon (spec §7.3) s'applique à une intention
+    /// forcée comme à toute autre — si on l'exemptait, un clic sur
+    /// « S'asseoir » l'assiérait pour toujours.
+    #[test]
+    fn une_intention_commandee_expire_comme_les_autres() {
+        let m = monde();
+        let mut ch = perso(&m);
+        let table = desire::TableEnvies::defaut();
+        let reglages = crate::config::Reglages::depuis(&crate::config::Config::default());
+        let mut rng = XorShift32::seeded(13);
+
+        let mut e = entrees(true, 1.0);
+        e.commande = Some(intention::Intention::SeReposer);
+        pas(
+            &mut ch,
+            &m,
+            &e,
+            &table,
+            &reglages,
+            Duration::ZERO,
+            DT,
+            &mut rng,
+        );
+
+        let posee = ch.intention.expect("l'intention vient d'être posée");
+        let debut = posee.depuis;
+
+        // La moitié qui fait mordre ce test : sans elle, il passerait aussi
+        // avec un `Entrees::commande` totalement ignoré — la couche 3 tirant
+        // de toute façon quelque chose, `depuis` avancerait pareil et
+        // l'assertion finale serait vraie pour de mauvaises raisons.
+        assert_eq!(
+            posee.kind,
+            intention::Intention::SeReposer,
+            "la commande doit d'abord avoir pris effet"
+        );
+
+        // Une image bien après le délai d'abandon, SANS commande cette
+        // fois : c'est l'impulsion qui est passée, pas un état permanent.
+        let e = entrees(true, 1.0);
+        let tard = debut + intention::DELAI_ABANDON + Duration::from_secs(1);
+        pas(
+            &mut ch,
+            &m,
+            &e,
+            &table,
+            &reglages,
+            tard,
+            DT,
+            &mut rng,
+        );
+
+        let apres = ch.intention.expect("la couche 3 doit avoir re-tiré");
+        assert!(
+            apres.depuis > debut,
+            "l'intention commandée aurait dû expirer et laisser place à un              nouveau tirage ; sans ça le menu ferait une marionnette"
+        );
+    }
+
+    /// Une commande dont le personnage n'a pas les poses est refusée.
+    ///
+    /// Le menu filtre déjà (`TableEnvies::jouable`), mais un rechargement à
+    /// chaud vers un pack plus pauvre peut survenir entre le clic et l'image
+    /// suivante. Sans ce garde-fou, le personnage se figerait sur une pose
+    /// absente — et il n'est pas question de compter sur le fait que la
+    /// fenêtre soit étroite.
+    #[test]
+    fn une_commande_injouable_est_ignoree() {
+        let m = monde();
+        let mut ch = perso(&m);
+
+        // Un manifeste qui ne sait que marcher : `sit` lui manque, donc
+        // `SeReposer` est injouable.
+        // `serde_json::from_str` directement : `Manifest::load` lit un
+        // dossier, et on veut ici un personnage volontairement incomplet qui
+        // n'existe sur aucun disque.
+        ch.manifest = serde_json::from_str(
+            r#"{ "id": "t", "name": "T", "frameSize": [128,128], "scale": 1,
+                 "hitbox": [40,20,48,100],
+                 "poses": { "walk": { "frames": [1] } } }"#,
+        )
+        .expect("manifeste de test valide");
+
+        let table = desire::TableEnvies::defaut();
+        let reglages = crate::config::Reglages::depuis(&crate::config::Config::default());
+        let mut rng = XorShift32::seeded(17);
+
+        let mut e = entrees(true, 1.0);
+        e.commande = Some(intention::Intention::SeReposer);
+
+        pas(
+            &mut ch,
+            &m,
+            &e,
+            &table,
+            &reglages,
+            Duration::from_secs(1),
+            DT,
+            &mut rng,
+        );
+
+        assert_ne!(
+            ch.intention.map(|i| i.kind),
+            Some(intention::Intention::SeReposer),
+            "il ne sait pas s'asseoir : la commande doit être refusée"
+        );
+
+        // ── Le contraste, sans lequel ce test ne prouverait rien ─────────
+        //
+        // Une assertion « il ne s'est PAS assis » est vraie aussi d'un
+        // programme qui ignorerait purement et simplement les commandes. On
+        // rejoue donc exactement le même scénario sur un personnage complet :
+        // là, il doit s'asseoir. C'est la différence entre les deux qui
+        // démontre que c'est bien la POSE MANQUANTE qui a fait refuser.
+        let mut complet = perso(&m);
+        pas(
+            &mut complet,
+            &m,
+            &e,
+            &table,
+            &reglages,
+            Duration::from_secs(1),
+            DT,
+            &mut rng,
+        );
+        assert_eq!(
+            complet.intention.map(|i| i.kind),
+            Some(intention::Intention::SeReposer),
+            "le même clic sur un pack complet doit, lui, asseoir"
+        );
     }
 }

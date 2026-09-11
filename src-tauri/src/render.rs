@@ -76,6 +76,113 @@ pub fn appliquer_styles_etendus(win: &WebviewWindow) -> Result<(), String> {
     Ok(())
 }
 
+/// Retire ou remet `WS_EX_NOACTIVATE`, le temps d'afficher un menu.
+///
+/// # Pourquoi ce va-et-vient est nécessaire
+///
+/// `muda` affiche un menu contextuel en appelant `SetForegroundWindow(hwnd)`
+/// **puis** `TrackPopupMenu` (`muda-0.19.3`,
+/// `src/platform_impl/windows/mod.rs:1038`). Or `SetForegroundWindow` échoue
+/// sur une fenêtre `WS_EX_NOACTIVATE` — silencieusement, en rendant `FALSE`
+/// que muda n'examine pas.
+///
+/// Le menu s'affiche quand même, mais son propriétaire n'est pas au premier
+/// plan : c'est le piège Win32 classique du **menu qui ne se referme pas**
+/// quand on clique ailleurs. `TrackPopupMenu` ne reçoit jamais le message de
+/// perte d'activation qui le termine, et l'utilisateur se retrouve avec un
+/// menu collé à l'écran.
+///
+/// D'où : on autorise l'activation juste avant le menu, on la réinterdit
+/// juste après. La fenêtre reste non activable **tout le reste du temps** —
+/// c'est-à-dire pendant les glissers, qui sont la raison d'être du style
+/// (voir `appliquer_styles_etendus`). Attraper le personnage ne vole donc
+/// toujours pas le focus ; seul un menu que l'utilisateur a explicitement
+/// ouvert le prend, ce que fait n'importe quelle application.
+///
+/// ⚠️ **Toujours remettre le style**, y compris si l'affichage du menu
+/// échoue. L'appelant s'en charge ; l'oublier laisserait le personnage
+/// voleur de focus pour le reste de la session, et le diagnostic partirait
+/// chercher très loin de ce fichier.
+pub fn autoriser_activation(win: &WebviewWindow, autoriser: bool) -> Result<(), String> {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetWindowLongPtrW, SetWindowLongPtrW, GWL_EXSTYLE, WS_EX_NOACTIVATE,
+    };
+
+    let hwnd = win.hwnd().map_err(|e| format!("hwnd indisponible : {e}"))?;
+    let bit = WS_EX_NOACTIVATE.0 as isize;
+
+    unsafe {
+        let actuels = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+
+        // `& !bit` retire le bit, `| bit` le remet — et on ne touche qu'à
+        // celui-là : les autres styles (LAYERED, TOPMOST, TRANSPARENT,
+        // TOOLWINDOW) doivent survivre intacts, comme dans
+        // `appliquer_styles_etendus`.
+        let nouveaux = if autoriser {
+            actuels & !bit
+        } else {
+            actuels | bit
+        };
+
+        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, nouveaux);
+    }
+
+    Ok(())
+}
+
+/// Retient la fenêtre actuellement au premier plan, pour pouvoir la lui
+/// rendre.
+///
+/// # Pourquoi c'est indispensable, et pas une politesse
+///
+/// `autoriser_activation(true)` rend `SetForegroundWindow` **efficace** sur
+/// notre fenêtre — c'est tout son but. Conséquence immédiate : ouvrir le menu
+/// prend le focus à l'éditeur, et Windows ne le rend à personne quand le menu
+/// se ferme. L'utilisateur se retrouve à taper dans le vide, sur un webview
+/// qui n'attend rien.
+///
+/// Ce serait une violation directe du besoin — « il ne gêne jamais : pas de
+/// vol de focus » — et la plus sournoise, parce qu'elle n'apparaît qu'après
+/// avoir utilisé le menu, donc jamais pendant qu'on teste le reste.
+///
+/// Rend `None` s'il n'y a pas de premier plan (bureau sécurisé, transition) ;
+/// il n'y a alors rien à restaurer, et c'est un cas normal.
+///
+/// Vérifié : `GetForegroundWindow`
+/// (`windows-0.61.3/…/WindowsAndMessaging/mod.rs`), déjà employée par
+/// `signals`/`probe::win32` pour l'application active.
+pub fn fenetre_au_premier_plan() -> Option<windows::Win32::Foundation::HWND> {
+    use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+
+    // `unsafe` : franchissement de la frontière FFI. Aucun pointeur ne nous
+    // est confié, l'appel est sans condition préalable.
+    let hwnd = unsafe { GetForegroundWindow() };
+
+    // `is_invalid()` : le binding rend un `HWND` nul plutôt qu'un `Option`
+    // quand il n'y a pas de fenêtre au premier plan.
+    if hwnd.is_invalid() {
+        None
+    } else {
+        Some(hwnd)
+    }
+}
+
+/// Rend le premier plan à la fenêtre qui l'avait.
+///
+/// L'échec est **ignoré volontairement** : Windows refuse `SetForegroundWindow`
+/// dans plusieurs situations légitimes (la fenêtre a été fermée pendant que
+/// le menu était ouvert, une autre application a pris le focus entre-temps).
+/// Insister n'aurait pas de sens — et se battre contre le gestionnaire de
+/// fenêtres pour reprendre un focus que l'utilisateur a peut-être déplacé
+/// lui-même serait pire que le problème.
+pub fn rendre_le_premier_plan(hwnd: windows::Win32::Foundation::HWND) {
+    use windows::Win32::UI::WindowsAndMessaging::SetForegroundWindow;
+
+    unsafe {
+        let _ = SetForegroundWindow(hwnd);
+    }
+}
+
 /// Envoie la frame au webview d'un personnage, en **appelant directement une
 /// fonction JavaScript**.
 ///

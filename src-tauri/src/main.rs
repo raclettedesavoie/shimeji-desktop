@@ -26,12 +26,14 @@
 // comportement). Le plan 1b la supprimera, une fois le tray disponible pour
 // quitter proprement.
 
+mod actions;
 mod autostart;
 mod behavior;
 mod character;
 mod clock;
 mod config;
 mod geom;
+mod menu_perso;
 mod probe;
 mod rechargement;
 mod render;
@@ -309,17 +311,28 @@ fn lancer_application() {
             // application ne l'est du tout.
             let visibilite = tray::nouvelle_visibilite();
             let demande = rechargement::nouvelle_demande();
+
+            // La boîte aux lettres du menu contextuel, vers la boucle 60 Hz.
+            let commande = actions::nouvelle_commande();
+
+            // Tout ce dont les DEUX menus ont besoin pour agir, en un seul
+            // objet partagé — voir l'en-tête d'`actions.rs`.
+            let actions = actions::Actions::nouvelles(
+                visibilite.clone(),
+                demande.clone(),
+                dossier.clone(),
+                nom_personnage.clone(),
+                commande.clone(),
+            );
+
             if let Err(e) = tray::installer(
                 &app.handle().clone(),
-                &dossier,
                 // Le REGISTRE et non la config : les deux divergent dès que
                 // l'utilisateur retire l'entrée à la main ou par le
                 // gestionnaire des tâches, et c'est le registre qui dit la
                 // vérité.
                 autostart::est_actif(),
-                visibilite.clone(),
-                demande.clone(),
-                nom_personnage.clone(),
+                actions.clone(),
             ) {
                 eprintln!("tray non installé : {e}");
             }
@@ -423,6 +436,7 @@ fn lancer_application() {
                     temoin,
                     nom_personnage,
                     configuration_boucle,
+                    commande,
                 );
                 });
             }
@@ -556,11 +570,19 @@ fn boucle(
     // §10.2 l'interdit — et ça rendrait `biais_de` intestable en dehors de
     // cette boucle.
     mut config_courante: config::Config,
+    // La boîte aux lettres par laquelle l'envie choisie au menu contextuel
+    // revient jusqu'ici. La boucle n'a PAS besoin d'`Actions` : construire le
+    // menu ne déclenche rien, et le clic part dans la boucle d'événements de
+    // Tauri jusqu'à l'unique gestionnaire installé par `tray.rs`.
+    commande: actions::Commande,
 ) {
     // Le dossier des personnages, pour le rechargement par témoin.
     let dossier_boucle = config::dossier_personnages();
     use behavior::Entrees;
     use std::time::{Duration, Instant};
+    // `get_webview_window` est une méthode du trait `Manager` : sans cet
+    // import, l'`AppHandle` ne l'expose pas.
+    use tauri::Manager;
 
     let sonde = probe::win32::Win32Probe::new();
     let horloge = clock::SystemClock::new();
@@ -635,6 +657,14 @@ fn boucle(
     // L'état courant de la traversée des clics. Initialisé à `true` parce
     // que c'est ce que `setup` a posé juste avant de lancer ce thread.
     let mut clics_traversent = true;
+
+    // Le bouton droit était-il enfoncé à l'image précédente ?
+    //
+    // C'est ce qui transforme un état — « le bouton est enfoncé », vrai
+    // pendant les ~15 images que dure un clic humain — en un **front
+    // montant**, qui n'arrive qu'une fois. Sans lui, maintenir le bouton
+    // rouvrirait le menu en boucle dès sa fermeture.
+    let mut bouton_droit_precedent = false;
 
     loop {
         // `Instant` ici et non l'horloge injectée : c'est la CADENCE, pas le
@@ -856,6 +886,50 @@ fn boucle(
             clics_traversent = doit_traverser;
         }
 
+        // ── Clic droit sur le personnage : le menu contextuel ───────────
+        //
+        // Front montant ET curseur dans la hitbox : un clic droit sur le
+        // bureau à côté de lui ne doit rien ouvrir. Le test de hitbox est le
+        // MÊME que celui qui absorbe les clics gauches, donc la zone
+        // cliquable est exactement celle qu'on voit.
+        let front_montant_droit = m.right_down && !bouton_droit_precedent;
+        bouton_droit_precedent = m.right_down;
+
+        if front_montant_droit && sur_le_personnage {
+            // `let … else` : si la fenêtre a été fermée, on sort du thread.
+            // Équivalent d'un `match` dont la branche `None` ferait `return`.
+            let Some(win) = handle.get_webview_window(&label) else {
+                return;
+            };
+
+            // **Cet appel bloque** jusqu'à la fermeture du menu : le
+            // personnage s'immobilise pendant ce temps, ce qui est voulu
+            // (voir `menu_perso::ouvrir`).
+            if let Err(e) = menu_perso::ouvrir(&handle, &win, &ch.manifest, &table) {
+                eprintln!("menu du personnage : {e}");
+            }
+
+            // On repart sur une image neuve plutôt que de finir celle-ci :
+            // `maintenant` a été lu AVANT le menu, il a donc plusieurs
+            // secondes de retard, et `dt` vaut toujours 16,7 ms. Poursuivre
+            // ferait juger toutes les échéances (délai d'abandon, durée de
+            // pose) sur un instant périmé.
+            continue;
+        }
+
+        // La commande éventuellement déposée par le gestionnaire de menu.
+        //
+        // `try_lock` et non `lock` : à 60 Hz on ne s'autorise jamais à
+        // attendre un verrou. S'il est pris à cet instant, la commande sera
+        // lue à l'image suivante, 16 ms plus tard — invisible.
+        //
+        // `take()` vide la boîte en récupérant son contenu : la commande est
+        // ainsi consommée une fois et une seule.
+        let commande_du_menu = match commande.try_lock() {
+            Ok(mut boite) => boite.take(),
+            Err(_) => None,
+        };
+
         let entrees = Entrees {
             souris: m.pos,
             echelle_affichage,
@@ -864,6 +938,7 @@ fn boucle(
             // Recalculés à 2 Hz ci-dessus, transportés tels quels à 60 Hz.
             biais,
             utilisateur_actif,
+            commande: commande_du_menu,
         };
 
         // ── 60 Hz : le comportement ─────────────────────────────────────

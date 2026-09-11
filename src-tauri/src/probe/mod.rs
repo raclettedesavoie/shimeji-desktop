@@ -32,12 +32,24 @@ pub struct ScreenInfo {
     pub scale: f32,
 }
 
-/// L'état de la souris. Deux informations, et pas une de plus : on ne capture
-/// aucune frappe (décision n° 8 du journal).
+/// L'état de la souris. Trois informations, et pas une de plus : on ne
+/// capture aucune frappe (décision n° 8 du journal).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MouseState {
     pub pos: Point,
+
+    /// Le bouton gauche : c'est lui qui **attrape** le personnage (§3.3).
     pub left_down: bool,
+
+    /// Le bouton droit : c'est lui qui **ouvre le menu contextuel**.
+    ///
+    /// Séparé du gauche plutôt que d'être un `enum Bouton` : les deux
+    /// peuvent être enfoncés en même temps, et surtout ils ne s'adressent pas
+    /// à la même couche — le gauche est lu par les **réflexes** (portage), le
+    /// droit ne l'est par personne dans `behavior/`, il est consommé par la
+    /// boucle 60 Hz qui ouvre le menu. Les fondre obligerait les réflexes à
+    /// connaître un bouton qui ne les concerne pas.
+    pub right_down: bool,
 }
 
 /// L'état du système à un instant, tel que le comportement a besoin de le

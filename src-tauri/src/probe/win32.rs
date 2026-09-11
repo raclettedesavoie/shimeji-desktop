@@ -31,7 +31,7 @@ use windows::Win32::Graphics::Gdi::{
     EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO,
 };
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
-use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON, VK_RBUTTON};
 use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
 
 /// Déclare le processus **conscient du DPI par moniteur (v2)**.
@@ -391,9 +391,23 @@ impl SystemProbe for Win32Probe {
         let etat = unsafe { GetAsyncKeyState(VK_LBUTTON.0 as i32) };
         let left_down = (etat as u16 & 0x8000) != 0;
 
+        // Le bouton droit, lu exactement de la même façon et dans la même
+        // image : les deux doivent décrire le MÊME instant, sinon un clic
+        // droit pendant un glisser donnerait un état incohérent.
+        //
+        // ⚠️ `VK_RBUTTON` est le bouton droit **physique**, pas « le bouton
+        // secondaire ». Sur une souris inversée par les réglages Windows,
+        // c'est donc le bouton gauche physique qui ouvrirait le menu. On
+        // l'assume : `GetSystemMetrics(SM_SWAPBUTTON)` corrigerait le tir,
+        // mais l'auteur n'a pas de souris inversée et YAGNI — la ligne à
+        // ajouter le jour venu est ici et nulle part ailleurs.
+        let etat_droit = unsafe { GetAsyncKeyState(VK_RBUTTON.0 as i32) };
+        let right_down = (etat_droit as u16 & 0x8000) != 0;
+
         MouseState {
             pos: Point::new(p.x as f32, p.y as f32),
             left_down,
+            right_down,
         }
     }
 
@@ -427,8 +441,8 @@ pub fn imprimer_diagnostic(sonde: &dyn SystemProbe) {
     }
     let m = sonde.mouse();
     println!(
-        "souris : ({}, {}) bouton gauche={}",
-        m.pos.x, m.pos.y, m.left_down
+        "souris : ({}, {}) bouton gauche={} bouton droit={}",
+        m.pos.x, m.pos.y, m.left_down, m.right_down
     );
 }
 

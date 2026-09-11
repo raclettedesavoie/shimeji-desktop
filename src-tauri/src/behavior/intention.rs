@@ -861,6 +861,7 @@ mod tests {
                 jouer: 1.0,
             },
             utilisateur_actif: false,
+            commande: None,
         }
     }
 
@@ -884,6 +885,7 @@ mod tests {
             curseur_sur_le_personnage: false,
             biais: crate::signals::Biais::neutre(),
             utilisateur_actif: true,
+            commande: None,
         }
     }
 
