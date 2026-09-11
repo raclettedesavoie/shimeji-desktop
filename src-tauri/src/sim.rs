@@ -466,7 +466,13 @@ mod tests {
         let r = executer(30, 42, blob(), &defauts()).expect("la simulation doit aboutir");
 
         assert!(r.poses_vues.contains("walk"), "il n'a jamais marché");
-        assert!(r.poses_vues.contains("run"), "il n'a jamais couru");
+        // Et il ne court **jamais** : la course a quitté le tirage de la
+        // flânerie (`poids_course` = 0). Ce test la verrouille dehors — si
+        // quelqu'un remettait un poids par défaut, il le dirait.
+        assert!(
+            !r.poses_vues.contains("run"),
+            "il a couru alors que la course a quitté la flânerie"
+        );
         assert!(r.poses_vues.contains("stand"), "il ne s'est jamais arrêté");
         assert!(r.poses_vues.contains("sit"), "il ne s'est jamais reposé");
     }

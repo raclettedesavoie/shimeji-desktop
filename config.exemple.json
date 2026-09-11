@@ -15,7 +15,7 @@
   "allures": {
     "poidsArret": 3,
     "poidsMarche": 6,
-    "poidsCourse": 1,
+    "poidsCourse": 0,
     "dureeArret": [0.8, 3.0],
     "dureeMarche": [1.5, 5.0],
     "dureeCourse": [0.6, 1.8],

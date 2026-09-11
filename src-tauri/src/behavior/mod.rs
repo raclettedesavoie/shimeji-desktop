@@ -361,4 +361,53 @@ mod tests {
 
         assert_eq!(ch.pose, POSE_SLEEP, "il s'est réveillé tout seul");
     }
+
+    #[test]
+    fn le_reveil_du_deverrouillage_survit_a_un_utilisateur_actif() {
+        // **Le pendant du test ci-dessus, et il est indispensable.**
+        //
+        // L'interruption termine le sommeil dès que l'utilisateur redevient
+        // actif — c'est ce qu'on veut, sauf au déverrouillage : l'utilisateur
+        // vient de taper son mot de passe, il est donc actif PAR
+        // CONSTRUCTION. Si le réveil était une phase `Endormi`, il serait
+        // coupé à la première image et l'on ne verrait rien du tout.
+        //
+        // C'est exactement pourquoi `Selevant` est une phase distincte, et ce
+        // test est ce qui empêche de la refondre dans `Endormi` plus tard.
+        let m = monde();
+        let mut ch = perso(&m);
+        let mut rng = XorShift32::seeded(1);
+        let table = desire::TableEnvies::defaut();
+        let r = crate::config::Reglages::depuis(&crate::config::Config::default());
+
+        ch.set_pose(POSE_SLEEP, Duration::ZERO);
+        ch.intention = Some(intention::ActiveIntention::reveil(Duration::ZERO));
+
+        // L'utilisateur est ACTIF : c'est tout le sel du test.
+        let e = entrees(true, 1.0);
+
+        // Une seconde plus tard, il doit encore être en train d'émerger —
+        // donc ni debout, ni parti flâner.
+        for i in 0..60 {
+            let t = Duration::from_secs_f32(i as f32 * DT);
+            pas(&mut ch, &m, &e, &table, &r, t, DT, &mut rng);
+        }
+
+        let emerge = matches!(
+            ch.intention,
+            Some(intention::ActiveIntention {
+                etat: intention::EtatIntention::Repos {
+                    phase: intention::PhaseRepos::Selevant,
+                    ..
+                },
+                ..
+            })
+        );
+        assert!(
+            emerge,
+            "le réveil a été interrompu : il est en {:?}",
+            ch.intention
+        );
+        assert_eq!(ch.pose, POSE_SLEEP, "il dort encore au bout d'une seconde");
+    }
 }

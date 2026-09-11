@@ -19,7 +19,8 @@
 
 use crate::character::attach::Attachment;
 use crate::character::manifest::{
-    POSE_RUN, POSE_SIT, POSE_SIT_DANGLE, POSE_SLEEP, POSE_SPIN_HEAD, POSE_STAND, POSE_WALK,
+    POSE_RUN, POSE_SIT, POSE_SIT_DANGLE, POSE_SLEEP, POSE_SPIN_HEAD, POSE_STAND, POSE_WAKE,
+    POSE_WALK,
 };
 use crate::config::Reglages;
 use crate::character::Character;
@@ -133,7 +134,23 @@ impl Allure {
 pub enum PhaseRepos {
     Assis,
     Endormi,
-    /// Phase transitoire pour le réveil : passage de sommeil à éveil
+    /// Il émerge : le sommeil finit, puis il se redresse.
+    ///
+    /// **Une phase et non une intention** — exactement pour la raison qui
+    /// fait déjà d'`Endormi` une phase : le réveil n'est pas un choix, c'est
+    /// *la suite* d'un repos. Le mettre dans la table d'envies demanderait au
+    /// tirage de savoir qu'on dormait, ce qui n'a rien à y faire.
+    ///
+    /// ⚠️ **Elle ne se tire jamais** : `desire.rs` ne la propose pas, et
+    /// `ActiveIntention::nouvelle` part toujours en `Assis`. Elle est POSÉE,
+    /// depuis `main.rs`, au déverrouillage de la session — voir
+    /// `ActiveIntention::reveil`.
+    ///
+    /// Et c'est aussi ce qui la rend **ininterruptible** sans une ligne de
+    /// code : l'interruption de `behavior::mod` ne vise que `Endormi`. Le
+    /// personnage vient de taper son mot de passe, il est donc « actif » au
+    /// sens du signal — si le réveil était une phase `Endormi`, il serait
+    /// coupé à la première image et l'on ne verrait rien.
     Selevant,
 }
 
@@ -187,6 +204,23 @@ impl ActiveIntention {
             kind,
             depuis: maintenant,
             etat,
+        }
+    }
+
+    /// L'intention « il émerge », posée au déverrouillage de la session.
+    ///
+    /// Même principe que `nouvelle` : `jusqu_a` à zéro, donc la première
+    /// image de `se_reposer` tirera la durée. C'est ce qui permet à `main.rs`
+    /// de la construire **sans générateur aléatoire** et, surtout, qui garde
+    /// toutes les durées d'animation dans ce fichier-ci.
+    pub fn reveil(maintenant: Duration) -> Self {
+        ActiveIntention {
+            kind: Intention::SeReposer,
+            depuis: maintenant,
+            etat: EtatIntention::Repos {
+                phase: PhaseRepos::Selevant,
+                jusqu_a: Duration::ZERO,
+            },
         }
     }
 }
@@ -298,9 +332,11 @@ fn flaner(
         // réglages (décision n° 5 : « les poids vivent dans la config, on
         // règle son caractère sans recompiler »).
         //
-        // Le dosage par défaut — il s'arrête souvent, marche beaucoup, court
-        // rarement — est ce qui donne l'impression de flânerie plutôt que
-        // d'agitation.
+        // Le dosage par défaut — il s'arrête souvent, marche beaucoup, et
+        // **ne court pas** (`poids_course` vaut 0) — est ce qui donne
+        // l'impression de flânerie plutôt que d'agitation. La course reste
+        // atteignable par ce même tirage si on remonte son poids dans la
+        // config, mais elle est destinée à des actions qui la demandent.
         let a = &reglages.allures;
         let poids = [a.poids_arret, a.poids_marche, a.poids_course];
 
@@ -531,20 +567,16 @@ fn se_reposer(
         return Issue::Echouee;
     };
 
-    // **Invariant de structure : phase `Endormi` ⇒ utilisateur absent** (décision n° 3).
-    // Si l'utilisateur devient actif pendant le sommeil, on doit se réveiller immédiatement.
-    // Cela évite que le personnage reste endormi après le retour de l'utilisateur,
-    // ce qui créerait un comportement irréaliste (dormir devant quelqu'un actif).
-    if phase == PhaseRepos::Endormi && e.utilisateur_actif {
-        ch.intention = None;
-        return Issue::Finie;
-    }
-
     // Défense en profondeur : le tirage ne devrait jamais proposer cette
     // intention à un personnage sans `sit` (desire.rs le filtre). Mais une
     // config bricolée pourrait y parvenir, et un personnage assis sur une
     // pose inexistante serait invisible — mieux vaut échouer.
-    if !ch.manifest.has_pose(POSE_SIT) {
+    //
+    // ⚠️ **Sauf en phase `Selevant`** : émerger ne passe jamais par la
+    // position assise. Un pack sans `sit` ne doit pas être empêché de se
+    // réveiller au déverrouillage — il n'a simplement pas le droit de
+    // *choisir* de se reposer, ce qui est une autre question.
+    if phase != PhaseRepos::Selevant && !ch.manifest.has_pose(POSE_SIT) {
         ch.intention = None;
         return Issue::Echouee;
     }
@@ -610,7 +642,7 @@ fn se_reposer(
     //
     // Et noter la forme : on teste un POIDS, jamais un signal. `se_reposer`
     // ne sait toujours pas ce qu'est l'inactivité (décision n° 3).
-    if phase == PhaseRepos::Assis && ch.pose == POSE_SLEEP && e.biais.pour(Intention::SeReposer) >= reglages.seuil_sommeil && !e.utilisateur_actif {
+    if phase == PhaseRepos::Assis && ch.pose == POSE_SLEEP && veut_dormir {
         phase = PhaseRepos::Endormi;
         // ⚠️ Cette ligne n'a AUCUN EFFET ICI, et c'est normal : ce bloc ne se
         // déclenche que sur une intention FRAÎCHE (voir le commentaire
@@ -636,6 +668,24 @@ fn se_reposer(
             // à 40 ms. La leçon de l'étape 1a : chercher la constante dans le
             // source plutôt que de l'inventer.
             PhaseRepos::Endormi => (20.0, 60.0),
+
+            // Selevant : le sommeil résiduel du déverrouillage, PLUS la
+            // durée de l'animation de réveil.
+            //
+            // Les 2,5 à 4 s ne viennent d'aucun source Shimeji — il n'y a pas
+            // de réveil chez Shimeji-ee (voir `POSE_WAKE`). C'est un réglage
+            // de confort, et l'écart de 1,5 s est délibéré : à l'étape 3 il y
+            // aura plusieurs personnages à l'écran, et s'ils émergeaient tous
+            // à la même image on verrait une chorégraphie, pas des animaux.
+            //
+            // La durée de l'animation est LUE dans le manifeste et non
+            // écrite ici : un pack dont le réveil dure plus longtemps doit
+            // pouvoir le jouer en entier, et un pack qui n'a pas la pose
+            // ajoute zéro.
+            PhaseRepos::Selevant => {
+                let anim = duree_reveil(ch).as_secs_f32();
+                (2.5 + anim, 4.0 + anim)
+            }
         };
         jusqu_a = maintenant + Duration::from_secs_f32(rng.range(min, max));
         ai.etat = EtatIntention::Repos { phase, jusqu_a };
@@ -645,7 +695,7 @@ fn se_reposer(
         // `veut_dormir` est calculé plus haut, avant le bloc de continuité :
         // c'est la même condition aux deux endroits, et la recalculer ici
         // aurait fini par diverger d'elle au premier réglage touché.
-        if phase == PhaseRepos::Assis && e.biais.pour(Intention::SeReposer) >= reglages.seuil_sommeil && !e.utilisateur_actif && ch.manifest.has_pose(POSE_SLEEP) {
+        if phase == PhaseRepos::Assis && veut_dormir && ch.manifest.has_pose(POSE_SLEEP) {
             phase = PhaseRepos::Endormi;
             jusqu_a = Duration::ZERO; // sera tirée à l'image suivante
             ai.etat = EtatIntention::Repos { phase, jusqu_a };
@@ -661,9 +711,43 @@ fn se_reposer(
     let pose = match phase {
         PhaseRepos::Assis => POSE_SIT,
         PhaseRepos::Endormi => POSE_SLEEP,
+
+        // Émerger, c'est DEUX poses dans une seule phase : il dort encore,
+        // puis il se redresse. On les départage sur le temps qui RESTE, et
+        // non sur le temps écoulé — parce que la durée totale a été tirée au
+        // hasard alors que la fin, elle, est toujours l'animation de réveil.
+        //
+        // Deux phases distinctes auraient demandé un second `jusqu_a`, donc
+        // une seconde bascule à écrire et à tester, pour la même image à
+        // l'écran.
+        PhaseRepos::Selevant => {
+            if jusqu_a.saturating_sub(maintenant) > duree_reveil(ch) {
+                POSE_SLEEP
+            } else {
+                // Absente du pack : `set_pose` ne fait rien et il reste
+                // affalé jusqu'au bout. C'est la couverture partielle, et
+                // c'est pourquoi il n'y a pas de `has_pose` ici.
+                POSE_WAKE
+            }
+        }
     };
     ch.set_pose(pose, maintenant);
     Issue::EnCours
+}
+
+/// Combien de temps dure l'animation de réveil de CE personnage.
+///
+/// Zéro si le pack n'a pas la pose : la phase `Selevant` se réduit alors à
+/// son sommeil résiduel, et le personnage repart sans s'être redressé.
+///
+/// `match` explicite plutôt que `map_or` : le cas « pas de pose » est une
+/// décision de design (couverture partielle), pas un détail à cacher dans un
+/// combinateur.
+fn duree_reveil(ch: &Character) -> Duration {
+    match ch.manifest.pose(POSE_WAKE) {
+        Some(p) => p.duree_totale(),
+        None => Duration::ZERO,
+    }
 }
 
 #[cfg(test)]
@@ -713,7 +797,8 @@ mod tests {
                 "land":  { "frames": [8], "frameMs": 150 },
                 "spinHead":  { "frames": [9, 10], "frameMs": 200 },
                 "sitDangle": { "frames": [11], "anchor": [64, 112] },
-                "sleep":     { "frames": [12] }
+                "sleep":     { "frames": [12] },
+                "wake":      { "frames": [13, 14], "frameMs": 100 }
             }
         }"#;
         serde_json::from_str(json).unwrap()
@@ -753,6 +838,17 @@ mod tests {
     ///
     /// Toutes les autres valeurs sont neutres : la souris est loin, aucun
     /// bouton n'est enfoncé. Un seul curseur pour tous les tests de sommeil.
+    /// Des entrées où seul le poids du repos varie.
+    ///
+    /// ⚠️ **`utilisateur_actif` vaut `false`, et ce n'est pas un détail.**
+    /// Ce helper sert à simuler « l'utilisateur est parti depuis 2 minutes »,
+    /// ce que le seul biais ne suffit plus à dire : depuis l'invariant
+    /// « phase `Endormi` ⇒ utilisateur absent », `veut_dormir` exige LES DEUX
+    /// (le poids décide s'il VEUT dormir, le fait décide si c'est POSSIBLE).
+    ///
+    /// Il valait `true`, ce qui contredisait le commentaire de ses propres
+    /// appelants (« comme inactif > 2 min ») et rendait deux tests
+    /// inatteignables : le personnage ne pouvait plus jamais s'affaler.
     fn entrees_avec_biais_repos(x: f32) -> Entrees {
         Entrees {
             souris: Point::new(0.0, 0.0),
@@ -764,7 +860,7 @@ mod tests {
                 se_reposer: x,
                 jouer: 1.0,
             },
-            utilisateur_actif: true,
+            utilisateur_actif: false,
         }
     }
 
@@ -811,9 +907,13 @@ mod tests {
     }
 
     #[test]
-    fn flaner_alterne_les_allures_et_les_poses() {
-        // « jamais figé, jamais prévisible » : sur 30 s, les trois allures
-        // doivent avoir été vues.
+    fn flaner_alterne_les_allures_sans_jamais_courir() {
+        // « jamais figé, jamais prévisible » : sur 30 s, l'arrêt et la marche
+        // doivent avoir été vus tous les deux.
+        //
+        // La course, elle, ne doit **jamais** sortir : elle a quitté le
+        // tirage de la flânerie (`poids_course` = 0 par défaut). Elle est
+        // réservée à des actions qui la demanderont explicitement.
         let m = monde();
         let mut ch = perso(&m, 900.0);
         let mut rng = XorShift32::seeded(11);
@@ -829,6 +929,33 @@ mod tests {
 
         assert!(vues.contains(POSE_STAND), "jamais arrêté : {vues:?}");
         assert!(vues.contains(POSE_WALK), "jamais marché : {vues:?}");
+        assert!(!vues.contains(POSE_RUN), "il a couru en flânant : {vues:?}");
+    }
+
+    #[test]
+    fn remonter_le_poids_de_course_le_fait_courir_a_nouveau() {
+        // Le pendant du test précédent : la course est retirée du tirage par
+        // un **réglage**, pas par une suppression de code. Ce test le prouve
+        // — il échouerait si `Allure::Course` devenait inatteignable.
+        let m = monde();
+        let mut ch = perso(&m, 900.0);
+        let mut rng = XorShift32::seeded(11);
+        ch.intention = Some(ActiveIntention::nouvelle(Intention::Flaner, Duration::ZERO));
+
+        // On part des défauts et on ne change QUE le poids de la course : le
+        // reste du tempérament est celui de la production.
+        let mut config = crate::config::Config::default();
+        config.allures.poids_course = 6.0;
+        let reglages = Reglages::depuis(&config);
+
+        let mut vues = std::collections::BTreeSet::new();
+        let mut t = Duration::ZERO;
+        for _ in 0..1_800 {
+            poursuivre(&mut ch, &m, &entrees_neutres(), &reglages, t, DT, &mut rng);
+            vues.insert(ch.pose.clone());
+            t += Duration::from_micros(16_667);
+        }
+
         assert!(vues.contains(POSE_RUN), "jamais couru : {vues:?}");
     }
 
@@ -1376,5 +1503,163 @@ mod tests {
             issue, Issue::Finie,
             "sans pose `sleep`, le repos doit se terminer, pas rester en cours"
         );
+    }
+
+    /// La durée de l'animation de réveil du manifeste de test : 2 × 100 ms.
+    const ANIM_REVEIL: Duration = Duration::from_millis(200);
+
+    #[test]
+    fn au_reveil_il_dort_encore_un_moment_puis_se_redresse() {
+        // **Le test de la demande d'origine** : au déverrouillage, le réveil
+        // ne doit pas être instantané. Il dort d'abord — 2,5 à 4 s — et c'est
+        // seulement à la fin qu'il se redresse.
+        //
+        // Noter `utilisateur_actif = true` : l'utilisateur vient de taper son
+        // mot de passe, il est actif par construction. C'est ce qui rend ce
+        // test intéressant — si le réveil était une phase `Endormi`,
+        // l'interruption le couperait à la première image.
+        let m = monde();
+        let mut ch = perso(&m, 500.0);
+        let mut rng = XorShift32::seeded(1);
+        let mut e = entrees_avec_biais_repos(8.0);
+        e.utilisateur_actif = true;
+
+        ch.set_pose(POSE_SLEEP, Duration::ZERO);
+        ch.intention = Some(ActiveIntention::reveil(Duration::ZERO));
+
+        let mut a_dormi = false;
+        let mut redresse_a = None;
+        let mut fini_a = None;
+
+        for i in 0..(10 * 60) {
+            let t = Duration::from_secs_f32(i as f32 * DT);
+            let issue = poursuivre(&mut ch, &m, &e, &reglages(), t, DT, &mut rng);
+
+            if issue != Issue::EnCours {
+                assert_eq!(issue, Issue::Finie, "le réveil ne doit pas échouer");
+                fini_a = Some(t);
+                break;
+            }
+
+            if ch.pose == POSE_SLEEP {
+                // Une fois redressé, il ne doit PAS se raffaler : ce serait
+                // le clignotement que la version précédente produisait.
+                assert!(
+                    redresse_a.is_none(),
+                    "il s'est rendormi après s'être redressé, à {:.2} s",
+                    t.as_secs_f32()
+                );
+                a_dormi = true;
+            }
+            if ch.pose == POSE_WAKE && redresse_a.is_none() {
+                redresse_a = Some(t);
+            }
+        }
+
+        assert!(a_dormi, "il n'a pas dormi du tout avant d'émerger");
+        let redresse_a = redresse_a.expect("il ne s'est jamais redressé");
+        let fini_a = fini_a.expect("le réveil ne s'est jamais terminé");
+
+        // Le sommeil résiduel est tiré entre 2,5 et 4 s. On borne des DEUX
+        // côtés : sans la borne basse, un réveil redevenu instantané
+        // passerait — c'est exactement le défaut qu'on corrige ici.
+        assert!(
+            redresse_a >= Duration::from_secs_f32(2.5),
+            "il s'est redressé au bout de {:.2} s : c'est trop tôt, le sommeil              résiduel doit durer au moins 2,5 s",
+            redresse_a.as_secs_f32()
+        );
+        assert!(
+            redresse_a <= Duration::from_secs_f32(4.0) + ANIM_REVEIL,
+            "il s'est redressé au bout de {:.2} s : c'est trop tard",
+            redresse_a.as_secs_f32()
+        );
+
+        // Et il se redresse pendant TOUTE l'animation, à une image près.
+        let duree_redresse = fini_a.saturating_sub(redresse_a);
+        assert!(
+            duree_redresse + Duration::from_secs_f32(DT) >= ANIM_REVEIL,
+            "l'animation de réveil n'a duré que {:.0} ms au lieu de 200",
+            duree_redresse.as_secs_f32() * 1000.0
+        );
+    }
+
+    #[test]
+    fn deux_reveils_ne_tombent_pas_a_la_meme_image() {
+        // **La marge, appliquée au réveil** (décision n° 3). À l'étape 3 il y
+        // aura plusieurs personnages : s'ils émergeaient tous à la même
+        // image, on verrait une chorégraphie au lieu d'animaux.
+        //
+        // ⚠️ On sème UNE SEULE FOIS et on laisse l'état avancer. Re-semer
+        // `XorShift32::seeded(n)` avec de petits entiers séquentiels biaise
+        // le premier tirage et rendrait ce test faussement vert — le piège
+        // est consigné dans CLAUDE.md, il a déjà coûté un diagnostic.
+        let m = monde();
+        let mut rng = XorShift32::seeded(7);
+        let mut e = entrees_avec_biais_repos(8.0);
+        e.utilisateur_actif = true;
+
+        let mut durees = Vec::new();
+        for _ in 0..40 {
+            let mut ch = perso(&m, 500.0);
+            ch.set_pose(POSE_SLEEP, Duration::ZERO);
+            ch.intention = Some(ActiveIntention::reveil(Duration::ZERO));
+
+            for i in 0..(10 * 60) {
+                let t = Duration::from_secs_f32(i as f32 * DT);
+                if poursuivre(&mut ch, &m, &e, &reglages(), t, DT, &mut rng) != Issue::EnCours {
+                    durees.push(t);
+                    break;
+                }
+            }
+        }
+
+        assert_eq!(durees.len(), 40, "un réveil ne s'est pas terminé");
+        let min = durees.iter().min().unwrap();
+        let max = durees.iter().max().unwrap();
+        assert!(
+            max.saturating_sub(*min) > Duration::from_secs_f32(0.8),
+            "les 40 réveils tiennent dans {:.2} s : le tirage ne varie pas",
+            max.saturating_sub(*min).as_secs_f32()
+        );
+    }
+
+    #[test]
+    fn sans_la_pose_wake_il_se_reveille_quand_meme() {
+        // Couverture partielle (spec §8.6). Un pack sans animation de réveil
+        // reste affalé le temps de la phase, puis repart — il ne doit NI
+        // échouer, NI rester bloqué.
+        let json = r#"{
+            "id": "t", "name": "T", "frameSize": [128,128], "scale": 1,
+            "hitbox": [40,20,48,100],
+            "poses": { "stand": { "frames": [1] }, "walk": { "frames": [2] },
+                       "sit": { "frames": [11] }, "sleep": { "frames": [12] } }
+        }"#;
+        let m = monde();
+        let mut ch = Character::new(
+            serde_json::from_str(json).unwrap(),
+            Attachment::On {
+                platform: m.platforms()[0].id,
+                face: Face::Top,
+                offset: 500.0,
+            },
+            Point::new(500.0, 1032.0),
+        );
+        let mut rng = XorShift32::seeded(1);
+        let mut e = entrees_avec_biais_repos(8.0);
+        e.utilisateur_actif = true;
+
+        ch.set_pose(POSE_SLEEP, Duration::ZERO);
+        ch.intention = Some(ActiveIntention::reveil(Duration::ZERO));
+
+        let mut issue = Issue::EnCours;
+        for i in 0..(10 * 60) {
+            let t = Duration::from_secs_f32(i as f32 * DT);
+            issue = poursuivre(&mut ch, &m, &e, &reglages(), t, DT, &mut rng);
+            if issue != Issue::EnCours {
+                break;
+            }
+            assert_eq!(ch.pose, POSE_SLEEP, "sans `wake`, il reste affalé");
+        }
+        assert_eq!(issue, Issue::Finie, "le réveil doit se terminer");
     }
 }

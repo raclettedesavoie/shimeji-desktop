@@ -15,6 +15,7 @@
     "sleep":        { "frames": [21] },
     "fall":         { "frames": [4] },
     "land":         { "frames": [18, 19], "frameMs": 160 },
+    "wake":         { "frames": [18, 19], "frameMs": 160 },
 
     "dragged":       { "frames": [1],  "anchor": [64, 8] },
     "draggedRight1": { "frames": [5],  "anchor": [64, 8] },

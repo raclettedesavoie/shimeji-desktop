@@ -514,6 +514,26 @@ fn servir_frame(dossier: &std::path::Path, chemin: &str) -> tauri::http::Respons
 ///   · **~8 Hz** — recensement du monde
 ///   · **~2 Hz** — les signaux (inactivité, appli active, heure, batterie,
 ///     verrouillage) — spec §5.5, design étape 2 §9
+/// Le personnage est-il déjà en train d'émerger ?
+///
+/// Sert d'anti-rebond au déverrouillage (voir le point d'appel). Rendre vrai
+/// empêche de relancer un réveil déjà commencé.
+///
+/// `matches!` : on ne veut lire que la phase, sans démonter l'intention ni la
+/// reconstruire. C'est la même forme que l'interruption de `behavior::mod`.
+fn deja_en_reveil(ch: &character::Character) -> bool {
+    matches!(
+        ch.intention,
+        Some(behavior::intention::ActiveIntention {
+            etat: behavior::intention::EtatIntention::Repos {
+                phase: behavior::intention::PhaseRepos::Selevant,
+                ..
+            },
+            ..
+        })
+    )
+}
+
 fn boucle(
     handle: tauri::AppHandle,
     label: String,
@@ -654,6 +674,35 @@ fn boucle(
             if s.session_verrouillee != verrouille {
                 verrouille = s.session_verrouillee;
 
+                // ── Au retour : il émerge ───────────────────────────
+                //
+                // Il a « dormi » pendant que la session était verrouillée —
+                // ce qui est littéralement vrai : la boucle tournait, mais
+                // rien n'était dessiné.
+                //
+                // C'est une INTENTION qu'on pose, pas un décor peint
+                // par-dessus le rendu. La pose et sa durée vivent donc dans
+                // `intention.rs`, avec toutes les autres, et **le rendu ne
+                // connaît toujours aucun numéro de frame** — ce qui est ce
+                // qui permet au réveil de marcher sur un pack tiers dont la
+                // numérotation n'est pas celle du blob.
+                //
+                // Le garde `deja_en_reveil` est une simple précaution :
+                // relancer depuis zéro un réveil déjà commencé n'aurait aucun
+                // sens, quelle qu'en soit la raison.
+                //
+                // ⚠️ Il ne compense PAS un rebond de la sonde, contrairement à
+                // ce qu'une première hypothèse supposait. On avait cru que
+                // `WTSSessionInfoEx`, sondée à 2 Hz, repassait transitoirement
+                // par LOCK pendant la bascule de bureau et faisait voir DEUX
+                // déverrouillages. **La console dit non** : un cycle complet
+                // n'imprime qu'un « verrouillée » et qu'un « déverrouillée ».
+                // Le vrai « réveil joué deux fois » venait de l'ordre des
+                // frames — voir `POSE_WAKE`.
+                if !verrouille && !deja_en_reveil(&ch) {
+                    ch.intention = Some(behavior::intention::ActiveIntention::reveil(maintenant));
+                }
+
                 // On ne rend visible que si l'utilisateur n'avait pas
                 // lui-même décoché « Afficher » : le déverrouillage ne doit
                 // pas défaire son choix.
@@ -663,7 +712,7 @@ fn boucle(
                 println!(
                     "session {} — personnage {}",
                     if verrouille { "verrouillée" } else { "déverrouillée" },
-                    if verrouille { "planqué" } else { "de retour" }
+                    if verrouille { "planqué" } else { "il émerge" }
                 );
             }
 

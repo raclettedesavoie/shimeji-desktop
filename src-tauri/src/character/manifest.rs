@@ -38,6 +38,30 @@ pub const POSE_SIT: &str = "sit";
 pub const POSE_FALL: &str = "fall";
 pub const POSE_LAND: &str = "land";
 
+/// Le réveil : il émerge du sommeil.
+///
+/// ⚠️ **Shimeji-ee n'a pas plus d'animation de réveil que de sommeil.** Comme
+/// pour `sleep`, on déclare un substitut sous un nom propre pour que le code
+/// ignore que c'en est un. Un pack tiers avec un vrai réveil le déclarerait
+/// au même nom, sans une ligne de Rust à changer (spec §8.6).
+///
+/// **Ce sont les MÊMES frames que `land`, 18 puis 19, et dans le même
+/// ordre.** Ça surprend, donc voici le relevé qui le justifie
+/// (`docs/specs/2026-09-09-frames-shimeji.md`) : la descente vers
+/// l'affalement est `19 → 18 → 20 → 21` — `Tripping` enchaîne 19, 18, 20,
+/// 20, 19 et `Creep` enchaîne 20, 20, 21, 21, 21. Se relever, c'est donc
+/// remonter cette suite, et 18 puis 19 en est la fin. `land` (`Bouncing`)
+/// est exactement le même mouvement : on encaisse, on se redresse.
+///
+/// ⚠️ **Ne pas « corriger » en inversant l'ordre.** Ça a été essayé : 19 puis
+/// 18, c'est se lever PUIS se rasseoir, et comme le comportement normal
+/// relève ensuite le personnage, on voit le réveil **deux fois**.
+///
+/// **Un pack sans cette pose se réveille quand même** : il reste simplement
+/// affalé le temps de la phase, puis repart. C'est la couverture partielle,
+/// et elle ne demande aucun cas particulier ici.
+pub const POSE_WAKE: &str = "wake";
+
 /// Affalé sur le ventre — notre pose de sommeil.
 ///
 /// ⚠️ **Shimeji-ee n'a AUCUNE animation de sommeil**, et aucune frame du pack

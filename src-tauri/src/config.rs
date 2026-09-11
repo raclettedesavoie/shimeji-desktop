@@ -50,6 +50,12 @@ impl Default for Envies {
 #[serde(default, rename_all = "camelCase")]
 pub struct Allures {
     /// Poids du tirage entre s'arrêter, marcher et courir.
+    ///
+    /// `poids_course` vaut **0 par défaut** : la course n'appartient plus à
+    /// la flânerie aléatoire. Elle est réservée à des actions précises qui
+    /// la demanderont explicitement (se dépêcher vers une fenêtre, fuir un
+    /// autre personnage). Le poids reste réglable : le mettre à 1 dans
+    /// `config.json` rend exactement l'ancien comportement.
     pub poids_arret: f32,
     pub poids_marche: f32,
     pub poids_course: f32,
@@ -73,7 +79,8 @@ impl Default for Allures {
         Allures {
             poids_arret: 3.0,
             poids_marche: 6.0,
-            poids_course: 1.0,
+            // 0 : il ne se met plus à courir sans raison (voir le champ).
+            poids_course: 0.0,
             duree_arret: [0.8, 3.0],
             duree_marche: [1.5, 5.0],
             duree_course: [0.6, 1.8],
