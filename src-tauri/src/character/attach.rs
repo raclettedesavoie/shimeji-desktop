@@ -265,6 +265,7 @@ mod tests {
     use crate::geom::Rect;
     use crate::probe::fake::FakeProbe;
     use crate::probe::{ScreenInfo, SystemProbe};
+    use crate::world::RoleEcran;
 
     fn monde_un_ecran() -> World {
         World::from_screens(&FakeProbe::un_ecran().screens())
@@ -324,7 +325,11 @@ mod tests {
         }]);
 
         let att = Attachment::On {
-            platform: PlatformId(42),
+            // `PlatformId::ecran` : depuis la Tâche 1 de l'étape 4a, l'identité
+            // d'une plateforme n'est plus l'id brut du moniteur mais un
+            // encodage qui y ajoute le rôle (sol/mur/plafond) sur deux bits.
+            // Écrire `PlatformId(42)` à la main ne désignerait plus le sol.
+            platform: PlatformId::ecran(42, RoleEcran::Sol),
             face: Face::Top,
             offset: 300.0,
         };
@@ -352,7 +357,11 @@ mod tests {
         }]);
 
         let att = Attachment::On {
-            platform: PlatformId(42),
+            // `PlatformId::ecran` : depuis la Tâche 1 de l'étape 4a, l'identité
+            // d'une plateforme n'est plus l'id brut du moniteur mais un
+            // encodage qui y ajoute le rôle (sol/mur/plafond) sur deux bits.
+            // Écrire `PlatformId(42)` à la main ne désignerait plus le sol.
+            platform: PlatformId::ecran(42, RoleEcran::Sol),
             face: Face::Top,
             offset: 100.0,
         };

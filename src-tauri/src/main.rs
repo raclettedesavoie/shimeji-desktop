@@ -243,7 +243,14 @@ fn lancer_application() {
             }
 
             // ── Le personnage, posé au milieu du premier sol ────────────
-            let sol = &monde.platforms()[0];
+            // `let … else` : sans écran, il n'y a nulle part où poser le
+            // personnage. On sort du bloc de placement plutôt que de paniquer
+            // — un monde vide est un cas normal (session distante en cours
+            // d'établissement), voir `World::from_screens`. Le bloc englobant
+            // rend déjà `Ok(())` juste au-dessus pour ce même cas.
+            let Some(sol) = monde.premier_sol() else {
+                return Ok(());
+            };
             let offset = sol.rect.face_length(world::Face::Top) / 2.0;
             let depart = sol.rect.point_on(world::Face::Top, offset);
 
