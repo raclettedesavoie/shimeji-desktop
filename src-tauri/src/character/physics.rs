@@ -367,6 +367,98 @@ pub fn atterrissage(world: &World, avant: Point, apres: Point) -> Option<(Platfo
     meilleur.map(|(id, offset, _)| (id, offset))
 }
 
+/// Ce que le personnage a heurté pendant ce pas de chute — sol **ou** mur.
+///
+/// Généralise `atterrissage` aux faces verticales (design §3.2). Rend la
+/// `Face` en plus de la plateforme, parce que l'appelant en a besoin pour
+/// choisir la pose et l'orientation : on ne se pose pas sur un mur comme on
+/// se pose sur un sol.
+///
+/// **Les trois règles viennent de `Fall.java`, pas d'une intuition :**
+///   1. le sol d'abord — sa boucle fait `break OUTER` sur le sol avant de
+///      tester le mur ;
+///   2. puis les murs — `hasNext()` teste `floor.isOn(pos) || wall.isOn(pos)`,
+///      donc un mur arrête une chute exactement comme un sol, et **sans
+///      aucun seuil de vitesse** ;
+///   3. le plafond n'attrape rien — il ne figure dans aucun de ces tests.
+pub fn contact(world: &World, avant: Point, apres: Point) -> Option<(PlatformId, Face, f32)> {
+    // Règle 1. `if let Some(…)` et non un `?` : si le sol n'attrape rien, on
+    // veut continuer vers les murs, pas sortir.
+    if let Some((id, offset)) = atterrissage(world, avant, apres) {
+        return Some((id, Face::Top, offset));
+    }
+
+    contact_mur(world, avant, apres)
+}
+
+/// Règle 2 : a-t-on traversé la ligne verticale d'un mur, dans le bon sens ?
+///
+/// Séparée de `contact` pour que la priorité au sol se lise en une ligne
+/// plutôt que d'être enfouie dans une boucle.
+fn contact_mur(world: &World, avant: Point, apres: Point) -> Option<(PlatformId, Face, f32)> {
+    // (id, face, offset, x de la face) — le `x` ne sert qu'à départager.
+    let mut meilleur: Option<(PlatformId, Face, f32, f32)> = None;
+
+    for plat in world.platforms() {
+        // Les deux faces verticales, dans un tableau : écrire deux fois le
+        // même corps de boucle finirait par diverger.
+        for face in [Face::Left, Face::Right] {
+            if !plat.has_face(face) {
+                continue;
+            }
+
+            // `point_on(face, 0.0).x` plutôt que `rect.left()` / `rect.right()`
+            // écrits à la main : c'est la MÊME fonction qui placera le
+            // personnage, donc les deux ne peuvent pas se désaccorder.
+            let x_face = plat.rect.point_on(face, 0.0).x;
+
+            // Le bon sens, et c'est le cœur du test. Une face `Left` regarde
+            // vers la gauche : on la heurte en allant vers la DROITE. Une
+            // face `Right` regarde vers la droite : on la heurte en allant
+            // vers la gauche. Sans cette condition, un personnage qui se
+            // lâche se rattraperait à l'image suivante.
+            let franchie = match face {
+                Face::Left => avant.x <= x_face && apres.x >= x_face,
+                Face::Right => avant.x >= x_face && apres.x <= x_face,
+                // Les faces horizontales ne passent jamais par ici : le
+                // tableau ci-dessus n'en contient pas. `false` est le repli
+                // muet correct.
+                Face::Top | Face::Bottom => false,
+            };
+            if !franchie {
+                continue;
+            }
+
+            // Est-on à la hauteur du mur ? Même approximation volontaire que
+            // dans `atterrissage` : on teste avec le point d'ARRIVÉE plutôt
+            // que le croisement exact. À 15 px par image au maximum, l'écart
+            // est invisible, et la navigation a le droit d'être imparfaite
+            // (décision n° 4).
+            if apres.y < plat.rect.top() || apres.y > plat.rect.bottom() {
+                continue;
+            }
+
+            // L'offset d'une face verticale compte vers le BAS depuis le haut
+            // du rectangle — c'est la convention de `Rect::point_on`.
+            let offset = apres.y - plat.rect.top();
+
+            // Départage : garder le mur rencontré le PLUS TÔT, c'est-à-dire
+            // le plus proche du point de départ. Le cas ne se présente
+            // qu'avec des écrans qui se recouvrent, mais laisser le choix au
+            // hasard de l'ordre du `Vec` serait un bug dormant.
+            let remplace = match meilleur {
+                None => true,
+                Some((_, _, _, x)) => (x_face - avant.x).abs() < (x - avant.x).abs(),
+            };
+            if remplace {
+                meilleur = Some((plat.id, face, offset, x_face));
+            }
+        }
+    }
+
+    meilleur.map(|(id, face, offset, _)| (id, face, offset))
+}
+
 /// Le personnage est-il tombé sous le bas du bureau virtuel ?
 ///
 /// C'est le déclencheur du **garde-fou** de la spec §6.3 : passé cette
@@ -397,6 +489,131 @@ mod tests {
 
     fn monde_deux_ecrans() -> World {
         World::from_screens(&FakeProbe::deux_ecrans().screens())
+    }
+
+    /// Un monde d'un seul écran isolé : sol à y = 1032, mur gauche à x = 0,
+    /// mur droit à x = 1920, plafond à y = 0.
+    fn monde_isole() -> World {
+        World::from_screens(&crate::probe::fake::FakeProbe::un_ecran().screens())
+    }
+
+    #[test]
+    fn contact_rend_le_sol_comme_avant() {
+        // La première moitié de `contact` est l'ancien `atterrissage`, et
+        // elle ne doit rien changer.
+        let m = monde_isole();
+        let (_, face, offset) =
+            contact(&m, Point::new(500.0, 1020.0), Point::new(500.0, 1040.0))
+                .expect("il traverse la ligne du sol");
+        assert_eq!(face, Face::Top);
+        assert_eq!(offset, 500.0);
+    }
+
+    #[test]
+    fn un_lancer_vers_la_gauche_s_accroche_au_mur_gauche() {
+        let m = monde_isole();
+        let (_, face, offset) =
+            contact(&m, Point::new(20.0, 400.0), Point::new(-10.0, 420.0))
+                .expect("il traverse la ligne x = 0 vers la gauche");
+
+        // Le mur GAUCHE de l'écran expose sa face `Right` : le personnage se
+        // tient à sa droite, donc à l'intérieur de l'écran.
+        assert_eq!(face, Face::Right);
+        // L'offset compte vers le BAS depuis le haut de la zone de travail.
+        assert_eq!(offset, 420.0);
+    }
+
+    #[test]
+    fn un_lancer_vers_la_droite_s_accroche_au_mur_droit() {
+        let m = monde_isole();
+        let (_, face, offset) =
+            contact(&m, Point::new(1900.0, 300.0), Point::new(1930.0, 310.0))
+                .expect("il traverse la ligne x = 1920 vers la droite");
+        assert_eq!(face, Face::Left);
+        assert_eq!(offset, 310.0);
+    }
+
+    #[test]
+    fn on_ne_s_accroche_pas_a_un_mur_qu_on_quitte() {
+        // Le sens compte : partir du mur vers l'intérieur ne doit PAS
+        // s'accrocher, sinon un personnage qui se lâche se rattraperait
+        // aussitôt.
+        let m = monde_isole();
+        assert_eq!(contact(&m, Point::new(-10.0, 400.0), Point::new(20.0, 420.0)), None);
+    }
+
+    #[test]
+    fn le_sol_gagne_sur_le_mur_dans_un_coin() {
+        // Repris de `Fall.java`, dont la boucle de sous-pas fait `break OUTER`
+        // sur le sol AVANT de tester le mur. Sans cette priorité, un lancer
+        // dans le coin s'accrocherait au mur trois pixels au-dessus du sol au
+        // lieu d'atterrir — visiblement bête.
+        //
+        // ⚠️ **Les coordonnées d'arrivée sont exactement sur les deux bords, et
+        // ce n'est pas de la coquetterie.** `atterrissage` teste `apres.x`
+        // contre les bornes du sol, et `contact_mur` teste `apres.y` contre
+        // celles du mur : le seul point qui satisfait les deux à la fois est le
+        // coin lui-même. C'est une conséquence de l'approximation « on teste
+        // avec le point d'arrivée » — voir le test suivant, qui la documente.
+        //
+        // La comparaison de flottants est ici exacte et sûre : ce sont des
+        // littéraux, aucune accumulation ne les a arrondis.
+        let m = monde_isole();
+        let (_, face, _) = contact(&m, Point::new(20.0, 1020.0), Point::new(0.0, 1032.0))
+            .expect("il franchit le sol ET le mur dans le même pas");
+        assert_eq!(face, Face::Top);
+    }
+
+    #[test]
+    fn un_lancer_violent_dans_le_coin_ne_rattrape_rien_et_c_est_assume() {
+        // Le trou de l'approximation, écrit ici pour qu'il soit CONNU et non
+        // découvert deux fois : un segment qui sort par le coin bas-gauche
+        // rate le sol (son `apres.x` est négatif, hors des bornes du sol) ET
+        // le mur (son `apres.y` passe sous le bas du mur).
+        //
+        // On l'accepte au lieu de calculer le croisement exact, pour deux
+        // raisons : la décision n° 4 autorise une navigation imparfaite, et le
+        // garde-fou de la spec §6.3 (`sous_le_bureau` puis `nearest_floor`)
+        // replace de toute façon le personnage sur le sol le plus proche. Le
+        // coût est une fraction de seconde de chute en trop, dans un coin, sur
+        // un lancer violent.
+        //
+        // Si ce test se met un jour à rendre `Some`, ce n'est PAS une
+        // régression : c'est que quelqu'un a amélioré l'approximation, et il
+        // faut alors supprimer ce test plutôt que le « réparer ».
+        let m = monde_isole();
+        assert_eq!(
+            contact(&m, Point::new(20.0, 1020.0), Point::new(-10.0, 1040.0)),
+            None
+        );
+    }
+
+    #[test]
+    fn le_plafond_n_attrape_rien() {
+        // `Fall.java::hasNext()` teste le sol et le mur, PAS le plafond.
+        // Lancé vers le haut, il passe devant et retombe (design §3.2).
+        let m = monde_isole();
+        assert_eq!(contact(&m, Point::new(500.0, 20.0), Point::new(500.0, -10.0)), None);
+    }
+
+    #[test]
+    fn un_mur_hors_de_la_hauteur_du_pas_n_attrape_pas() {
+        // Franchir la ligne x = 0 SOUS le bas de la zone de travail ne doit
+        // pas s'accrocher : il n'y a plus de mur à cette hauteur.
+        let m = monde_isole();
+        assert_eq!(
+            contact(&m, Point::new(20.0, 2000.0), Point::new(-10.0, 2020.0)),
+            None
+        );
+    }
+
+    #[test]
+    fn aucun_seuil_de_vitesse_pour_s_accrocher() {
+        // `Fall.java` ne teste qu'un `isOn`, sans aucune condition de
+        // vitesse : un contact d'un pixel suffit. Ce test fige cette absence
+        // de seuil, pour qu'on ne la « corrige » pas plus tard.
+        let m = monde_isole();
+        assert!(contact(&m, Point::new(0.5, 400.0), Point::new(-0.5, 400.1)).is_some());
     }
 
     /// Un pas d'intégration à 60 Hz.
