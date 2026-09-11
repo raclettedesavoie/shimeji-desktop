@@ -133,6 +133,8 @@ impl Allure {
 pub enum PhaseRepos {
     Assis,
     Endormi,
+    /// Phase transitoire pour le réveil : passage de sommeil à éveil
+    Selevant,
 }
 
 /// L'état interne d'une intention en cours.
@@ -529,6 +531,15 @@ fn se_reposer(
         return Issue::Echouee;
     };
 
+    // **Invariant de structure : phase `Endormi` ⇒ utilisateur absent** (décision n° 3).
+    // Si l'utilisateur devient actif pendant le sommeil, on doit se réveiller immédiatement.
+    // Cela évite que le personnage reste endormi après le retour de l'utilisateur,
+    // ce qui créerait un comportement irréaliste (dormir devant quelqu'un actif).
+    if phase == PhaseRepos::Endormi && e.utilisateur_actif {
+        ch.intention = None;
+        return Issue::Finie;
+    }
+
     // Défense en profondeur : le tirage ne devrait jamais proposer cette
     // intention à un personnage sans `sit` (desire.rs le filtre). Mais une
     // config bricolée pourrait y parvenir, et un personnage assis sur une
@@ -599,7 +610,7 @@ fn se_reposer(
     //
     // Et noter la forme : on teste un POIDS, jamais un signal. `se_reposer`
     // ne sait toujours pas ce qu'est l'inactivité (décision n° 3).
-    if phase == PhaseRepos::Assis && ch.pose == POSE_SLEEP && veut_dormir {
+    if phase == PhaseRepos::Assis && ch.pose == POSE_SLEEP && e.biais.pour(Intention::SeReposer) >= reglages.seuil_sommeil && !e.utilisateur_actif {
         phase = PhaseRepos::Endormi;
         // ⚠️ Cette ligne n'a AUCUN EFFET ICI, et c'est normal : ce bloc ne se
         // déclenche que sur une intention FRAÎCHE (voir le commentaire
@@ -634,7 +645,7 @@ fn se_reposer(
         // `veut_dormir` est calculé plus haut, avant le bloc de continuité :
         // c'est la même condition aux deux endroits, et la recalculer ici
         // aurait fini par diverger d'elle au premier réglage touché.
-        if phase == PhaseRepos::Assis && veut_dormir && ch.manifest.has_pose(POSE_SLEEP) {
+        if phase == PhaseRepos::Assis && e.biais.pour(Intention::SeReposer) >= reglages.seuil_sommeil && !e.utilisateur_actif && ch.manifest.has_pose(POSE_SLEEP) {
             phase = PhaseRepos::Endormi;
             jusqu_a = Duration::ZERO; // sera tirée à l'image suivante
             ai.etat = EtatIntention::Repos { phase, jusqu_a };

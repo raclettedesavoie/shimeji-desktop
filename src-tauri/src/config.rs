@@ -394,7 +394,7 @@ pub fn charger_depuis(chemin: &Path) -> Config {
         }
     };
 
-    match serde_json::from_str(&texte) {
+    match serde_json::from_str::<Config>(&texte) {
         Ok(mut c) => {
             // Un JSON valide peut quand même contenir une valeur absurde
             // (voir `SignauxReglages::borner`) : un fichier malformé n'est
