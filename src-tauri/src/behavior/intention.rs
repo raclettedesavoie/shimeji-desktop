@@ -2779,7 +2779,20 @@ mod tests {
         });
 
         let mut rng = XorShift32::seeded(5);
-        derouler(&mut ch, &m, &mut rng, 10.0, |c| c.pose == POSE_CLIMB_CEILING);
+        // ⚠️ **Correction de relecture** : la condition d'arrêt initiale
+        // était `c.pose == POSE_CLIMB_CEILING`, or cette pose est posée
+        // **dès la première image**, en tête du bras `Plafond` — avant même
+        // de calculer le déplacement. `derouler` en sortait donc au tout
+        // premier tick, quel que soit le budget de 10 s passé : le test
+        // prouvait qu'un instant existait, pas qu'une traversée avait lieu.
+        // La condition porte maintenant sur le DÉPLACEMENT réel (au moins
+        // 100 px parcourus vers la cible), qui ne peut se satisfaire qu'en
+        // ayant vraiment avancé plusieurs images — même défaut, et même
+        // correctif, que celui relevé sur le test du mur à la Tâche 5.
+        derouler(&mut ch, &m, &mut rng, 10.0, |c| {
+            (offset_de(c) - 200.0).abs() >= 100.0
+        });
+
         assert_eq!(ch.pose, POSE_CLIMB_CEILING);
 
         match ch.attachment {
@@ -2810,6 +2823,168 @@ mod tests {
         let (id, offset) = voisin.unwrap();
         assert_ne!(id, plafond_a.id);
         assert_eq!(offset, 0.0, "on y entre par son bord gauche");
+    }
+
+    #[test]
+    fn au_bout_du_plafond_il_passe_au_plafond_du_voisin() {
+        // Constat de relecture (Tâche 6) : le test ci-dessus n'appelle
+        // `face_voisine` qu'À VIDE, en dehors de toute simulation. Le bloc
+        // qui s'en sert réellement dans la phase `Plafond` (`if nouveau <
+        // 0.0 || nouveau > longueur`) n'était donc jamais parcouru en
+        // conditions réelles — exactement le défaut de la Tâche 5, où deux
+        // bugs ont survécu à trois tâches parce que personne ne déroulait
+        // la boucle. C'est le pendant horizontal de `grimper_monte_vraiment`
+        // (qui, lui, prouve la même chose à la verticale, sur un mur).
+        let m = World::from_screens(&FakeProbe::deux_ecrans().screens());
+        let plafond_a = m
+            .platforms()
+            .iter()
+            .find(|p| p.has_face(Face::Bottom) && p.rect.left() == 0.0)
+            .expect("plafond de gauche");
+        let id_depart = plafond_a.id;
+
+        let mut ch = perso_sur_le_sol(&m);
+        ch.attachment = Attachment::On {
+            platform: plafond_a.id,
+            face: Face::Bottom,
+            // À 120 px du bord droit (le plafond de gauche fait 1920 px).
+            offset: 1800.0,
+        };
+        ch.intention = Some(ActiveIntention {
+            kind: Intention::Grimper,
+            depuis: Duration::ZERO,
+            etat: EtatIntention::Grimpe {
+                // Une cible très au-delà du bord : il ne l'atteindra jamais
+                // SUR ce plafond, il devra d'abord en sortir. C'est ce qui
+                // force le passage par le bloc de franchissement plutôt que
+                // par la sortie normale « cible atteinte ».
+                phase: PhaseGrimpe::Plafond { cible: 5_000.0 },
+                jusqu_a: Duration::ZERO,
+            },
+        });
+
+        let mut rng = XorShift32::seeded(9);
+        // 120 px à 16,1 px/s ≈ 7,5 s : 15 s de marge est largement
+        // suffisant, et reste sous le délai d'abandon de 120 s.
+        derouler(&mut ch, &m, &mut rng, 15.0, |c| plateforme_de(c) != id_depart);
+
+        match ch.attachment {
+            Attachment::On {
+                platform,
+                face: Face::Bottom,
+                offset,
+                ..
+            } => {
+                assert_ne!(platform, id_depart, "il devrait avoir changé de plafond");
+                assert_eq!(
+                    m.get(platform).unwrap().rect.left(),
+                    1920.0,
+                    "il doit être sur le plafond de l'écran voisin"
+                );
+                assert_eq!(offset, 0.0, "il entre par le bord gauche du plafond voisin");
+            }
+            autre => panic!("il devrait être au plafond voisin, il est {autre:?}"),
+        }
+
+        // La pose du plafond a été posée en tête du bras `Plafond`, AVANT le
+        // calcul qui déclenche le changement de plateforme — donc dès cette
+        // image-ci, jamais une pose de sol ou de mur.
+        assert_eq!(ch.pose, POSE_CLIMB_CEILING);
+    }
+
+    #[test]
+    fn en_fin_d_accroche_au_plafond_il_lache_parfois_et_repart_parfois() {
+        // Constat de relecture (Tâche 6) : le chemin ajouté d'initiative
+        // propre — depuis le plafond (`face == Face::Bottom`), un tirage
+        // « redescendre » relance une traversée `Plafond` plutôt que de
+        // retomber dans `Paroi` (qui poserait `climbWall` et raisonnerait
+        // sur un axe vertical, tous deux faux au plafond) — n'était exercé
+        // par AUCUN test. Même structure que
+        // `en_fin_d_accroche_il_lache_parfois_et_redescend_parfois`, au mur.
+        let m = monde_mure();
+        let plafond = m
+            .platforms()
+            .iter()
+            .find(|p| p.has_face(Face::Bottom))
+            .expect("plafond");
+        let longueur = plafond.rect.face_length(Face::Bottom);
+
+        // Une seule graine, l'état qui avance : re-semer par petits entiers
+        // séquentiels biaiserait le premier tirage (piège documenté de
+        // `CLAUDE.md`).
+        let mut rng = XorShift32::seeded(54321);
+        let reglages = reglages();
+
+        let mut laches = 0;
+        let mut repartitions = 0;
+
+        for _ in 0..200 {
+            let mut ch = perso_sur_le_sol(&m);
+            ch.attachment = Attachment::On {
+                platform: plafond.id,
+                face: Face::Bottom,
+                offset: 400.0,
+            };
+            // Accroche déjà expirée : `Duration::ZERO` voudrait dire « pas
+            // encore tirée », pas « expirée » (même piège que sur le test
+            // équivalent au mur).
+            ch.intention = Some(ActiveIntention {
+                kind: Intention::Grimper,
+                depuis: Duration::ZERO,
+                etat: EtatIntention::Grimpe {
+                    phase: PhaseGrimpe::Accroche,
+                    jusqu_a: Duration::from_millis(1),
+                },
+            });
+
+            poursuivre(
+                &mut ch,
+                &m,
+                &entrees_neutres(),
+                &reglages,
+                Duration::from_secs(1),
+                DT,
+                &mut rng,
+            );
+
+            match ch.attachment {
+                Attachment::Falling { .. } => laches += 1,
+                Attachment::On {
+                    face: Face::Bottom, ..
+                } => {
+                    repartitions += 1;
+
+                    // Il doit avoir repris une traversée du plafond, avec
+                    // une cible dans les bornes de la face — pas de
+                    // `Paroi`, et pas de cible qui déborderait.
+                    match ch.intention {
+                        Some(ActiveIntention {
+                            etat:
+                                EtatIntention::Grimpe {
+                                    phase: PhaseGrimpe::Plafond { cible },
+                                    ..
+                                },
+                            ..
+                        }) => {
+                            assert!(
+                                (0.0..=longueur).contains(&cible),
+                                "cible {cible} hors des bornes [0, {longueur}]"
+                            );
+                        }
+                        autre => panic!(
+                            "attendu une nouvelle traversée du plafond (Plafond), obtenu {autre:?}"
+                        ),
+                    }
+                }
+                autre => panic!("attendu Falling ou On(Bottom), obtenu {autre:?}"),
+            }
+        }
+
+        assert!(laches > 10, "il ne se lâche jamais du plafond ({laches} sur 200)");
+        assert!(
+            repartitions > 10,
+            "il ne repart jamais en traversée ({repartitions} sur 200)"
+        );
     }
 
     #[test]
