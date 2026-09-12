@@ -275,6 +275,20 @@ pub enum PhaseGrimpe {
     /// séparer coûte une variante, fondre coûterait une matrice pose × face
     /// (design §4.1).
     Plafond { cible: f32 },
+
+    /// Reprise par « Redescendre » au menu du personnage : vise le BAS du
+    /// mur courant, sans repasser par `Rejoindre` (on y est déjà).
+    ///
+    /// **Une phase et non un calcul fait directement dans `behavior::pas`,**
+    /// bien que `pas` reçoive déjà `world` en paramètre. La longueur d'une
+    /// face (`Rect::face_length`) est un calcul qui vit UN SEUL endroit :
+    /// dans `grimper`, où `Paroi` le fait déjà pour la fin de `Rejoindre`.
+    /// Le dupliquer dans `behavior::pas` serait une seconde source de
+    /// vérité pour la même formule — même raison que `mur_le_plus_proche`
+    /// ou `sol_au_pied_du_mur` restent ici plutôt que dans `world.rs`.
+    /// Comme `Choisir`, cette phase existe pour que la première image
+    /// décide, avec `world` sous la main.
+    ChoisirDescente,
 }
 
 /// L'état interne d'une intention en cours.
@@ -387,6 +401,24 @@ impl ActiveIntention {
             depuis: maintenant,
             etat: EtatIntention::Grimpe {
                 phase: PhaseGrimpe::Accroche,
+                jusqu_a: Duration::ZERO,
+            },
+        }
+    }
+
+    /// L'intention posée par « Redescendre » au menu du personnage.
+    ///
+    /// Même motif que `accroche` : l'état est posé de l'EXTÉRIEUR (depuis
+    /// `behavior::pas`), avec la phase `ChoisirDescente` pour que la
+    /// PREMIÈRE image de `grimper` calcule la cible — elle seule a `world`
+    /// sous la main, ce qui dispense cette fonction (comme `nouvelle` et
+    /// `accroche`) de le recevoir.
+    pub fn redescendre(maintenant: Duration) -> Self {
+        ActiveIntention {
+            kind: Intention::Grimper,
+            depuis: maintenant,
+            etat: EtatIntention::Grimpe {
+                phase: PhaseGrimpe::ChoisirDescente,
                 jusqu_a: Duration::ZERO,
             },
         }
@@ -635,7 +667,7 @@ fn grimper(
     };
 
     match phase {
-        // ── Choisir le mur ──────────────────────────────────────────────
+        // ── Choisir le mur — ou reprendre l'escalade en cours ───────────
         PhaseGrimpe::Choisir => {
             // `let … else` : s'il n'est pas posé quelque part, il n'y a pas
             // d'écran de référence. Les réflexes s'occupent de lui.
@@ -644,36 +676,103 @@ fn grimper(
                 return Issue::Echouee;
             };
 
-            // ⚠️ **Garde structurelle (Tâche 7, après le bug du délai
-            // d'abandon).** `Rejoindre`, la phase suivante, est une marche
-            // AU SOL : elle pose `walk` et avance sans jamais vérifier sur
-            // quelle face il se trouve. Avec `lacher_si_accroche` appelée au
-            // bon endroit, `Choisir` ne devrait plus jamais être atteinte
-            // depuis un mur ou le plafond — mais cette garde ne DÉPEND pas
-            // de ça : elle refuse ici, structurellement, plutôt que de
-            // compter sur une règle lointaine (dans un autre fichier) pour
-            // ne jamais être violée. Une garde redondante coûte deux lignes ;
-            // son absence a coûté un bug qui a survécu trois tâches et
-            // leurs relectures.
+            // ⚠️ **Avant, cette garde faisait ÉCHOUER `Choisir` sur toute
+            // face non-`Top`** (Tâche 7, après le bug du délai d'abandon) —
+            // et c'était précisément le bug rapporté à l'écran : choisir
+            // « Grimper au mur » au menu, pendant qu'il est DÉJÀ accroché à
+            // un mur ou au plafond, faisait échouer l'intention. La règle
+            // de sécurité du monde vertical (`comportement::pas`) voyait
+            // alors un personnage accroché sans intention `Grimper` et le
+            // faisait tomber — un menu qui fait tomber au lieu de continuer
+            // n'est pas utilisable.
             //
-            // `ActiveIntention::accroche` n'est PAS concernée : elle
-            // pose directement la phase `Accroche`, jamais `Choisir` — le
-            // lancer contre un mur continue de fonctionner sans passer ici.
-            if face != Face::Top {
-                ch.intention = None;
-                return Issue::Echouee;
-            }
+            // La garde protégeait un vrai risque, qu'il faut préserver en
+            // corrigeant : `Rejoindre`, la phase qui suit `Top` ci-dessous,
+            // est une marche AU SOL — elle pose `walk` et avance sans
+            // jamais vérifier sur quelle face il se trouve. L'atteindre
+            // depuis un mur ferait donc « marcher » verticalement le
+            // personnage, en pose de marche, le long de la paroi.
+            //
+            // **Reprendre est plus sûr qu'échouer**, et ne réintroduit PAS
+            // ce risque : sur une face verticale ou au plafond, on saute
+            // directement dans la phase d'ESCALADE qui correspond — `Paroi`
+            // pour un mur, `Plafond` pour le plafond — jamais dans
+            // `Rejoindre`. C'est exactement ce que fait déjà la fin de
+            // `Rejoindre` (choisir une nouvelle cible) ou le sommet d'un
+            // mur qui bascule au plafond : la couverture par `match`
+            // ci-dessous n'invente rien, elle applique aux deux faces
+            // manquantes un chemin qui existe déjà pour l'une d'elles.
+            match face {
+                Face::Top => {
+                    let Some(mur) = mur_le_plus_proche(world, platform, ch) else {
+                        // Aucun mur sur cet écran — l'écran du milieu d'une
+                        // rangée de trois. L'intention échoue, la couche 3 en
+                        // tire une autre. **Aucun cas particulier ailleurs** :
+                        // c'est le même esprit que la couverture partielle
+                        // (spec §8.6).
+                        ch.intention = None;
+                        return Issue::Echouee;
+                    };
 
-            let Some(mur) = mur_le_plus_proche(world, platform, ch) else {
-                // Aucun mur sur cet écran — l'écran du milieu d'une rangée de
-                // trois. L'intention échoue, la couche 3 en tire une autre.
-                // **Aucun cas particulier ailleurs** : c'est le même esprit
-                // que la couverture partielle (spec §8.6).
+                    phase = PhaseGrimpe::Rejoindre { mur };
+                }
+
+                Face::Left | Face::Right => {
+                    let Some(plat) = world.get(platform) else {
+                        ch.intention = None;
+                        return Issue::Echouee;
+                    };
+                    let longueur = plat.rect.face_length(face);
+
+                    // Même tirage que la fin de `Rejoindre` ci-dessous :
+                    // jusqu'en haut, ou à mi-hauteur au hasard.
+                    let cible = if rng.unit_f32() < 0.5 {
+                        0.0
+                    } else {
+                        rng.range(0.0, longueur * 0.7)
+                    };
+                    phase = PhaseGrimpe::Paroi { cible };
+                }
+
+                Face::Bottom => {
+                    let Some(plat) = world.get(platform) else {
+                        ch.intention = None;
+                        return Issue::Echouee;
+                    };
+                    let longueur = plat.rect.face_length(face);
+                    phase = PhaseGrimpe::Plafond {
+                        cible: rng.range(0.0, longueur),
+                    };
+                }
+            }
+        }
+
+        // ── Reprise par « Redescendre » : viser le bas du mur ───────────
+        PhaseGrimpe::ChoisirDescente => {
+            let Attachment::On { platform, face, .. } = ch.attachment else {
                 ch.intention = None;
                 return Issue::Echouee;
             };
 
-            phase = PhaseGrimpe::Rejoindre { mur };
+            // Garde structurelle, même esprit que celle de `Choisir` :
+            // `behavior::pas` ne pose cette phase que depuis un mur, mais on
+            // ne s'y fie pas aveuglément — au plafond, « descendre » n'a pas
+            // de sens (voir le commentaire de `Commande::Redescendre`).
+            if face != Face::Left && face != Face::Right {
+                ch.intention = None;
+                return Issue::Echouee;
+            }
+
+            let Some(plat) = world.get(platform) else {
+                ch.intention = None;
+                return Issue::Echouee;
+            };
+
+            // Le bas du mur est à `face_length` — même convention que la fin
+            // de `Rejoindre`, plus bas dans cette fonction.
+            phase = PhaseGrimpe::Paroi {
+                cible: plat.rect.face_length(face),
+            };
         }
 
         // ── Marcher jusqu'au pied du mur ────────────────────────────────
@@ -2522,18 +2621,27 @@ mod tests {
     }
 
     #[test]
-    fn choisir_depuis_un_mur_echoue_au_lieu_de_marcher_dessus() {
-        // La garde structurelle de la Tâche 7 : `Choisir` refuse de partir
-        // d'autre chose que `Face::Top`, même si plus rien d'autre ne devrait
-        // normalement l'y amener. Une garde redondante ici coûte deux
-        // lignes ; son absence a coûté un bug qui a survécu trois tâches et
-        // leurs relectures — voir `expire_au_plafond_il_tombe_au_lieu_de_
-        // marcher_dessus` ci-dessus pour ce bug précis.
+    fn choisir_depuis_un_mur_reprend_l_escalade_au_lieu_d_echouer() {
+        // ⚠️ **Ce test verrouillait l'ANCIEN comportement, et c'était très
+        // exactement le bug rapporté à l'écran** (menu contextuel de
+        // l'escalade) : la garde structurelle de la Tâche 7 faisait ÉCHOUER
+        // `Choisir` sur toute face non-`Top`, et un personnage sur qui l'on
+        // choisissait « Grimper au mur » au menu — donc déjà accroché à un
+        // mur — tombait au lieu de continuer à monter.
         //
-        // `ActiveIntention::accroche` n'est pas concernée par cette
-        // garde : elle pose directement la phase `Accroche`, jamais
-        // `Choisir` — voir `accroche_par_un_lancer_il_ne_lache_pas...` dans
-        // `reflex.rs`, qui continue de passer.
+        // La garde protégeait un vrai risque, qui reste vérifié ci-dessous
+        // (`assert_ne!(ch.pose, POSE_WALK, …)`) : `Rejoindre`, la phase qui
+        // suit `Choisir` sur `Face::Top`, est une marche AU SOL. La
+        // correction ne supprime pas la protection, elle change la réponse :
+        // au lieu d'échouer sur une face verticale, `Choisir` saute
+        // directement dans la phase d'ESCALADE qui correspond (`Paroi`),
+        // sans jamais passer par `Rejoindre` — voir le commentaire de
+        // `Choisir` dans `grimper`.
+        //
+        // `ActiveIntention::accroche` n'est pas concernée par cette phase :
+        // elle pose directement `Accroche`, jamais `Choisir` — voir
+        // `accroche_par_un_lancer_il_ne_lache_pas...` dans `reflex.rs`, qui
+        // continue de passer.
         let m = monde_mure();
         let mur = m
             .platforms()
@@ -2560,37 +2668,30 @@ mod tests {
         let reglages = reglages();
         let mut t = Duration::ZERO;
 
-        // Plusieurs images, pas une seule : la garde doit tenir à chacune,
-        // pas seulement à la première.
+        // Plusieurs images, pas une seule : l'escalade reprise doit tenir
+        // sur la durée, pas seulement à la première image.
         for _ in 0..5 {
             let issue = poursuivre(&mut ch, &m, &entrees_neutres(), &reglages, t, DT, &mut rng);
-            assert_ne!(ch.pose, POSE_WALK, "il ne doit pas marcher sur le mur");
-            assert!(
-                matches!(issue, Issue::Echouee | Issue::Finie),
-                "phase Choisir depuis un mur : attendu un échec, obtenu {issue:?}"
+            assert_ne!(ch.pose, POSE_WALK, "il ne doit jamais marcher sur le mur");
+            assert_eq!(
+                issue,
+                Issue::EnCours,
+                "l'escalade reprise doit continuer, pas échouer"
             );
             t += Duration::from_secs_f32(DT);
         }
 
+        // Il reste accroché au MUR, avec une intention `Grimper` toujours
+        // vivante : c'est la propriété qui corrige le bug — plus de chute.
         assert!(
-            ch.intention.is_none(),
-            "l'intention doit avoir été abandonnée, elle est {:?}",
-            ch.intention
-        );
-        // ⚠️ **Assertion corrigée (relecture finale de l'étape 4a).** La
-        // garde échoue avant tout déplacement, mais elle NE laisse plus le
-        // personnage pendu en attendant qu'un appel ultérieur de
-        // `behavior::mod::pas` s'en aperçoive — c'était l'ancienne
-        // assertion ici, et c'était précisément le bug : une image de
-        // flottement, avec une dépendance à un appelant lointain pour s'en
-        // sortir, exactement le motif de la Tâche 7. `poursuivre` appelle
-        // maintenant `lacher_si_accroche` à son point d'étranglement unique,
-        // dans la MÊME image que l'échec de cette garde — voir le
-        // commentaire de ce point d'étranglement, en fin de `poursuivre`.
-        assert!(
-            matches!(ch.attachment, Attachment::Falling { .. }),
-            "il devrait être tombé du mur dans la même image que l'échec, il est {:?}",
+            matches!(ch.attachment, Attachment::On { face: Face::Right, .. }),
+            "il devrait toujours être sur le mur, en train de monter, il est {:?}",
             ch.attachment
+        );
+        assert_eq!(
+            ch.intention.map(|ai| ai.kind),
+            Some(Intention::Grimper),
+            "l'escalade reprise ne doit pas avoir été abandonnée"
         );
     }
 

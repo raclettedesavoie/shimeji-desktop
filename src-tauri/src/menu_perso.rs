@@ -21,9 +21,88 @@
 use crate::actions::{ID_DOSSIER, ID_P_CACHER, ID_QUITTER, ID_RECHARGER};
 use crate::behavior::desire::TableEnvies;
 use crate::behavior::intention::{Intention, Jeu};
+use crate::character::attach::Attachment;
 use crate::character::manifest::Manifest;
+use crate::geom::Face;
 use tauri::menu::{IsMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::{AppHandle, WebviewWindow};
+
+/// Ce que demande une entrée du menu — pas toujours une intention.
+///
+/// # Pourquoi ce n'est pas simplement `Intention`
+///
+/// La table d'envies (`desire.rs`) et la couche 2 (`intention.rs`) ne
+/// connaissent que des intentions à part entière, tirables au hasard. Mais
+/// trois actions propres au menu de l'escalade — « Rester accroché »,
+/// « Redescendre », « Se lâcher » — ne sont PAS des intentions : ce sont des
+/// phases d'une escalade déjà en cours, ou une absence d'intention. Les
+/// forcer dans `Intention` obligerait le tirage pondéré à savoir les éviter,
+/// ce qui n'a rien à y faire (elles ne se tirent jamais, on ne fait qu'y
+/// entrer depuis le menu).
+///
+/// Ce type couvre donc les deux formes, et c'est lui — pas `Intention` —
+/// que porte `Entrees::commande` et qu'exécute `behavior::pas`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Commande {
+    /// Une intention comme avant : le comportement normal, tiré au sort ou
+    /// choisi ici au menu.
+    Intention(Intention),
+
+    /// Reprend l'accroche là où il est — mur ou plafond, peu importe : c'est
+    /// exactement l'intention que pose déjà un lancer contre une paroi
+    /// (`ActiveIntention::accroche`). `HoldOntoWall` / `HoldOntoCeiling` de
+    /// Shimeji-ee.
+    ResterAccroche,
+
+    /// Reprend l'escalade en cours pour viser le BAS du mur — jamais
+    /// proposée au plafond, où « redescendre » n'a pas de sens (design
+    /// §4.5, décision n° 4 : pas de navigation calculée).
+    Redescendre,
+
+    /// Efface l'intention, sans plus. La règle de sécurité du monde vertical
+    /// (`behavior::pas`) fait tomber le personnage toute seule, à la MÊME
+    /// image : c'est `FallFromWall` / `FallFromCeiling` de Shimeji-ee, et ça
+    /// ne coûte pas une ligne de physique en plus — voir le commentaire de
+    /// `behavior::pas` à l'endroit où cette commande est traitée.
+    SeLacher,
+}
+
+/// L'endroit d'où l'on fait un clic droit, simplifié aux trois cas qui
+/// changent le menu proposé (spec §4, design du plan menu).
+///
+/// Dérivé de `Attachment` par `ou_de` plutôt que testé à la volée dans
+/// `ouvrir` : la correspondance face → contexte de menu ne doit vivre qu'à
+/// UN endroit, sans quoi elle finirait par diverger de celle utilisée par la
+/// physique.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ou {
+    /// Au sol, en chute, ou porté — le menu d'aujourd'hui, inchangé.
+    Sol,
+    /// Accroché à un mur (face `Left` ou `Right`).
+    Mur,
+    /// Suspendu au plafond (face `Bottom`).
+    Plafond,
+}
+
+/// Le contexte de menu qui correspond à l'endroit où est accroché le
+/// personnage — ou `Sol` s'il ne l'est pas du tout.
+///
+/// **La seule fonction qui connaît cette correspondance.** `main.rs` l'appelle
+/// juste avant `ouvrir`, depuis `ch.attachment` : c'est le seul endroit où la
+/// boucle 60 Hz sait où en est CE personnage-là.
+pub fn ou_de(attachment: &Attachment) -> Ou {
+    match attachment {
+        Attachment::On {
+            face: Face::Left | Face::Right,
+            ..
+        } => Ou::Mur,
+        Attachment::On {
+            face: Face::Bottom, ..
+        } => Ou::Plafond,
+        // `Face::Top`, `Falling`, `Dragged` : au sol, en chute, ou porté.
+        _ => Ou::Sol,
+    }
+}
 
 /// Les envies proposées par le menu, dans l'ordre d'affichage.
 ///
@@ -31,39 +110,97 @@ use tauri::{AppHandle, WebviewWindow};
 ///
 /// **Toute nouvelle intention jouable s'ajoute ici, dans la même tâche que
 /// son implémentation.** C'est une ligne de plus dans ce tableau et rien
-/// d'autre : l'identifiant est décodé par `intention_de`, la disponibilité
-/// est déduite du manifeste, et `actions::executer` n'a pas de cas à
-/// ajouter. Une intention absente de ce tableau existe pour le tirage
-/// aléatoire mais reste inaccessible à l'utilisateur — un manque silencieux,
-/// qui ne casse aucun test.
+/// d'autre : l'identifiant est décodé par `commande_de`, la disponibilité
+/// est déduite du manifeste (pour une `Intention`) ou de l'endroit (pour les
+/// trois autres), et `actions::executer` n'a pas de cas à ajouter. Une
+/// intention absente de ce tableau existe pour le tirage aléatoire mais
+/// reste inaccessible à l'utilisateur — un manque silencieux, qui ne casse
+/// aucun test.
 ///
 /// `&'static [(…)]` plutôt qu'un `match` en deux exemplaires : la table est
 /// lue dans les deux sens — pour construire les entrées, et pour décoder un
 /// identifiant reçu. Deux `match` symétriques finiraient par diverger.
-const ENVIES: &[(&str, &str, Intention)] = &[
-    ("perso.flaner", "Flâner", Intention::Flaner),
-    ("perso.asseoir", "S'asseoir", Intention::SeReposer),
+///
+/// # Le quatrième champ : où cette entrée apparaît
+///
+/// Une liste et non une seule valeur : « Rester accroché » et « Se lâcher »
+/// sont pertinentes à la fois sur un mur ET au plafond (la commande qu'elles
+/// posent ne connaît pas la face, elle relit `ch.attachment` à l'exécution).
+/// Une seule ligne leur suffit donc, avec les DEUX contextes dans la liste —
+/// dupliquer la ligne par contexte serait une seconde source de vérité pour
+/// le même identifiant.
+///
+/// « Grimper au mur » et « Monter plus haut » sont en revanche deux LIGNES
+/// distinctes — deux identifiants, deux libellés — qui partagent la MÊME
+/// commande (`Commande::Intention(Intention::Grimper)`) : c'est la même
+/// action de fond (grimper), seul son libellé change selon qu'on la propose
+/// pour la déclencher ou pour la reprendre. Deux identifiants gardent le
+/// décodage sans ambiguïté — un seul identifiant affiché avec deux libellés
+/// différents selon le contexte aurait, lui, demandé au décodage de
+/// connaître le contexte, ce qui n'a rien à y faire.
+const ENVIES: &[(&str, &str, &[Ou], Commande)] = &[
+    ("perso.flaner", "Flâner", &[Ou::Sol], Commande::Intention(Intention::Flaner)),
+    (
+        "perso.asseoir",
+        "S'asseoir",
+        &[Ou::Sol],
+        Commande::Intention(Intention::SeReposer),
+    ),
     (
         "perso.tete",
         "Faire tourner la tête",
-        Intention::Jouer(Jeu::TeteQuiTourne),
+        &[Ou::Sol],
+        Commande::Intention(Intention::Jouer(Jeu::TeteQuiTourne)),
     ),
     (
         "perso.jambes",
         "Balancer les jambes",
-        Intention::Jouer(Jeu::JambesQuiBalancent),
+        &[Ou::Sol],
+        Commande::Intention(Intention::Jouer(Jeu::JambesQuiBalancent)),
     ),
-    ("perso.grimper", "Grimper au mur", Intention::Grimper),
+    (
+        "perso.grimper",
+        "Grimper au mur",
+        &[Ou::Sol],
+        Commande::Intention(Intention::Grimper),
+    ),
+    (
+        "perso.monter",
+        "Monter plus haut",
+        &[Ou::Mur],
+        Commande::Intention(Intention::Grimper),
+    ),
+    (
+        "perso.rester",
+        "Rester accroché",
+        &[Ou::Mur, Ou::Plafond],
+        Commande::ResterAccroche,
+    ),
+    (
+        "perso.redescendre",
+        "Redescendre",
+        &[Ou::Mur],
+        Commande::Redescendre,
+    ),
+    (
+        "perso.lacher",
+        "Se lâcher",
+        &[Ou::Mur, Ou::Plafond],
+        Commande::SeLacher,
+    ),
 ];
 
-/// L'intention que désigne un identifiant d'entrée, s'il en désigne une.
+/// La commande que désigne un identifiant d'entrée, s'il en désigne une.
 ///
 /// Appelée par `actions::executer` pour le cas par défaut : tout ce qui
-/// n'est pas une entrée connue est peut-être une envie.
-pub fn intention_de(id: &str) -> Option<Intention> {
+/// n'est pas une entrée connue est peut-être une envie du menu du personnage.
+pub fn commande_de(id: &str) -> Option<Commande> {
     // `find` puis `map` plutôt qu'une boucle : on cherche la ligne dont
-    // l'identifiant correspond, et on n'en garde que l'intention.
-    ENVIES.iter().find(|(i, _, _)| *i == id).map(|(_, _, x)| *x)
+    // l'identifiant correspond, et on n'en garde que la commande.
+    ENVIES
+        .iter()
+        .find(|(i, _, _, _)| *i == id)
+        .map(|(_, _, _, c)| *c)
 }
 
 /// Construit et affiche le menu au curseur. **Bloque** jusqu'à sa fermeture.
@@ -73,12 +210,17 @@ pub fn intention_de(id: &str) -> Option<Intention> {
 /// que fait Shimeji-ee, et un personnage qui continuerait de marcher sous un
 /// menu ouvert sur lui serait plus déroutant qu'amusant.
 ///
-/// # Ce que `manifeste` et `table` servent
+/// # Ce que `manifeste`, `table` et `ou` servent
 ///
-/// À retirer les envies injouables (spec §8.6). Ils viennent du personnage
-/// **de cette fenêtre-là**, ce qui est la raison pour laquelle cette fonction
-/// est appelée depuis la boucle et non depuis `setup` : c'est le seul endroit
-/// où le manifeste courant est connu.
+/// `manifeste` et `table` retirent les envies injouables (spec §8.6) — ils
+/// viennent du personnage **de cette fenêtre-là**, ce qui est la raison pour
+/// laquelle cette fonction est appelée depuis la boucle et non depuis
+/// `setup` : c'est le seul endroit où le manifeste courant est connu.
+///
+/// `ou` retire les entrées qui n'ont pas de sens LÀ où il est — voir `Ou` et
+/// `ou_de`. C'est ce qui corrige le bug rapporté à l'écran : sans ce filtre,
+/// le menu proposait « Flâner » à un personnage accroché à un mur, et le
+/// choisir le faisait tomber (règle de sécurité du monde vertical).
 ///
 /// Aucun `Actions` en paramètre, et c'est la conséquence directe du
 /// gestionnaire unique : ce fichier ne déclenche **rien**, il propose. Le
@@ -93,16 +235,28 @@ pub fn ouvrir(
     win: &WebviewWindow,
     manifeste: &Manifest,
     table: &TableEnvies,
+    ou: Ou,
 ) -> Result<(), String> {
-    // ── Les envies jouables par CE personnage ───────────────────────────
+    // ── Les envies jouables par CE personnage, LÀ où il est ─────────────
     //
     // On construit d'abord un `Vec` de valeurs possédées, puis un second de
     // références de trait. En un seul passage, les `MenuItem` seraient
     // temporaires et les références pendantes — c'est l'emprunt de Rust qui
     // l'impose, et c'est une erreur qu'on ne peut pas commettre par accident.
     let mut entrees: Vec<MenuItem<tauri::Wry>> = Vec::new();
-    for (id, libelle, intention) in ENVIES {
-        if table.jouable(manifeste, *intention) {
+    for (id, libelle, contextes, commande) in ENVIES {
+        if !contextes.contains(&ou) {
+            continue;
+        }
+        // Seule une `Intention` est gardée par la couverture partielle du
+        // manifeste (spec §8.6) : les trois autres commandes ne demandent
+        // pas de pose particulière au-delà de celles que l'escalade en cours
+        // exige déjà pour être là où le menu les propose.
+        let jouable = match commande {
+            Commande::Intention(i) => table.jouable(manifeste, *i),
+            Commande::ResterAccroche | Commande::Redescendre | Commande::SeLacher => true,
+        };
+        if jouable {
             entrees.push(
                 MenuItem::with_id(app, *id, *libelle, true, None::<&str>)
                     .map_err(|e| format!("entrée « {libelle} » : {e}"))?,
@@ -245,27 +399,27 @@ mod tests {
     /// Le décodage doit être l'exact inverse de la construction.
     ///
     /// Le test qui compte vraiment de ce fichier : si une ligne d'`ENVIES`
-    /// était ajoutée avec un identifiant en double, `intention_de` rendrait
+    /// était ajoutée avec un identifiant en double, `commande_de` rendrait
     /// systématiquement la première — l'entrée du menu serait présente et
     /// déclencherait une **autre** action. Silencieux, et très pénible à
     /// diagnostiquer à l'œil.
     #[test]
     fn chaque_envie_se_decode_en_elle_meme() {
-        for (id, _, intention) in ENVIES {
+        for (id, _, _, commande) in ENVIES {
             assert_eq!(
-                intention_de(id),
-                Some(*intention),
-                "l'identifiant « {id} » ne rend pas son intention"
+                commande_de(id),
+                Some(*commande),
+                "l'identifiant « {id} » ne rend pas sa commande"
             );
         }
     }
 
     #[test]
     fn un_identifiant_inconnu_ne_decode_rien() {
-        // C'est ce qui permet à `actions::executer` d'utiliser `intention_de`
+        // C'est ce qui permet à `actions::executer` d'utiliser `commande_de`
         // comme cas par défaut sans avaler les entrées du tray.
-        assert_eq!(intention_de("recharger"), None);
-        assert_eq!(intention_de(""), None);
+        assert_eq!(commande_de("recharger"), None);
+        assert_eq!(commande_de(""), None);
     }
 
     /// Toutes les envies du menu doivent exister dans la table d'envies.
@@ -274,14 +428,20 @@ mod tests {
     /// n'apparaîtrait **jamais**, sur aucun pack — un menu amputé sans le
     /// moindre message. C'est le mode d'échec exact d'un oubli dans la liste
     /// que le commentaire d'`ENVIES` demande de tenir à jour.
+    ///
+    /// Ne concerne que les lignes `Commande::Intention` : les trois autres
+    /// commandes n'ont pas de ligne dans `TableEnvies` — ce ne sont pas des
+    /// intentions tirables, voir le commentaire de `Commande`.
     #[test]
     fn toutes_les_envies_du_menu_sont_dans_la_table() {
         let table = TableEnvies::defaut();
-        for (id, _, intention) in ENVIES {
-            assert!(
-                table.entrees.iter().any(|e| e.intention == *intention),
-                "« {id} » n'est pas dans la table d'envies : l'entrée serait toujours cachée"
-            );
+        for (id, _, _, commande) in ENVIES {
+            if let Commande::Intention(i) = commande {
+                assert!(
+                    table.entrees.iter().any(|e| e.intention == *i),
+                    "« {id} » n'est pas dans la table d'envies : l'entrée serait toujours cachée"
+                );
+            }
         }
     }
 
@@ -298,7 +458,9 @@ mod tests {
         let table = TableEnvies::defaut();
         for entree in &table.entrees {
             assert!(
-                ENVIES.iter().any(|(_, _, i)| *i == entree.intention),
+                ENVIES
+                    .iter()
+                    .any(|(_, _, _, c)| *c == Commande::Intention(entree.intention)),
                 "{:?} est tirable mais absente du menu contextuel",
                 entree.intention
             );
@@ -310,16 +472,152 @@ mod tests {
     ///
     /// C'est la couverture partielle (spec §8.6) vue depuis le menu, et la
     /// raison pour laquelle `ouvrir` filtre au lieu de tout afficher grisé.
+    ///
+    /// Ne teste que les `Commande::Intention` : les trois autres n'ont pas de
+    /// pose requise propre (voir le commentaire de `ouvrir` sur ce point),
+    /// donc rien à vérifier de leur côté de la couverture partielle.
     #[test]
     fn la_couverture_partielle_retire_les_envies_injouables() {
         let table = TableEnvies::defaut();
 
         let blob = Manifest::load(std::path::Path::new("../characters/blob"))
             .expect("le personnage de test doit être lisible");
-        let proposees = ENVIES
+        let intentions: Vec<_> = ENVIES
             .iter()
-            .filter(|(_, _, i)| table.jouable(&blob, *i))
-            .count();
-        assert_eq!(proposees, ENVIES.len(), "blob a toutes les poses");
+            .filter_map(|(_, _, _, c)| match c {
+                Commande::Intention(i) => Some(*i),
+                _ => None,
+            })
+            .collect();
+        let proposees = intentions.iter().filter(|i| table.jouable(&blob, **i)).count();
+        assert_eq!(proposees, intentions.len(), "blob a toutes les poses");
+    }
+
+    // ── Le filtrage par endroit (le bug rapporté à l'écran) ─────────────
+
+    /// Construit un manifeste et une table complets, pour ne tester ici que
+    /// le filtrage par `Ou` — pas la couverture partielle, déjà couverte
+    /// ci-dessus.
+    fn table_et_blob() -> (TableEnvies, Manifest) {
+        (
+            TableEnvies::defaut(),
+            Manifest::load(std::path::Path::new("../characters/blob"))
+                .expect("le personnage de test doit être lisible"),
+        )
+    }
+
+    /// Les identifiants qu'`ouvrir` proposerait pour cet endroit, en ne
+    /// rejouant que la logique de filtrage (pas la construction réelle des
+    /// `MenuItem`, qui demande un `AppHandle` Tauri hors de portée des
+    /// tests unitaires).
+    fn ids_proposes(table: &TableEnvies, manifeste: &Manifest, ou: Ou) -> Vec<&'static str> {
+        ENVIES
+            .iter()
+            .filter(|(_, _, contextes, _)| contextes.contains(&ou))
+            .filter(|(_, _, _, commande)| match commande {
+                Commande::Intention(i) => table.jouable(manifeste, *i),
+                _ => true,
+            })
+            .map(|(id, _, _, _)| *id)
+            .collect()
+    }
+
+    #[test]
+    fn le_menu_au_sol_ne_propose_aucune_action_d_accroche() {
+        let (table, blob) = table_et_blob();
+        let ids = ids_proposes(&table, &blob, Ou::Sol);
+
+        for interdit in ["perso.monter", "perso.rester", "perso.redescendre", "perso.lacher"] {
+            assert!(
+                !ids.contains(&interdit),
+                "« {interdit} » ne devrait pas apparaître au sol : {ids:?}"
+            );
+        }
+        // Et les cinq envies habituelles restent là — inchangé.
+        assert_eq!(ids.len(), 5, "{ids:?}");
+    }
+
+    #[test]
+    fn le_menu_sur_un_mur_ne_propose_aucune_envie_de_sol() {
+        let (table, blob) = table_et_blob();
+        let ids = ids_proposes(&table, &blob, Ou::Mur);
+
+        for interdit in ["perso.flaner", "perso.asseoir", "perso.tete", "perso.jambes", "perso.grimper"] {
+            assert!(
+                !ids.contains(&interdit),
+                "« {interdit} » ne devrait pas apparaître sur un mur : {ids:?}"
+            );
+        }
+        // « Monter plus haut », « Rester accroché », « Redescendre », « Se
+        // lâcher ».
+        assert_eq!(ids.len(), 4, "{ids:?}");
+        assert!(ids.contains(&"perso.monter"));
+        assert!(ids.contains(&"perso.rester"));
+        assert!(ids.contains(&"perso.redescendre"));
+        assert!(ids.contains(&"perso.lacher"));
+    }
+
+    #[test]
+    fn le_menu_au_plafond_ne_propose_ni_envie_de_sol_ni_redescendre() {
+        let (table, blob) = table_et_blob();
+        let ids = ids_proposes(&table, &blob, Ou::Plafond);
+
+        // Pas de « Redescendre » au plafond : ça demanderait de traverser
+        // jusqu'au bout, basculer sur un mur, puis descendre — de la
+        // navigation calculée, que la décision n° 4 exclut (YAGNI). Shimeji
+        // ne le propose pas non plus.
+        assert!(!ids.contains(&"perso.redescendre"), "{ids:?}");
+        for interdit in ["perso.flaner", "perso.asseoir", "perso.tete", "perso.jambes", "perso.grimper", "perso.monter"] {
+            assert!(!ids.contains(&interdit), "« {interdit} » : {ids:?}");
+        }
+        assert_eq!(ids.len(), 2, "{ids:?}");
+        assert!(ids.contains(&"perso.rester"));
+        assert!(ids.contains(&"perso.lacher"));
+    }
+
+    #[test]
+    fn ou_de_lit_correctement_les_quatre_etats() {
+        let plateforme = crate::world::PlatformId(0);
+
+        assert_eq!(
+            ou_de(&Attachment::On {
+                platform: plateforme,
+                face: Face::Top,
+                offset: 0.0
+            }),
+            Ou::Sol
+        );
+        assert_eq!(
+            ou_de(&Attachment::On {
+                platform: plateforme,
+                face: Face::Left,
+                offset: 0.0
+            }),
+            Ou::Mur
+        );
+        assert_eq!(
+            ou_de(&Attachment::On {
+                platform: plateforme,
+                face: Face::Right,
+                offset: 0.0
+            }),
+            Ou::Mur
+        );
+        assert_eq!(
+            ou_de(&Attachment::On {
+                platform: plateforme,
+                face: Face::Bottom,
+                offset: 0.0
+            }),
+            Ou::Plafond
+        );
+        assert_eq!(
+            ou_de(&Attachment::Falling {
+                pos: crate::geom::Point::new(0.0, 0.0),
+                vel: crate::geom::Vec2::zero(),
+            }),
+            Ou::Sol
+        );
+        assert_eq!(ou_de(&Attachment::Dragged), Ou::Sol);
     }
 }

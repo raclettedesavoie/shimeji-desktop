@@ -71,10 +71,12 @@ pub struct Entrees {
 
     /// Ce que l'utilisateur vient de **demander** par le menu contextuel.
     ///
-    /// `Some(i)` remplace l'intention en cours, cette image-ci, sans passer
-    /// par le tirage. Rempli par la boucle 60 Hz depuis la boîte aux lettres
-    /// du menu (`menu_perso::Commande`), et remis à `None` l'image suivante :
-    /// c'est une impulsion, pas un état.
+    /// `Some(c)` agit cette image-ci, sans passer par le tirage — que `c`
+    /// soit une intention ordinaire (`menu_perso::Commande::Intention`) ou
+    /// l'une des trois actions propres au menu de l'escalade (« Rester
+    /// accroché », « Redescendre », « Se lâcher »). Rempli par la boucle
+    /// 60 Hz depuis la boîte aux lettres du menu, et remis à `None` l'image
+    /// suivante : c'est une impulsion, pas un état.
     ///
     /// # Pourquoi ce n'est PAS une entorse à la décision n° 3
     ///
@@ -92,7 +94,7 @@ pub struct Entrees {
     /// s'applique à l'intention forcée comme à toute autre, donc il obéit
     /// puis **reprend sa vie tout seul**. On commande un instant, jamais
     /// durablement.
-    pub commande: Option<intention::Intention>,
+    pub commande: Option<crate::menu_perso::Commande>,
 }
 
 /// **La règle « accroché à une face non-`Top` sans raison d'y être, il
@@ -193,18 +195,112 @@ pub fn pas(
     // pour le menu comme pour tout le reste. En pratique le cas ne se
     // présente guère — ouvrir le menu demande un clic droit, pas un
     // glisser — mais l'ordre des blocs suffit à le rendre impossible.
-    if let Some(voulue) = e.commande {
-        // `jouable` : entre le clic et cette image, un rechargement à chaud
-        // a pu remplacer le manifeste par un pack plus pauvre. Forcer une
-        // intention dont la pose manque figerait le personnage sur une image
-        // absente — la couverture partielle (spec §8.6) vaut ici aussi.
-        if table.jouable(&ch.manifest, voulue) {
-            ch.intention = Some(intention::ActiveIntention::nouvelle(voulue, maintenant));
+    if let Some(cmd) = e.commande {
+        match cmd {
+            crate::menu_perso::Commande::Intention(voulue) => {
+                // ── Le garde-fou de l'endroit (bug rapporté à l'écran) ──
+                //
+                // Une commande de SOL (`Flaner`, `SeReposer`, `Jouer`)
+                // arrivée alors qu'il est encore accroché à un mur ou au
+                // plafond doit être IGNORÉE, et surtout pas posée : la poser
+                // ferait basculer `sans_escalade` à `true` juste plus bas
+                // (son intention ne serait plus `Grimper`), et la règle de
+                // sécurité du monde vertical le ferait tomber — exactement
+                // le symptôme constaté à l'écran. Le menu ne propose plus ces
+                // entrées hors du sol (voir `menu_perso::ouvrir`), mais le
+                // clic et cette image ne sont pas le même instant : un
+                // rechargement, ou simplement le temps qu'a mis l'utilisateur
+                // à choisir dans le menu, peuvent l'avoir fait changer
+                // d'endroit entre-temps.
+                //
+                // `Grimper` est EXEMPTÉ de cette garde : c'est justement la
+                // commande qui REPREND une escalade en cours (voir le point
+                // 1 du bug — la phase `Choisir` ne fait plus échouer
+                // l'intention sur une face non-`Top`, elle y reprend
+                // l'escalade), et c'est un cas où être sur une paroi est
+                // attendu, pas une incohérence.
+                let exige_le_sol = voulue != intention::Intention::Grimper;
+                let sur_une_paroi = matches!(
+                    ch.attachment,
+                    crate::character::attach::Attachment::On { face, .. } if face != Face::Top
+                );
 
-            // On rend la main tout de suite : l'intention neuve sera
-            // poursuivie à l'image suivante. La poursuivre ici aussi ne
-            // casserait rien, mais ferait avancer de deux images en une.
-            return r;
+                if exige_le_sol && sur_une_paroi {
+                    // Ignorée : ni pose d'intention, ni retour anticipé — on
+                    // continue plus bas comme si la commande n'était jamais
+                    // arrivée.
+                } else if table.jouable(&ch.manifest, voulue) {
+                    // `jouable` : entre le clic et cette image, un
+                    // rechargement à chaud a pu remplacer le manifeste par un
+                    // pack plus pauvre. Forcer une intention dont la pose
+                    // manque figerait le personnage sur une image absente —
+                    // la couverture partielle (spec §8.6) vaut ici aussi.
+                    ch.intention = Some(intention::ActiveIntention::nouvelle(voulue, maintenant));
+
+                    // On rend la main tout de suite : l'intention neuve sera
+                    // poursuivie à l'image suivante. La poursuivre ici aussi
+                    // ne casserait rien, mais ferait avancer de deux images
+                    // en une.
+                    return r;
+                }
+            }
+
+            crate::menu_perso::Commande::ResterAccroche => {
+                // Même garde-fou que ci-dessus, dans l'autre sens : cette
+                // commande n'a de sens que sur une paroi (mur ou plafond).
+                // Le menu ne la propose qu'à cet endroit, mais un
+                // rechargement ou un décrochage entre-temps peut l'avoir
+                // fait changer — l'ignorer plutôt que de poser une intention
+                // d'accroche pendant qu'il est au sol.
+                if matches!(
+                    ch.attachment,
+                    crate::character::attach::Attachment::On { face, .. } if face != Face::Top
+                ) {
+                    // `ActiveIntention::accroche` : l'intention que pose
+                    // déjà un lancer contre une paroi. Elle ne connaît pas la
+                    // face — elle relit `ch.attachment` à l'exécution — donc
+                    // elle marche pareillement sur un mur ou au plafond.
+                    ch.intention = Some(intention::ActiveIntention::accroche(maintenant));
+                    return r;
+                }
+            }
+
+            crate::menu_perso::Commande::Redescendre => {
+                // Ne vaut que sur un MUR (`Left`/`Right`) : au plafond,
+                // « redescendre » n'a pas de sens (voir `menu_perso::Commande`
+                // et le commentaire de `ouvrir`).
+                if matches!(
+                    ch.attachment,
+                    crate::character::attach::Attachment::On {
+                        face: Face::Left | Face::Right,
+                        ..
+                    }
+                ) {
+                    ch.intention = Some(intention::ActiveIntention::redescendre(maintenant));
+                    return r;
+                }
+            }
+
+            crate::menu_perso::Commande::SeLacher => {
+                // **Le point élégant de cette commande** : on efface
+                // simplement l'intention, sans y ajouter la moindre ligne de
+                // physique. On ne `return` PAS ici — contrairement aux trois
+                // cas ci-dessus — précisément pour que le flot continue vers
+                // la « règle de sécurité du monde vertical » juste plus bas :
+                // elle voit alors une intention `None` sur une face non-`Top`
+                // et fait tomber le personnage TOUTE SEULE, dans cette même
+                // image. C'est très exactement `FallFromWall` /
+                // `FallFromCeiling` de Shimeji-ee, obtenu en réutilisant une
+                // règle qui existe déjà pour un tout autre usage plutôt qu'en
+                // écrivant une seconde chute.
+                //
+                // Au sol, cette commande ne fait rien de dangereux non plus :
+                // la même règle de sécurité, plus bas, ne se déclenche que
+                // sur une face non-`Top` (elle rend `false` sinon), donc
+                // l'effacement se contente ici de laisser la couche 3
+                // re-tirer une intention neuve — inoffensif.
+                ch.intention = None;
+            }
         }
     }
 
@@ -656,9 +752,11 @@ mod tests {
         // le mur » : c'était, sans le savoir, un test du bug que la
         // correction 1 corrige précisément — la garde de face de `Choisir`
         // échouant et laissant le personnage pendu. Une fois la règle
-        // corrigée, ce même état fait maintenant tomber le personnage (voir
-        // `une_grimper_qui_echoue_sur_un_mur_le_fait_tomber_sur_plusieurs_images`
-        // ci-dessus, qui verrouille CE côté-là).
+        // corrigée, ce même état a fait tomber le personnage un temps (voir
+        // `une_grimper_fraiche_sur_un_mur_reprend_l_escalade_au_lieu_de_tomber`
+        // plus bas, qui documente pourquoi ce n'est plus le cas depuis la
+        // tâche du menu contextuel de l'escalade : `Choisir` reprend
+        // maintenant l'escalade au lieu d'échouer sur une face verticale).
         //
         // La propriété que CE test-ci doit garder est différente et reste
         // vraie : une escalade **légitimement en cours**, en phase `Paroi`
@@ -717,33 +815,39 @@ mod tests {
     }
 
     #[test]
-    fn une_grimper_qui_echoue_sur_un_mur_le_fait_tomber_sur_plusieurs_images() {
-        // ── Le test du point d'étranglement unique (relecture finale) ──────
+    fn une_grimper_fraiche_sur_un_mur_reprend_l_escalade_au_lieu_de_tomber() {
+        // ⚠️ **Ce test verrouillait l'ANCIEN comportement, avant la tâche du
+        // menu contextuel de l'escalade.** Il s'appelait alors
+        // `une_grimper_qui_echoue_sur_un_mur_le_fait_tomber_sur_plusieurs_images`,
+        // et documentait que la garde de face de la phase `Choisir`
+        // («`face != Face::Top` ») faisait échouer une intention `Grimper`
+        // toute fraîche posée pendant qu'on est déjà accroché à un mur — et
+        // que le point d'étranglement unique (relecture finale de l'étape
+        // 4a) faisait alors tomber le personnage proprement, plutôt que le
+        // laisser pendu.
         //
-        // Avant cette correction, `lacher_si_accroche` n'était appelée dans
-        // `intention::poursuivre` qu'au délai d'abandon — jamais depuis les
-        // six AUTRES points de sortie de `grimper()`. Celui qu'on déclenche
-        // ici est la garde de la phase `Choisir` (`face != Face::Top`) : un
-        // personnage encore accroché à un mur, mais dont l'intention
-        // `Grimper` vient tout juste d'être posée fraîche (donc en phase
-        // `Choisir`), fait échouer cette garde dès la première image de
-        // `poursuivre` — exactement le même défaut que celui de la Tâche 7,
-        // sur un chemin différent.
+        // **C'était exactement le bug rapporté à l'écran** (menu du
+        // personnage) : choisir « Grimper au mur » alors qu'on est déjà sur
+        // un mur le faisait tomber. La garde de `Choisir` a donc changé —
+        // voir son commentaire dans `grimper` — pour REPRENDRE l'escalade
+        // sur une face verticale ou le plafond, au lieu d'échouer. Ce même
+        // scénario de départ doit donc maintenant produire l'ISSUE
+        // OPPOSÉE : il continue de monter, il ne tombe plus.
         //
-        // Sans le point d'étranglement unique, ce scénario laissait le
-        // personnage accroché avec `intention = None`, et la couche 3
-        // repostait aussitôt un `Grimper` neuf — qui retombait en phase
-        // `Choisir`, qui échouait à nouveau : une boucle silencieuse,
-        // jamais détectée par la garde de `pas` (qui n'agit que quand
-        // l'intention n'est PAS `Grimper`).
+        // Le point d'étranglement unique (`lacher_si_accroche` appelé une
+        // seule fois, après le calcul de l'issue) reste, lui, inchangé et
+        // toujours nécessaire — c'est lui qui garantit qu'aucun des AUTRES
+        // points de sortie de `grimper()` ne laisse le personnage pendu sans
+        // qu'on le remarque. Seule la réponse de `Choisir` a changé.
         let m = monde();
         let mut ch = perso(&m);
         let mur = mur_gauche(&m);
 
-        // Accroché à un mur (face `Right`), mais avec une intention
-        // `Grimper` TOUTE FRAÎCHE : `ActiveIntention::nouvelle` la construit
-        // en phase `Choisir`, précisément la phase dont la garde de face
-        // échoue ici puisque la face n'est pas `Top`.
+        // Accroché à un mur (face `Right`), avec une intention `Grimper`
+        // TOUTE FRAÎCHE : `ActiveIntention::nouvelle` la construit en phase
+        // `Choisir` — précisément la phase qui, avant cette tâche, échouait
+        // ici puisque la face n'est pas `Top`, et qui reprend maintenant
+        // l'escalade.
         ch.attachment = Attachment::On {
             platform: mur.id,
             face: Face::Right,
@@ -758,10 +862,9 @@ mod tests {
         let table = desire::TableEnvies::defaut();
         let reglages = crate::config::Reglages::depuis(&crate::config::Config::default());
 
-        // Plusieurs images, comme pour `lacher_un_mur_le_fait_vraiment_tomber_sur_plusieurs_images` :
-        // la toute première image après le lâcher a une vitesse nulle, donc
-        // indiscernable d'un raccrochage immédiat. Il faut voir la vitesse
-        // croître sous la gravité pour être sûr qu'il tombe vraiment.
+        // Plusieurs images : la première ne fait que transiter `Choisir` →
+        // `Paroi`, c'est la SUITE qui prouve qu'il monte réellement plutôt
+        // que de tomber.
         for i in 0..30 {
             pas(
                 &mut ch,
@@ -776,15 +879,15 @@ mod tests {
         }
 
         match ch.attachment {
-            Attachment::Falling { vel, .. } => {
+            Attachment::On { face, offset, .. } => {
+                assert_eq!(face, Face::Right, "il devrait toujours être sur le mur");
                 assert!(
-                    vel.y > 50.0,
-                    "il devrait être tombé du mur sous la gravité, vy = {}",
-                    vel.y
+                    offset != 400.0,
+                    "il devrait être en train de monter, offset={offset}"
                 );
             }
             autre => panic!(
-                "une escalade qui échoue sur un mur doit le faire tomber, il est {autre:?}"
+                "une intention Grimper fraîche sur un mur doit reprendre l'escalade, pas tomber, il est {autre:?}"
             ),
         }
     }
@@ -1015,7 +1118,7 @@ mod tests {
         let mut rng = XorShift32::seeded(7);
 
         let mut e = entrees(true, 0.0);
-        e.commande = Some(intention::Intention::SeReposer);
+        e.commande = Some(crate::menu_perso::Commande::Intention(intention::Intention::SeReposer));
 
         pas(
             &mut ch,
@@ -1054,7 +1157,7 @@ mod tests {
         ));
 
         let mut e = entrees(true, 1.0);
-        e.commande = Some(intention::Intention::Flaner);
+        e.commande = Some(crate::menu_perso::Commande::Intention(intention::Intention::Flaner));
 
         pas(
             &mut ch,
@@ -1088,7 +1191,7 @@ mod tests {
         let mut rng = XorShift32::seeded(13);
 
         let mut e = entrees(true, 1.0);
-        e.commande = Some(intention::Intention::SeReposer);
+        e.commande = Some(crate::menu_perso::Commande::Intention(intention::Intention::SeReposer));
         pas(
             &mut ch,
             &m,
@@ -1164,7 +1267,7 @@ mod tests {
         let mut rng = XorShift32::seeded(17);
 
         let mut e = entrees(true, 1.0);
-        e.commande = Some(intention::Intention::SeReposer);
+        e.commande = Some(crate::menu_perso::Commande::Intention(intention::Intention::SeReposer));
 
         pas(
             &mut ch,
@@ -1205,6 +1308,237 @@ mod tests {
             complet.intention.map(|i| i.kind),
             Some(intention::Intention::SeReposer),
             "le même clic sur un pack complet doit, lui, asseoir"
+        );
+    }
+
+    // ── Le menu contextuel pendant l'escalade (le bug rapporté à l'écran) ──
+    //
+    // Un personnage accroché à un mur, sur qui l'on choisit une entrée du
+    // menu, tombait quelle que soit l'entrée : la phase `Choisir` de
+    // `Grimper` exigeait le sol et échouait sinon, et la règle de sécurité
+    // du monde vertical faisait le reste. Les quatre tests ci-dessous
+    // verrouillent la correction.
+
+    /// **Le test qui verrouille le bug rapporté à l'écran.** « Grimper au
+    /// mur », choisi pendant qu'il est déjà accroché à un mur, doit le faire
+    /// MONTER — pas tomber.
+    #[test]
+    fn grimper_commande_depuis_un_mur_fait_monter_et_ne_le_fait_pas_tomber() {
+        let m = monde();
+        let mut ch = perso(&m);
+        let mur = mur_gauche(&m);
+        let table = desire::TableEnvies::defaut();
+        let reglages = crate::config::Reglages::depuis(&crate::config::Config::default());
+        let mut rng = XorShift32::seeded(23);
+
+        ch.attachment = Attachment::On {
+            platform: mur.id,
+            face: Face::Right,
+            offset: 400.0,
+        };
+        ch.intention = None;
+
+        let mut e = entrees(true, 1.0);
+        e.commande = Some(crate::menu_perso::Commande::Intention(
+            intention::Intention::Grimper,
+        ));
+
+        // Plusieurs images : la première ne fait que poser l'intention
+        // (`Choisir`), c'est la SUITE qui prouve qu'il monte réellement
+        // plutôt que de tomber. Avec l'ANCIEN code, `Choisir` échouait dès
+        // la deuxième image (face `Right` != `Top`), et la règle de
+        // sécurité le faisait tomber : ce test échouait avant la correction.
+        for i in 0..60 {
+            pas(
+                &mut ch,
+                &m,
+                &e,
+                &table,
+                &reglages,
+                Duration::from_secs(1) + Duration::from_secs_f32(i as f32 * DT),
+                DT,
+                &mut rng,
+            );
+            // Impulsion : ne se pose qu'à la première image.
+            e.commande = None;
+        }
+
+        match ch.attachment {
+            Attachment::On { face, offset, .. } => {
+                assert_eq!(face, Face::Right, "il doit rester sur le mur");
+                assert!(
+                    offset != 400.0,
+                    "il devrait être en train de grimper (l'offset devrait avoir bougé), offset={offset}"
+                );
+            }
+            autre => panic!(
+                "« Grimper au mur » depuis un mur ne doit pas le faire tomber, il est {autre:?}"
+            ),
+        }
+    }
+
+    /// « Se lâcher » : l'intention est effacée, et c'est la règle de
+    /// sécurité du monde vertical — pas une ligne de physique écrite ici —
+    /// qui le fait tomber, dans la même image.
+    ///
+    /// Sur plusieurs images, comme `lacher_un_mur_le_fait_vraiment_tomber_sur_plusieurs_images` :
+    /// la toute première image après le lâcher a une vitesse nulle,
+    /// indiscernable d'un raccrochage immédiat.
+    #[test]
+    fn se_lacher_le_fait_vraiment_tomber_sur_plusieurs_images() {
+        let m = monde();
+        let mut ch = perso(&m);
+        let mur = mur_gauche(&m);
+        let table = desire::TableEnvies::defaut();
+        let reglages = crate::config::Reglages::depuis(&crate::config::Config::default());
+        let mut rng = XorShift32::seeded(29);
+
+        ch.attachment = Attachment::On {
+            platform: mur.id,
+            face: Face::Right,
+            offset: 400.0,
+        };
+        // Accroché, en train de tenir légitimement — pour prouver que
+        // c'est bien la COMMANDE qui le fait lâcher, pas une intention déjà
+        // expirée ou absente.
+        ch.intention = Some(intention::ActiveIntention {
+            kind: intention::Intention::Grimper,
+            depuis: Duration::ZERO,
+            etat: intention::EtatIntention::Grimpe {
+                phase: intention::PhaseGrimpe::Accroche,
+                jusqu_a: Duration::from_secs(60),
+            },
+        });
+
+        let mut e = entrees(true, 1.0);
+        e.commande = Some(crate::menu_perso::Commande::SeLacher);
+
+        for i in 0..30 {
+            pas(
+                &mut ch,
+                &m,
+                &e,
+                &table,
+                &reglages,
+                Duration::from_secs(1) + Duration::from_secs_f32(i as f32 * DT),
+                DT,
+                &mut rng,
+            );
+            e.commande = None;
+        }
+
+        match ch.attachment {
+            Attachment::Falling { vel, .. } => {
+                assert!(
+                    vel.y > 50.0,
+                    "« Se lâcher » devrait l'avoir fait tomber sous la gravité, vy = {}",
+                    vel.y
+                );
+            }
+            autre => panic!("« Se lâcher » doit le faire tomber, il est {autre:?}"),
+        }
+    }
+
+    /// « Redescendre » le ramène jusqu'au sol, en reprenant la phase `Paroi`
+    /// existante — pas une seconde implémentation de la descente.
+    #[test]
+    fn redescendre_le_ramene_au_sol() {
+        let m = monde();
+        let mut ch = perso(&m);
+        let mur = mur_gauche(&m);
+        let longueur = mur.rect.face_length(Face::Right);
+        let table = desire::TableEnvies::defaut();
+        let reglages = crate::config::Reglages::depuis(&crate::config::Config::default());
+        let mut rng = XorShift32::seeded(31);
+
+        // Presque en bas déjà : quelques images suffisent pour vérifier
+        // qu'il atteint le sol, sans faire durer le test pour rien.
+        ch.attachment = Attachment::On {
+            platform: mur.id,
+            face: Face::Right,
+            offset: longueur - 0.5,
+        };
+        ch.intention = None;
+
+        let mut e = entrees(true, 1.0);
+        e.commande = Some(crate::menu_perso::Commande::Redescendre);
+
+        for i in 0..10 {
+            pas(
+                &mut ch,
+                &m,
+                &e,
+                &table,
+                &reglages,
+                Duration::from_secs(1) + Duration::from_secs_f32(i as f32 * DT),
+                DT,
+                &mut rng,
+            );
+            e.commande = None;
+        }
+
+        assert!(
+            matches!(ch.attachment, Attachment::On { face: Face::Top, .. }),
+            "« Redescendre » devrait l'avoir ramené au sol, il est {:?}",
+            ch.attachment
+        );
+    }
+
+    /// Point 5 de la tâche : une commande de SOL arrivée alors qu'il est sur
+    /// un mur doit être IGNORÉE — surtout pas le faire tomber. Le menu ne la
+    /// propose plus hors du sol, mais le clic et cette image ne sont pas le
+    /// même instant (rechargement, désynchronisation).
+    #[test]
+    fn une_commande_de_sol_recue_pendant_l_escalade_est_ignoree() {
+        let m = monde();
+        let mut ch = perso(&m);
+        let mur = mur_gauche(&m);
+        let table = desire::TableEnvies::defaut();
+        let reglages = crate::config::Reglages::depuis(&crate::config::Config::default());
+        let mut rng = XorShift32::seeded(37);
+
+        ch.attachment = Attachment::On {
+            platform: mur.id,
+            face: Face::Right,
+            offset: 400.0,
+        };
+        // Escalade légitimement EN COURS : sans intention `Grimper`, la
+        // règle de sécurité le ferait tomber de toute façon, ce qui ne
+        // prouverait rien sur la commande elle-même.
+        ch.intention = Some(intention::ActiveIntention {
+            kind: intention::Intention::Grimper,
+            depuis: Duration::ZERO,
+            etat: intention::EtatIntention::Grimpe {
+                phase: intention::PhaseGrimpe::Paroi { cible: 0.0 },
+                jusqu_a: Duration::ZERO,
+            },
+        });
+
+        let mut e = entrees(true, 1.0);
+        e.commande = Some(crate::menu_perso::Commande::Intention(
+            intention::Intention::SeReposer,
+        ));
+
+        pas(
+            &mut ch,
+            &m,
+            &e,
+            &table,
+            &reglages,
+            Duration::from_secs(1),
+            DT,
+            &mut rng,
+        );
+
+        assert!(
+            matches!(ch.attachment, Attachment::On { face: Face::Right, .. }),
+            "une commande de sol reçue sur un mur doit être ignorée, pas le faire tomber : {:?}",
+            ch.attachment
+        );
+        assert_eq!(
+            ch.intention.map(|i| i.kind),
+            Some(intention::Intention::Grimper),
+            "l'escalade en cours ne doit pas être interrompue par une commande refusée"
         );
     }
 }

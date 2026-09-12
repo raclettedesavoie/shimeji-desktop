@@ -29,7 +29,6 @@
 //! > **Un seul `on_menu_event` dans tout le programme**, celui que `tray.rs`
 //! > installe, et il délègue ici.
 
-use crate::behavior::intention::Intention;
 use crate::rechargement::Demande;
 use crate::tray::Visibilite;
 use std::path::PathBuf;
@@ -63,7 +62,7 @@ pub const ID_QUITTER: &str = "quitter";
 /// commentaire dans `executer`.
 pub const ID_P_CACHER: &str = "perso.cacher";
 
-/// La boîte aux lettres qui porte une intention choisie au menu jusqu'à la
+/// La boîte aux lettres qui porte une commande choisie au menu jusqu'à la
 /// boucle 60 Hz.
 ///
 /// **Même motif que `rechargement::Demande`, et pour la même raison** : le
@@ -72,12 +71,19 @@ pub const ID_P_CACHER: &str = "perso.cacher";
 /// `take()` consomme la commande atomiquement, il n'y a rien à remettre à
 /// zéro.
 ///
-/// `Intention` est `Copy` et minuscule : le verrou n'est jamais tenu plus
-/// que le temps d'une affectation, donc aucun risque de faire attendre les
-/// 60 Hz.
-pub type Commande = Arc<Mutex<Option<Intention>>>;
+/// `menu_perso::Commande` est `Copy` et minuscule (une `Intention` ou une
+/// étiquette sans donnée) : le verrou n'est jamais tenu plus que le temps
+/// d'une affectation, donc aucun risque de faire attendre les 60 Hz.
+///
+/// Nommée `BoiteCommande` et non `Commande` : ce dernier nom désigne
+/// maintenant le CONTENU de la boîte (`menu_perso::Commande`), qui couvre
+/// une intention ordinaire aussi bien que les trois actions propres au menu
+/// de l'escalade (« Rester accroché », « Redescendre », « Se lâcher »). Les
+/// deux vivraient mal sous le même nom dans deux modules différents utilisés
+/// côte à côte.
+pub type BoiteCommande = Arc<Mutex<Option<crate::menu_perso::Commande>>>;
 
-pub fn nouvelle_commande() -> Commande {
+pub fn nouvelle_commande() -> BoiteCommande {
     Arc::new(Mutex::new(None))
 }
 
@@ -108,7 +114,7 @@ pub struct Actions {
     pub demande: Demande,
     pub dossier: PathBuf,
     pub personnage: String,
-    pub commande: Commande,
+    pub commande: BoiteCommande,
 
     /// Renseignées par `tray::installer` **après** la construction du menu :
     /// les cases n'existent pas avant. `Mutex<Option<…>>` et non un champ
@@ -123,7 +129,7 @@ impl Actions {
         demande: Demande,
         dossier: PathBuf,
         personnage: String,
-        commande: Commande,
+        commande: BoiteCommande,
     ) -> Arc<Actions> {
         Arc::new(Actions {
             visibilite,
@@ -230,9 +236,9 @@ pub fn executer(actions: &Actions, app: &AppHandle, id: &str, cases_du_tray: &Ca
             app.exit(0);
         }
 
-        // ── Une envie demandée par le menu du personnage ─────────────────
-        autre => match crate::menu_perso::intention_de(autre) {
-            Some(intention) => deposer_commande(actions, intention),
+        // ── Une envie ou une action demandée par le menu du personnage ───
+        autre => match crate::menu_perso::commande_de(autre) {
+            Some(commande) => deposer_commande(actions, commande),
             None => eprintln!("entrée de menu non gérée : {autre}"),
         },
     }
@@ -272,16 +278,16 @@ fn appliquer_demarrage(voulu: bool) -> bool {
     }
 }
 
-/// Dépose l'intention voulue dans la boîte aux lettres de la boucle 60 Hz.
+/// Dépose la commande voulue dans la boîte aux lettres de la boucle 60 Hz.
 ///
 /// On écrase une éventuelle commande non encore consommée : deux clics
 /// rapprochés doivent donner le **dernier** voulu, pas une file d'attente
 /// qui les jouerait tous les deux.
-fn deposer_commande(actions: &Actions, intention: Intention) {
+fn deposer_commande(actions: &Actions, commande: crate::menu_perso::Commande) {
     match actions.commande.lock() {
         Ok(mut boite) => {
-            *boite = Some(intention);
-            println!("commande du menu : {intention:?}");
+            *boite = Some(commande);
+            println!("commande du menu : {commande:?}");
         }
         // `PoisonError` : la boucle a paniqué en tenant le verrou. Une
         // commande perdue est alors le moindre des soucis.

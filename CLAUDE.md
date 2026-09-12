@@ -435,12 +435,62 @@ ensuite.
 **Dès qu'une intention jouable est ajoutée, elle est ajoutée au menu contextuel du
 personnage — dans la même tâche, pas « plus tard ».** C'est une ligne dans la table
 `ENVIES` de `src-tauri/src/menu_perso.rs`, et rien d'autre : l'identifiant est décodé
-par `intention_de`, la disponibilité est déduite du manifeste (couverture partielle,
+par `commande_de`, la disponibilité est déduite du manifeste (couverture partielle,
 spec §8.6), et `actions::executer` n'a aucun cas à ajouter.
 
 L'oubli ne casse **aucun test** et ne produit **aucun message** : l'intention existe
 pour le tirage aléatoire, mais reste à jamais hors de portée de l'utilisateur. C'est
 précisément pourquoi la règle est écrite ici plutôt que laissée au bon sens.
+
+#### Le menu dépend de l'endroit où il est (étape 4a, tâche du menu de l'escalade)
+
+Un personnage accroché à un mur ou au plafond n'a plus le même menu qu'au sol : lui
+proposer « Flâner » ou « S'asseoir » le ferait tomber (règle de sécurité du monde
+vertical), et un personnage encore au sol n'a que faire de « Se lâcher ». `ENVIES` porte
+donc, pour chaque entrée, la liste des contextes (`menu_perso::Ou : Sol | Mur | Plafond`)
+où elle a du sens, et `menu_perso::ou_de(&ch.attachment)` calcule celui du personnage
+courant, appelé juste avant `ouvrir` dans `main.rs`.
+
+| Où il est | Le menu propose |
+|---|---|
+| au sol (face `Top`), en chute, ou porté | Flâner · S'asseoir · Faire tourner la tête · Balancer les jambes · Grimper au mur — inchangé |
+| sur un mur (face `Left`/`Right`) | Monter plus haut · Rester accroché · Redescendre · Se lâcher |
+| au plafond (face `Bottom`) | Rester accroché · Se lâcher |
+
+Pas de « Redescendre » au plafond, et c'est délibéré : il faudrait traverser jusqu'au
+bord, basculer sur un mur, puis descendre — de la navigation calculée, que la décision
+n° 4 exclut (YAGNI). Shimeji ne le propose pas non plus.
+
+« Grimper au mur » (au sol) et « Monter plus haut » (sur un mur) partagent la même
+commande (`Grimper`) sous deux identifiants et deux libellés : c'est la même action,
+seul son nom change selon qu'on la déclenche ou qu'on la reprend.
+
+Trois des quatre nouvelles entrées ne sont **pas** des intentions tirables — la table
+`ENVIES` porte donc un `menu_perso::Commande` (`Intention(…)`, `ResterAccroche`,
+`Redescendre`, `SeLacher`) plutôt qu'une `Intention` nue, et `Entrees::commande` /
+`behavior::pas` ont été mis à jour en conséquence :
+
+- **Monter plus haut** est `Commande::Intention(Grimper)`, sans code spécifique : la
+  phase `Choisir` de `grimper()` (`intention.rs`) a été corrigée pour **reprendre**
+  l'escalade en cours (phase `Paroi` ou `Plafond`, cible tirée au sort) au lieu
+  d'échouer sur une face non-`Top` — c'était précisément le bug rapporté à l'écran
+  (choisir une entrée de menu pendant qu'on est accroché le faisait tomber).
+- **Rester accroché** pose `ActiveIntention::accroche` — l'intention qu'un lancer
+  contre une paroi installe déjà (`HoldOntoWall`/`HoldOntoCeiling` de Shimeji-ee).
+- **Redescendre** pose `ActiveIntention::redescendre`, qui vise le bas de la face via
+  une nouvelle phase `PhaseGrimpe::ChoisirDescente` — décidée à la première image,
+  comme `Choisir`, parce que la longueur de la face demande `World`. La descente
+  elle-même reste celle de la phase `Paroi` existante : rien n'est réécrit.
+- **Se lâcher** efface simplement l'intention (`ch.intention = None`) sans y ajouter la
+  moindre ligne de physique : la règle de sécurité du monde vertical, déjà là pour un
+  tout autre usage, fait tomber le personnage dans la **même image** — c'est
+  `FallFromWall`/`FallFromCeiling` de Shimeji-ee obtenu par pure réutilisation.
+
+`behavior::pas` refuse en plus toute commande devenue impossible entre le clic et
+l'image suivante (rechargement à chaud, ou simplement le temps qu'a mis l'utilisateur à
+choisir) — une commande de sol reçue pendant qu'il est accroché est **ignorée**, jamais
+appliquée : l'appliquer le ferait tomber par le même mécanisme que ci-dessus, pour de
+mauvaises raisons cette fois.
 
 > **Et une seconde règle, non négociable : un seul `on_menu_event` dans tout le
 > programme.** Tauri livre *tout* événement de menu à *tous* les gestionnaires, quel que

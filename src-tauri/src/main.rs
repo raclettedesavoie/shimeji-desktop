@@ -581,7 +581,7 @@ fn boucle(
     // revient jusqu'ici. La boucle n'a PAS besoin d'`Actions` : construire le
     // menu ne déclenche rien, et le clic part dans la boucle d'événements de
     // Tauri jusqu'à l'unique gestionnaire installé par `tray.rs`.
-    commande: actions::Commande,
+    commande: actions::BoiteCommande,
 ) {
     // Le dossier des personnages, pour le rechargement par témoin.
     let dossier_boucle = config::dossier_personnages();
@@ -950,7 +950,14 @@ fn boucle(
             // **Cet appel bloque** jusqu'à la fermeture du menu : le
             // personnage s'immobilise pendant ce temps, ce qui est voulu
             // (voir `menu_perso::ouvrir`).
-            if let Err(e) = menu_perso::ouvrir(&handle, &win, &ch.manifest, &table) {
+            //
+            // `ou_de(&ch.attachment)` : le menu proposé dépend de l'endroit
+            // où il est accroché — voir `menu_perso::Ou`. C'est ce qui
+            // corrige le bug rapporté à l'écran : un menu de sol proposé à
+            // un personnage accroché à un mur le faisait tomber au premier
+            // clic, quelle que soit l'entrée choisie.
+            let ou = menu_perso::ou_de(&ch.attachment);
+            if let Err(e) = menu_perso::ouvrir(&handle, &win, &ch.manifest, &table, ou) {
                 eprintln!("menu du personnage : {e}");
             }
 
