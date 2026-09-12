@@ -159,6 +159,34 @@ fn frame_size_par_defaut() -> [u32; 2] {
     [128, 128]
 }
 
+/// Ce qu'on sait d'UNE image, indépendamment des poses qui l'emploient.
+///
+/// # Pourquoi une table séparée plutôt que des champs sur `Pose`
+///
+/// La taille et l'ancre sont des propriétés de l'**image**, et une même
+/// image sert dans plusieurs poses — `shime1` est à la fois `stand`, une
+/// frame de `walk` et la pose `dragged`. Les porter sur la pose les
+/// dupliquerait, donc les ferait diverger à la première correction.
+///
+/// ⚠️ **Cette table n'est pas encore consommée par le moteur.** Elle est
+/// écrite dès maintenant par l'installation du catalogue pour que les packs
+/// déjà installés deviennent corrects **sans être retéléchargés**, le jour
+/// où la fenêtre adaptative arrivera. Ce jour-là, `attach.rs` lira ces
+/// valeurs au lieu de `frame_size` et de `Pose::anchor`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct InfoFrame {
+    /// Dimensions réelles du PNG, lues à l'installation dans son en-tête.
+    pub size: [u32; 2],
+
+    /// Ancre propre à cette image. Absente → celle de la pose.
+    ///
+    /// `Option` et non une valeur par défaut : « non déclarée » et
+    /// « déclarée à la même valeur que la pose » doivent rester
+    /// distinguables, sans quoi on ne saurait pas s'il faut se replier.
+    #[serde(default)]
+    pub anchor: Option<[f32; 2]>,
+}
+
 /// Une pose : une suite d'images, un rythme, une ancre.
 ///
 /// `rename_all = "camelCase"` : le JSON écrit `frameMs`, le Rust `frame_ms`.
@@ -257,6 +285,16 @@ pub struct Manifest {
 
     #[serde(default = "frame_size_par_defaut")]
     pub frame_size: [u32; 2],
+
+    /// Taille et ancre **par image**, écrites par l'installation du
+    /// catalogue. Facultative : voir `InfoFrame` pour le pourquoi.
+    ///
+    /// `BTreeMap<u32, …>` et non un `Vec` : les numéros de frames sont
+    /// **épars** — un pack peut avoir 1..25 puis 42..46 — et un `Vec` serait
+    /// donc troué. C'est aussi le choix déjà fait pour `poses`, et pour la
+    /// même raison de déterminisme.
+    #[serde(default)]
+    pub frames: BTreeMap<u32, InfoFrame>,
 
     /// Multiplie la taille d'affichage. Le facteur d'échelle du moniteur s'y
     /// combine (spec §3.4, §8.5).
@@ -401,6 +439,39 @@ impl Manifest {
     /// Une pose inconnue rend la hitbox du manifeste plutôt que `None` :
     /// l'appelant (le hit-testing, Tâche 11) a toujours besoin d'un
     /// rectangle, et celui du manifeste est le repli sensé.
+    /// La taille de l'image `n`, ou celle du manifeste à défaut.
+    ///
+    /// Le repli n'est pas un cas d'erreur : c'est le cas **normal** pour tout
+    /// pack écrit à la main, `blob` compris.
+    pub fn taille_de_frame(&self, n: u32) -> [u32; 2] {
+        match self.frames.get(&n) {
+            Some(info) => info.size,
+            None => self.frame_size,
+        }
+    }
+
+    /// L'ancre de l'image `n`, dans le contexte de la pose `pose`.
+    ///
+    /// Trois niveaux de repli, du plus précis au plus général : l'ancre de
+    /// l'**image**, puis celle de la **pose**, puis celle **par défaut**.
+    ///
+    /// Une pose inconnue rend l'ancre par défaut plutôt que `None` — comme
+    /// `hitbox_de`, et pour la même raison : l'appelant est la boucle 60 Hz,
+    /// qui n'a rien à faire d'un cas d'erreur à cette cadence.
+    pub fn ancre_de_frame(&self, n: u32, pose: &str) -> [f32; 2] {
+        // `and_then` : deux `Option` à traverser d'affilée — la table peut
+        // ignorer l'image, ET l'image peut ne pas déclarer d'ancre. Un
+        // `match` imbriqué dirait la même chose en cinq lignes.
+        if let Some(a) = self.frames.get(&n).and_then(|info| info.anchor) {
+            return a;
+        }
+
+        match self.poses.get(pose) {
+            Some(p) => p.anchor,
+            None => ancre_par_defaut(),
+        }
+    }
+
     pub fn hitbox_de(&self, nom: &str) -> Hitbox {
         match self.pose(nom) {
             Some(p) => p.hitbox.unwrap_or(self.hitbox),
@@ -412,6 +483,53 @@ impl Manifest {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// La table `frames` renseigne taille et ancre par image, et son absence
+    /// laisse EXACTEMENT le comportement d'avant.
+    ///
+    /// C'est cette seconde moitié qui compte : `blob` n'a pas de table
+    /// `frames` et ne doit pas être retouché. Le changement est purement
+    /// additif côté données, et c'est ce qui le rend sûr.
+    #[test]
+    fn la_table_frames_est_facultative_et_se_replie() {
+        let avec = r#"{
+            "id": "t", "name": "T", "frameSize": [128,128], "scale": 1,
+            "hitbox": [40,20,48,100],
+            "frames": {
+                "23": { "size": [96,140], "anchor": [48,4] },
+                "24": { "size": [90,138] }
+            },
+            "poses": { "stand": { "frames": [1], "anchor": [64,128] } }
+        }"#;
+        let m: Manifest = serde_json::from_str(avec).expect("manifeste valide");
+
+        // Déclarée → on la lit.
+        assert_eq!(m.taille_de_frame(23), [96, 140]);
+        assert_eq!(m.ancre_de_frame(23, "stand"), [48.0, 4.0]);
+
+        // Taille déclarée, ancre absente → repli sur l'ancre de la POSE.
+        assert_eq!(m.taille_de_frame(24), [90, 138]);
+        assert_eq!(m.ancre_de_frame(24, "stand"), [64.0, 128.0]);
+
+        // Image absente de la table → repli complet sur le manifeste.
+        assert_eq!(m.taille_de_frame(1), [128, 128]);
+        assert_eq!(m.ancre_de_frame(1, "stand"), [64.0, 128.0]);
+
+        // Pose inconnue → l'ancre par défaut, jamais un panic : l'appelant
+        // est dans la boucle 60 Hz et n'a rien à faire d'un cas d'erreur.
+        assert_eq!(m.ancre_de_frame(1, "pose-qui-n-existe-pas"), [64.0, 128.0]);
+
+        // Et sans table du tout : le comportement d'avant, à l'identique.
+        let sans = r#"{
+            "id": "t", "name": "T", "frameSize": [128,128], "scale": 1,
+            "hitbox": [40,20,48,100],
+            "poses": { "stand": { "frames": [1], "anchor": [64,128] } }
+        }"#;
+        let m2: Manifest = serde_json::from_str(sans).expect("manifeste valide");
+        assert!(m2.frames.is_empty());
+        assert_eq!(m2.taille_de_frame(1), [128, 128]);
+        assert_eq!(m2.ancre_de_frame(1, "stand"), [64.0, 128.0]);
+    }
     use std::time::Duration;
 
     static COMPTEUR: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
