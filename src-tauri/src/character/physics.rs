@@ -387,20 +387,35 @@ pub fn atterrissage(world: &World, avant: Point, apres: Point) -> Option<(Platfo
     meilleur.map(|(id, offset, _)| (id, offset))
 }
 
-/// Ce que le personnage a heurté pendant ce pas de chute — sol **ou** mur.
+/// Ce que le personnage a heurté pendant ce pas de chute — sol, mur **ou**
+/// plafond.
 ///
-/// Généralise `atterrissage` aux faces verticales (design §3.2). Rend la
-/// `Face` en plus de la plateforme, parce que l'appelant en a besoin pour
-/// choisir la pose et l'orientation : on ne se pose pas sur un mur comme on
-/// se pose sur un sol.
+/// Généralise `atterrissage` aux faces verticales et à la face `Bottom`
+/// (design §3.2). Rend la `Face` en plus de la plateforme, parce que
+/// l'appelant en a besoin pour choisir la pose et l'orientation : on ne se
+/// pose pas sur un mur comme on se pose sur un sol, ni sur un plafond comme
+/// sur un mur.
 ///
-/// **Les trois règles viennent de `Fall.java`, pas d'une intuition :**
+/// **Les deux premières règles viennent de `Fall.java`, pas d'une
+/// intuition ; la troisième s'en écarte délibérément :**
 ///   1. le sol d'abord — sa boucle fait `break OUTER` sur le sol avant de
 ///      tester le mur ;
 ///   2. puis les murs — `hasNext()` teste `floor.isOn(pos) || wall.isOn(pos)`,
 ///      donc un mur arrête une chute exactement comme un sol, et **sans
 ///      aucun seuil de vitesse** ;
-///   3. le plafond n'attrape rien — il ne figure dans aucun de ces tests.
+///   3. **le plafond attrape aussi, désormais.**
+///
+/// > ⚠️ **Divergence assumée de `Fall.java`, décidée après un essai à
+/// > l'écran (2026-09-12).** La version d'origine de ce document disait
+/// > « le plafond n'attrape rien », posée par lecture stricte de
+/// > `Fall.java::hasNext()` — qui ne teste effectivement que le sol et le
+/// > mur, le plafond n'y figurant dans aucune condition. Ce choix a été
+/// > **essayé en jeu**, et l'auteur a préféré l'inverse : un personnage
+/// > lancé vers le haut doit s'accrocher au plafond, comme il s'accroche à
+/// > un mur, plutôt que de passer devant et retomber. On assume donc de
+/// > diverger de Shimeji-ee sur ce point précis — le raisonnement
+/// > d'origine reste vrai pour la source, il ne s'applique simplement plus
+/// > ici.
 pub fn contact(world: &World, avant: Point, apres: Point) -> Option<(PlatformId, Face, f32)> {
     // Règle 1. `if let Some(…)` et non un `?` : si le sol n'attrape rien, on
     // veut continuer vers les murs, pas sortir.
@@ -408,7 +423,14 @@ pub fn contact(world: &World, avant: Point, apres: Point) -> Option<(PlatformId,
         return Some((id, Face::Top, offset));
     }
 
-    contact_mur(world, avant, apres)
+    // Règle 2, puis règle 3 : `if let … return` plutôt que `?`, pour la même
+    // raison — si les murs n'attrapent rien, on continue vers le plafond au
+    // lieu de sortir de la fonction.
+    if let Some(m) = contact_mur(world, avant, apres) {
+        return Some(m);
+    }
+
+    contact_plafond(world, avant, apres)
 }
 
 /// Règle 2 : a-t-on traversé la ligne verticale d'un mur, dans le bon sens ?
@@ -499,6 +521,90 @@ fn contact_mur(world: &World, avant: Point, apres: Point) -> Option<(PlatformId,
     }
 
     meilleur.map(|(id, face, offset, _)| (id, face, offset))
+}
+
+/// Règle 3 : a-t-on traversé la ligne horizontale d'un plafond, **en
+/// montant** ?
+///
+/// Symétrique de `atterrissage` (le sol), mais dans l'autre sens vertical, et
+/// symétrique de `contact_mur` pour l'asymétrie strict/large ci-dessous.
+/// Séparée de `contact` pour la même raison que `contact_mur` : la priorité
+/// sol → murs → plafond se lit en trois lignes plutôt que d'être enfouie
+/// dans une seule boucle géante.
+fn contact_plafond(world: &World, avant: Point, apres: Point) -> Option<(PlatformId, Face, f32)> {
+    // On ne s'accroche qu'en MONTANT — symétrique de la règle 1 de
+    // `atterrissage`, qui n'accepte que la descente. `<` et non `<=` : un
+    // `y` inchangé (aucun mouvement vertical) ne doit pas franchir quoi que
+    // ce soit.
+    if apres.y >= avant.y {
+        return None;
+    }
+
+    // (id, offset, y de la face) — pas besoin de départager plusieurs
+    // plafonds ici : contrairement aux murs, deux plafonds ne peuvent pas se
+    // recouvrir verticalement à la même position (ce sont des lignes
+    // horizontales à des hauteurs différentes, et `face_voisine` les
+    // fusionne déjà en un seul du point de vue du déplacement). On garde
+    // quand même la structure `Option` par cohérence avec `contact_mur`.
+    let mut meilleur: Option<(PlatformId, f32, f32)> = None;
+
+    for plat in world.platforms() {
+        if !plat.has_face(Face::Bottom) {
+            continue;
+        }
+
+        // `point_on(Face::Bottom, 0.0).y` plutôt que d'écrire `rect.bottom()`
+        // à la main : même raison que dans `contact_mur`, c'est la fonction
+        // qui placera aussi le personnage.
+        let y_face = plat.rect.point_on(Face::Bottom, 0.0).y;
+
+        // ⚠️ **Même asymétrie strict/large que `contact_mur`, et pour
+        // exactement la même raison.** Le côté DÉPART (`avant`) est testé en
+        // STRICT (`>`), le côté ARRIVÉE (`apres`) reste large (`<=`). Sans
+        // ça, un personnage qui vient tout juste de se LÂCHER du plafond
+        // repart avec `pos.y == y_face` exactement (voir la phase `Accroche`
+        // de `intention::grimper`, qui utilise `plat.rect.point_on(face,
+        // offset)`) et une vitesse verticale nulle à l'instant du lâcher :
+        // son `y` ne bougerait donc pas d'une image à l'autre pendant que
+        // l'élan horizontal se dissipe, et `avant.y >= y_face && apres.y <=
+        // y_face` serait satisfait indéfiniment — il se raccrocherait
+        // IMMÉDIATEMENT, à chaque image, sans jamais pouvoir quitter le
+        // plafond. Rendre le côté départ strict élimine ce cas : `avant.y`
+        // pile sur `y_face` ne vérifie plus `avant.y > y_face`, donc
+        // `franchie` est `false` et il continue de tomber.
+        let franchie = avant.y > y_face && apres.y <= y_face;
+        if !franchie {
+            continue;
+        }
+
+        // Est-on sous le plafond, horizontalement ? Même approximation
+        // volontaire que dans `atterrissage` et `contact_mur` : on teste
+        // avec le point d'ARRIVÉE plutôt que le croisement exact (décision
+        // n° 4, navigation imparfaite autorisée).
+        if apres.x < plat.rect.left() || apres.x > plat.rect.right() {
+            continue;
+        }
+
+        // L'offset d'une face `Bottom` compte vers la DROITE depuis le bord
+        // gauche du rectangle, exactement comme au sol — c'est la
+        // convention de `Rect::point_on`.
+        let offset = apres.x - plat.rect.left();
+
+        // Départage, par cohérence avec `contact_mur` — garder le plafond
+        // rencontré le plus tôt. Le cas ne se présente qu'avec des écrans
+        // dont les plafonds se chevaucheraient, ce qui n'arrive pas
+        // aujourd'hui, mais laisser le hasard de l'ordre du `Vec` trancher
+        // serait un bug dormant.
+        let remplace = match meilleur {
+            None => true,
+            Some((_, _, y)) => (y_face - avant.y).abs() < (y - avant.y).abs(),
+        };
+        if remplace {
+            meilleur = Some((plat.id, offset, y_face));
+        }
+    }
+
+    meilleur.map(|(id, offset, _)| (id, Face::Bottom, offset))
 }
 
 /// Le personnage est-il tombé sous le bas du bureau virtuel ?
@@ -631,11 +737,31 @@ mod tests {
     }
 
     #[test]
-    fn le_plafond_n_attrape_rien() {
-        // `Fall.java::hasNext()` teste le sol et le mur, PAS le plafond.
-        // Lancé vers le haut, il passe devant et retombe (design §3.2).
+    fn un_lancer_vers_le_haut_s_accroche_au_plafond() {
+        // **Le renversement de la règle 3.** `Fall.java::hasNext()` ne
+        // teste que le sol et le mur, mais l'auteur a essayé « il passe
+        // devant » à l'écran et lui a préféré l'inverse (design §3.2,
+        // révisé le 2026-09-12) : lancé vers le haut, il s'accroche au
+        // plafond exactement comme il s'accroche à un mur.
         let m = monde_isole();
-        assert_eq!(contact(&m, Point::new(500.0, 20.0), Point::new(500.0, -10.0)), None);
+        let (_, face, offset) =
+            contact(&m, Point::new(500.0, 20.0), Point::new(500.0, -10.0))
+                .expect("il traverse la ligne y = 0 en montant");
+        assert_eq!(face, Face::Bottom);
+        // L'offset d'une face `Bottom` compte vers la DROITE, comme au sol.
+        assert_eq!(offset, 500.0);
+    }
+
+    #[test]
+    fn on_ne_s_accroche_pas_a_un_plafond_qu_on_quitte() {
+        // Symétrique de `on_ne_s_accroche_pas_a_un_mur_qu_on_quitte` : un
+        // personnage déjà pile sur la ligne du plafond, qui DESCEND, ne doit
+        // pas s'y raccrocher — sinon un personnage qui vient de se lâcher du
+        // plafond se rattraperait aussitôt, à chaque image, pour toujours.
+        // C'est l'asymétrie strict/large de `contact_plafond`, testée ici
+        // directement.
+        let m = monde_isole();
+        assert_eq!(contact(&m, Point::new(500.0, 0.0), Point::new(500.0, 20.0)), None);
     }
 
     #[test]

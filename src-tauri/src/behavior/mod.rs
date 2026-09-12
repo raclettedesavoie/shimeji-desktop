@@ -651,7 +651,7 @@ mod tests {
         // `Grimper` TOUTE FRAÎCHE (`ActiveIntention::nouvelle`, phase
         // `Choisir`) tout en étant déjà accroché à un mur — un état qui
         // n'arrive plus jamais en jeu (`Choisir` ne s'atteint qu'au sol, et
-        // `accroche_au_mur`/`Rejoindre` posent directement `Accroche` ou
+        // `accroche`/`Rejoindre` posent directement `Accroche` ou
         // `Paroi`). Ce n'était pas un test de « une escalade en cours tient
         // le mur » : c'était, sans le savoir, un test du bug que la
         // correction 1 corrige précisément — la garde de face de `Choisir`

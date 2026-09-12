@@ -362,18 +362,26 @@ impl ActiveIntention {
         }
     }
 
-    /// L'intention posée quand un lancer vient de le coller à un mur.
+    /// L'intention posée quand un lancer vient de le coller à une paroi —
+    /// un mur **ou** le plafond.
     ///
     /// **Elle est indispensable, et sa raison n'est pas évidente.** Laisser
     /// `intention = None` ferait rendre `Finie` à la couche 2, et la règle de
     /// sécurité du monde vertical le ferait tomber à l'image suivante : jeté
-    /// contre un mur, il ne tiendrait qu'une image.
+    /// contre un mur ou vers le plafond, il ne tiendrait qu'une image.
+    ///
+    /// > Rebaptisée `accroche` (elle s'appelait `accroche_au_mur`) le jour où
+    /// > le plafond a appris à attraper lui aussi (design §3.2, révisé le
+    /// > 2026-09-12) : son nom ne disait plus tout ce qu'elle fait. La
+    /// > fonction elle-même n'a pas changé — c'est `reflex.rs` qui l'appelle
+    /// > maintenant depuis deux bras (`Face::Left | Right` et `Face::Bottom`)
+    /// > au lieu d'un seul.
     ///
     /// Même motif qu'`ActiveIntention::reveil` : l'état est POSÉ de
     /// l'extérieur, avec `jusqu_a` à zéro pour que la première image tire la
     /// durée — ce qui permet à `reflex.rs` de la construire **sans générateur
     /// aléatoire**, et garde toutes les durées dans ce fichier-ci.
-    pub fn accroche_au_mur(maintenant: Duration) -> Self {
+    pub fn accroche(maintenant: Duration) -> Self {
         ActiveIntention {
             kind: Intention::Grimper,
             depuis: maintenant,
@@ -648,7 +656,7 @@ fn grimper(
             // son absence a coûté un bug qui a survécu trois tâches et
             // leurs relectures.
             //
-            // `ActiveIntention::accroche_au_mur` n'est PAS concernée : elle
+            // `ActiveIntention::accroche` n'est PAS concernée : elle
             // pose directement la phase `Accroche`, jamais `Choisir` — le
             // lancer contre un mur continue de fonctionner sans passer ici.
             if face != Face::Top {
@@ -904,7 +912,7 @@ fn grimper(
             // de `Paroi` ou `Plafond` ci-dessus : ces deux branches posent
             // déjà `jusqu_a` avant de passer en `Accroche`. Le cas qui arrive
             // réellement ici est celui d'une intention installée de
-            // l'EXTÉRIEUR par `ActiveIntention::accroche_au_mur` (Tâche 5, un
+            // l'EXTÉRIEUR par `ActiveIntention::accroche` (Tâche 5, un
             // lancer contre un mur), qui pose `jusqu_a: ZERO` précisément
             // pour que cette toute première image tire la durée d'accroche.
             //
@@ -2522,7 +2530,7 @@ mod tests {
         // leurs relectures — voir `expire_au_plafond_il_tombe_au_lieu_de_
         // marcher_dessus` ci-dessus pour ce bug précis.
         //
-        // `ActiveIntention::accroche_au_mur` n'est pas concernée par cette
+        // `ActiveIntention::accroche` n'est pas concernée par cette
         // garde : elle pose directement la phase `Accroche`, jamais
         // `Choisir` — voir `accroche_par_un_lancer_il_ne_lache_pas...` dans
         // `reflex.rs`, qui continue de passer.

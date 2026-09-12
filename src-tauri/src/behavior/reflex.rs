@@ -21,8 +21,8 @@ use crate::character::attach::{
     hors_bornes, position_conservant_le_sprite, world_position, Attachment,
 };
 use crate::character::manifest::{
-    POSES_DRAGGED_LEFT, POSES_DRAGGED_RIGHT, POSE_DRAGGED, POSE_FALL, POSE_GRAB_WALL, POSE_LAND,
-    POSE_STAND,
+    POSES_DRAGGED_LEFT, POSES_DRAGGED_RIGHT, POSE_DRAGGED, POSE_FALL, POSE_GRAB_CEILING,
+    POSE_GRAB_WALL, POSE_LAND, POSE_STAND,
 };
 use crate::character::physics::{
     borner_lancer, contact, integrer_balancier, integrer_chute, lisser_vitesse_curseur,
@@ -292,15 +292,11 @@ pub fn appliquer(
             // ⚠️ **`ch.attachment` n'est PLUS affecté avant ce `match`**
             // (correction de la relecture finale). Une version antérieure
             // l'écrivait ici, avant même de savoir quelle face avait été
-            // touchée — donc y compris pour `Face::Bottom`, qui ne pose
-            // AUCUNE pose et rend `Reflexe::Chute` en disant « on traite
-            // comme une chute qui continue ». Le code faisait donc
-            // l'inverse de ce que dit ce commentaire : il attachait quand
-            // même, laissant le personnage `Attachment::On` avec la pose
-            // `fall` toujours affichée. Latent aujourd'hui — `contact` ne
-            // rend jamais `Bottom` — mais armé dès que l'étape 4 exposera
-            // le dessous d'une fenêtre comme plateforme. Chaque bras qui
-            // veut vraiment attacher le fait maintenant lui-même.
+            // touchée — un bug qui aurait mordu dès que `Face::Bottom`
+            // aurait attaché sans poser la bonne pose. Chaque bras attache
+            // donc lui-même, explicitement — y compris `Face::Bottom`
+            // depuis que le plafond accroche (design §3.2, révisé le
+            // 2026-09-12) : il n'y a plus de bras muet dans ce `match`.
             return match face {
                 Face::Top => {
                     ch.attachment = Attachment::On { platform, face, offset };
@@ -322,24 +318,40 @@ pub fn appliquer(
                     };
                     ch.set_pose(POSE_GRAB_WALL, maintenant);
 
-                    // ⚠️ Voir le commentaire d'`accroche_au_mur` : sans cette
-                    // intention, la règle de sécurité du monde vertical
-                    // (Tâche 3, `behavior/mod.rs`) le ferait tomber dès
-                    // l'image suivante — jeté contre un mur, il ne tiendrait
-                    // qu'une image.
-                    ch.intention = Some(
-                        crate::behavior::intention::ActiveIntention::accroche_au_mur(maintenant),
-                    );
+                    // ⚠️ Voir le commentaire d'`ActiveIntention::accroche` :
+                    // sans cette intention, la règle de sécurité du monde
+                    // vertical (Tâche 3, `behavior/mod.rs`) le ferait tomber
+                    // dès l'image suivante — jeté contre un mur, il ne
+                    // tiendrait qu'une image.
+                    ch.intention =
+                        Some(crate::behavior::intention::ActiveIntention::accroche(maintenant));
                     Reflexe::Accroche
                 }
 
-                // `contact` ne rend jamais `Bottom` : le plafond n'attrape
-                // rien (design §3.2, d'après `Fall.java`). On ne panique pas
-                // pour autant — on traite comme une chute qui continue, et
-                // c'est pour de vrai maintenant : `ch.attachment` n'est
-                // touché par AUCUNE ligne de ce bras, il reste `Falling`
-                // exactement comme avant cet appel à `contact`.
-                Face::Bottom => Reflexe::Chute,
+                // Un lancer vers le haut s'accroche désormais au plafond —
+                // `contact` peut rendre `Bottom` depuis la révision du
+                // 2026-09-12 de la design §3.2 (divergence assumée de
+                // `Fall.java`, voir le commentaire de `contact`).
+                //
+                // L'orientation suit la vitesse HORIZONTALE, comme au sol :
+                // « regarder la surface » n'a pas de sens au plafond, on
+                // réutilise donc `orienter_selon_la_chute` plutôt que
+                // d'inventer une seconde règle. On lui passe `nouvelle_vel.x`
+                // — la vitesse la plus fraîche à l'instant du contact — et
+                // non le `vel.x` d'avant ce pas, qui date d'une image.
+                Face::Bottom => {
+                    ch.attachment = Attachment::On { platform, face, offset };
+                    orienter_selon_la_chute(ch, nouvelle_vel.x);
+                    ch.set_pose(POSE_GRAB_CEILING, maintenant);
+
+                    // Même raison que pour un mur : sans cette intention, la
+                    // règle de sécurité du monde vertical le ferait tomber
+                    // dès l'image suivante — accroché au plafond, il ne
+                    // tiendrait qu'une image.
+                    ch.intention =
+                        Some(crate::behavior::intention::ActiveIntention::accroche(maintenant));
+                    Reflexe::Accroche
+                }
             };
         }
 
@@ -1232,5 +1244,175 @@ mod tests {
             matches!(ch.attachment, Attachment::On { face: Face::Top, .. }),
             "le sol gagne sur le mur"
         );
+    }
+
+    // ── Le plafond attrape aussi : révision du 2026-09-12 de la design §3.2
+    // ──────────────────────────────────────────────────────────────────────
+    //
+    // Trois tests, sur le même modèle que ceux du mur ci-dessus : l'accroche
+    // elle-même, le point non évident (sans l'intention, il retomberait dès
+    // l'image suivante), et — nouveau ici — la preuve que le contraire est
+    // aussi vrai : une fois l'intention terminée, il tombe VRAIMENT, mesuré
+    // sur plusieurs images plutôt que sur un seul appel.
+
+    #[test]
+    fn jete_vers_le_haut_il_s_accroche_au_plafond() {
+        let m = World::from_screens(&FakeProbe::un_ecran().screens());
+        let mut ch = perso(&m);
+
+        // Lancé vers le haut ET vers la droite, pour vérifier au passage que
+        // l'orientation suit la vitesse HORIZONTALE (comme au sol), et non
+        // une notion de « regarder la surface » qui n'a pas de sens au
+        // plafond.
+        ch.attachment = Attachment::Falling {
+            pos: Point::new(300.0, 30.0),
+            vel: crate::geom::Vec2::new(300.0, -600.0),
+        };
+
+        let mut accroche = false;
+        for i in 0..20 {
+            let r = appliquer(
+                &mut ch,
+                &m,
+                &entrees_neutres(),
+                Duration::from_secs_f32(i as f32 * DT),
+                DT,
+            );
+            if r == Reflexe::Accroche {
+                accroche = true;
+                break;
+            }
+        }
+
+        assert!(accroche, "il devrait s'accrocher au plafond");
+        assert!(matches!(
+            ch.attachment,
+            Attachment::On { face: Face::Bottom, .. }
+        ));
+        assert_eq!(ch.pose, crate::character::manifest::POSE_GRAB_CEILING);
+        assert_eq!(
+            ch.facing,
+            Facing::Right,
+            "l'orientation suit la vitesse horizontale, pas la surface"
+        );
+    }
+
+    #[test]
+    fn accroche_au_plafond_par_un_lancer_il_ne_lache_pas_a_l_image_suivante() {
+        // Même raison que pour le mur : sans l'intention posée par
+        // `ActiveIntention::accroche`, la règle de sécurité du monde
+        // vertical (`behavior::pas`) le ferait tomber dès l'image suivante.
+        let m = World::from_screens(&FakeProbe::un_ecran().screens());
+        let mut ch = perso(&m);
+        ch.attachment = Attachment::Falling {
+            pos: Point::new(300.0, 30.0),
+            vel: crate::geom::Vec2::new(0.0, -600.0),
+        };
+
+        for i in 0..20 {
+            let r = appliquer(
+                &mut ch,
+                &m,
+                &entrees_neutres(),
+                Duration::from_secs_f32(i as f32 * DT),
+                DT,
+            );
+            if r == Reflexe::Accroche {
+                break;
+            }
+        }
+
+        assert!(
+            ch.intention.is_some(),
+            "une intention doit avoir été posée, sinon la règle de sécurité le lâche"
+        );
+
+        // Et on le vérifie réellement, en faisant tourner le comportement
+        // complet plusieurs images — pas seulement `reflex::appliquer`.
+        let mut rng = crate::rng::XorShift32::seeded(4);
+        let reglages = crate::config::Reglages::depuis(&crate::config::Config::default());
+        for i in 0..10 {
+            crate::behavior::pas(
+                &mut ch,
+                &m,
+                &entrees_neutres(),
+                &crate::behavior::desire::TableEnvies::defaut(),
+                &reglages,
+                Duration::from_secs_f32(1.0 + i as f32 * DT),
+                DT,
+                &mut rng,
+            );
+        }
+
+        assert!(
+            matches!(ch.attachment, Attachment::On { face: Face::Bottom, .. }),
+            "il doit tenir le plafond, il est {:?}",
+            ch.attachment
+        );
+    }
+
+    #[test]
+    fn accroche_au_plafond_sans_intention_il_tombe_vraiment() {
+        // **Le test qui compte le plus dans ce lot.** Deux bugs de cette
+        // branche ont survécu à trois tâches parce qu'un test n'appelait la
+        // boucle qu'une seule fois — voir le commentaire de
+        // `accroche_par_un_lancer_il_ne_lache_pas_a_l_image_suivante` plus
+        // haut. On fait donc ici l'inverse de ce test : intention absente
+        // dès le départ, et on fait tourner `behavior::pas` sur une demi-
+        // seconde simulée (30 images à 60 Hz) pour vérifier que la vitesse
+        // verticale de chute grandit réellement — la preuve qu'il ne reste
+        // pas figé au plafond avec la mauvaise pose.
+        let m = World::from_screens(&FakeProbe::un_ecran().screens());
+        let mut ch = perso(&m);
+
+        let plafond = m
+            .platforms()
+            .iter()
+            .find(|p| p.has_face(Face::Bottom))
+            .expect("un écran isolé a un plafond")
+            .id;
+        ch.attachment = Attachment::On {
+            platform: plafond,
+            face: Face::Bottom,
+            offset: 300.0,
+        };
+        ch.pos_connue = Point::new(300.0, 0.0);
+        // Pas d'intention `Grimper` : c'est exactement le cas que la règle
+        // de sécurité du monde vertical (design §4.5) doit détecter.
+        ch.intention = None;
+
+        let mut rng = crate::rng::XorShift32::seeded(7);
+        let reglages = crate::config::Reglages::depuis(&crate::config::Config::default());
+        let mut t = Duration::ZERO;
+        for _ in 0..30 {
+            crate::behavior::pas(
+                &mut ch,
+                &m,
+                &entrees_neutres(),
+                &crate::behavior::desire::TableEnvies::defaut(),
+                &reglages,
+                t,
+                DT,
+                &mut rng,
+            );
+            t += Duration::from_secs_f32(DT);
+        }
+
+        match ch.attachment {
+            Attachment::Falling { vel, .. } => {
+                // La gravité doit l'avoir fait accélérer vers le bas de
+                // manière significative sur une demi-seconde — pas juste
+                // franchi zéro d'un résidu de flottant.
+                assert!(
+                    vel.y > 100.0,
+                    "il devrait tomber franchement après 0,5 s, vy = {}",
+                    vel.y
+                );
+            }
+            autre => panic!(
+                "il devrait être en train de tomber après s'être lâché du \
+                 plafond, il est {autre:?}"
+            ),
+        }
     }
 }
