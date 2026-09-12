@@ -24,6 +24,14 @@ tauri = { version = "2", features = ["tray-icon"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# Décodage PNG, pour la SEULE image dont on mesure la boîte opaque (la
+# hitbox de chaque pack installé). Les 45 autres frames ne sont jamais
+# décodées : leur taille se lit dans les 24 premiers octets du fichier.
+#
+# Pas `image` : on ne veut que le PNG, et l'exe release fait 2,7 Mo — un
+# objectif tenu de la spec §4. `image` tirerait JPEG, GIF, TIFF et le reste.
+png = "0.17"
+
 # Épinglé en 0.61 : c'est la version dont dépend Tauri 2.11.5, et deux versions
 # majeures de cette crate donnent deux types `HWND` DISTINCTS. Prendre 0.62
 # ferait que le HWND rendu par `window.hwnd()` ne serait pas celui qu'attend
