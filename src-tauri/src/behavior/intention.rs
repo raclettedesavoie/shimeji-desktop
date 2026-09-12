@@ -314,6 +314,28 @@ impl ActiveIntention {
             },
         }
     }
+
+    /// L'intention posée quand un lancer vient de le coller à un mur.
+    ///
+    /// **Elle est indispensable, et sa raison n'est pas évidente.** Laisser
+    /// `intention = None` ferait rendre `Finie` à la couche 2, et la règle de
+    /// sécurité du monde vertical le ferait tomber à l'image suivante : jeté
+    /// contre un mur, il ne tiendrait qu'une image.
+    ///
+    /// Même motif qu'`ActiveIntention::reveil` : l'état est POSÉ de
+    /// l'extérieur, avec `jusqu_a` à zéro pour que la première image tire la
+    /// durée — ce qui permet à `reflex.rs` de la construire **sans générateur
+    /// aléatoire**, et garde toutes les durées dans ce fichier-ci.
+    pub fn accroche_au_mur(maintenant: Duration) -> Self {
+        ActiveIntention {
+            kind: Intention::Grimper,
+            depuis: maintenant,
+            etat: EtatIntention::Grimpe {
+                phase: PhaseGrimpe::Accroche,
+                jusqu_a: Duration::ZERO,
+            },
+        }
+    }
 }
 
 /// Où en est l'intention à la fin de cette image.

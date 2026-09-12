@@ -21,10 +21,11 @@ use crate::character::attach::{
     hors_bornes, position_conservant_le_sprite, world_position, Attachment,
 };
 use crate::character::manifest::{
-    POSES_DRAGGED_LEFT, POSES_DRAGGED_RIGHT, POSE_DRAGGED, POSE_FALL, POSE_LAND, POSE_STAND,
+    POSES_DRAGGED_LEFT, POSES_DRAGGED_RIGHT, POSE_DRAGGED, POSE_FALL, POSE_GRAB_WALL, POSE_LAND,
+    POSE_STAND,
 };
 use crate::character::physics::{
-    atterrissage, borner_lancer, integrer_balancier, integrer_chute, lisser_vitesse_curseur,
+    borner_lancer, contact, integrer_balancier, integrer_chute, lisser_vitesse_curseur,
     niveau_balancier, sous_le_bureau, Cote,
 };
 use crate::character::{Character, Facing};
@@ -43,6 +44,10 @@ pub enum Reflexe {
     Chute,
     Porte,
     Atterrissage,
+    /// Il vient de s'accrocher à une paroi verticale — le lancer contre un
+    /// mur (design §3.2). Distinct d'`Atterrissage` pour que la trace du mode
+    /// simulation puisse les compter séparément.
+    Accroche,
     /// Rattrapé par le garde-fou après être tombé sous le bureau.
     Rattrape,
     Aucun,
@@ -276,16 +281,50 @@ pub fn appliquer(
 
         let (nouvelle_pos, nouvelle_vel) = integrer_chute(pos, vel, dt);
 
-        // A-t-on traversé une face pendant ce pas ?
-        if let Some((platform, offset)) = atterrissage(world, pos, nouvelle_pos) {
-            ch.attachment = Attachment::On {
-                platform,
-                face: Face::Top,
-                offset,
+        // A-t-on heurté quelque chose pendant ce pas ? `contact` rend la
+        // FACE, parce qu'on ne se pose pas sur un mur comme sur un sol
+        // (design §3.2, étape 4a).
+        if let Some((platform, face, offset)) = contact(world, pos, nouvelle_pos) {
+            ch.attachment = Attachment::On { platform, face, offset };
+
+            // `match` explicite plutôt qu'un `if face == Face::Top` : les
+            // quatre cas se lisent d'un coup, et le compilateur exigera d'en
+            // traiter un cinquième si `Face` en gagnait un.
+            return match face {
+                Face::Top => {
+                    ch.set_pose(POSE_LAND, maintenant);
+                    ch.intention = None;
+                    Reflexe::Atterrissage
+                }
+
+                // Une face `Right` est celle d'un mur GAUCHE d'écran : le
+                // personnage se tient à sa droite, donc il regarde à gauche
+                // pour faire face à la paroi. Et symétriquement pour `Left`,
+                // qui est celle d'un mur DROIT.
+                Face::Right | Face::Left => {
+                    ch.facing = if face == Face::Right {
+                        Facing::Left
+                    } else {
+                        Facing::Right
+                    };
+                    ch.set_pose(POSE_GRAB_WALL, maintenant);
+
+                    // ⚠️ Voir le commentaire d'`accroche_au_mur` : sans cette
+                    // intention, la règle de sécurité du monde vertical
+                    // (Tâche 3, `behavior/mod.rs`) le ferait tomber dès
+                    // l'image suivante — jeté contre un mur, il ne tiendrait
+                    // qu'une image.
+                    ch.intention = Some(
+                        crate::behavior::intention::ActiveIntention::accroche_au_mur(maintenant),
+                    );
+                    Reflexe::Accroche
+                }
+
+                // `contact` ne rend jamais `Bottom` : le plafond n'attrape
+                // rien (design §3.2, d'après `Fall.java`). On ne panique pas
+                // pour autant — on traite comme une chute qui continue.
+                Face::Bottom => Reflexe::Chute,
             };
-            ch.set_pose(POSE_LAND, maintenant);
-            ch.intention = None;
-            return Reflexe::Atterrissage;
         }
 
         ch.attachment = Attachment::Falling {
@@ -314,7 +353,7 @@ pub fn appliquer(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::character::manifest::{Manifest, POSE_FALL, POSE_LAND, POSE_STAND};
+    use crate::character::manifest::{Manifest, POSE_FALL, POSE_GRAB_WALL, POSE_LAND, POSE_STAND};
     use crate::geom::Point;
     use crate::probe::fake::FakeProbe;
     use crate::probe::SystemProbe;
@@ -999,5 +1038,150 @@ mod tests {
         // La pose demandée n'existe pas : il garde celle qu'il avait plutôt
         // que d'afficher du vide.
         assert_eq!(ch.pose, POSE_STAND);
+    }
+
+    // ── Tâche 5, étape 4a : le lancer qui s'accroche ────────────────────
+    //
+    // Ces trois tests couvrent : le mur qui attrape un lancer, le POINT NON
+    // ÉVIDENT de la tâche (sans l'intention posée en phase `Accroche`, la
+    // règle de sécurité de la Tâche 3 le ferait tomber dès l'image
+    // suivante), et le contre-exemple du coin, où le sol doit gagner.
+
+    /// Un `blob` complet, posé sur le sol — chargé depuis le vrai manifeste
+    /// plutôt que le manifeste minimal `manifeste()` d'en haut : celui-ci
+    /// n'a pas de pose `grabWall`, or ces tests-ci doivent la vérifier.
+    fn perso(m: &World) -> Character {
+        // `&…[0]` : `Platform` n'implémente pas `Copy` (voir `world.rs`), on
+        // emprunte donc plutôt que de tenter de le sortir du slice — même
+        // motif que le `perso` de `behavior/mod.rs`.
+        let sol = &m.platforms()[0];
+        Character::new(
+            Manifest::load(std::path::Path::new("../characters/blob"))
+                .expect("le personnage de test doit être lisible"),
+            Attachment::On {
+                platform: sol.id,
+                face: Face::Top,
+                offset: 500.0,
+            },
+            sol.rect.point_on(Face::Top, 500.0),
+        )
+    }
+
+    #[test]
+    fn jete_contre_un_mur_il_s_y_accroche() {
+        let m = World::from_screens(&FakeProbe::un_ecran().screens());
+        let mut ch = perso(&m);
+
+        // Lancé vers la gauche, à mi-hauteur.
+        ch.attachment = Attachment::Falling {
+            pos: Point::new(30.0, 400.0),
+            vel: crate::geom::Vec2::new(-600.0, 0.0),
+        };
+
+        // Quelques images suffisent pour parcourir les 30 px.
+        let mut accroche = false;
+        for i in 0..20 {
+            let r = appliquer(
+                &mut ch,
+                &m,
+                &entrees_neutres(),
+                Duration::from_secs_f32(i as f32 * DT),
+                DT,
+            );
+            if r == Reflexe::Accroche {
+                accroche = true;
+                break;
+            }
+        }
+
+        assert!(accroche, "il devrait s'accrocher au mur gauche");
+        assert!(matches!(
+            ch.attachment,
+            Attachment::On { face: Face::Right, .. }
+        ));
+        assert_eq!(ch.pose, POSE_GRAB_WALL);
+        assert_eq!(ch.facing, Facing::Left, "il regarde le mur");
+    }
+
+    #[test]
+    fn accroche_par_un_lancer_il_ne_lache_pas_a_l_image_suivante() {
+        // LE test de la tâche. Sans l'intention posée en phase `Accroche`,
+        // la couche 2 rend `Finie` et la règle de sécurité le fait tomber :
+        // jeté contre un mur, il ne tiendrait qu'une image.
+        let m = World::from_screens(&FakeProbe::un_ecran().screens());
+        let mut ch = perso(&m);
+        ch.attachment = Attachment::Falling {
+            pos: Point::new(30.0, 400.0),
+            vel: crate::geom::Vec2::new(-600.0, 0.0),
+        };
+
+        for i in 0..20 {
+            let r = appliquer(
+                &mut ch,
+                &m,
+                &entrees_neutres(),
+                Duration::from_secs_f32(i as f32 * DT),
+                DT,
+            );
+            if r == Reflexe::Accroche {
+                break;
+            }
+        }
+
+        assert!(
+            ch.intention.is_some(),
+            "une intention doit avoir été posée, sinon la règle de sécurité le lâche"
+        );
+
+        // Et on le vérifie réellement, en faisant tourner le comportement
+        // complet plusieurs images.
+        let mut rng = crate::rng::XorShift32::seeded(4);
+        let reglages = crate::config::Reglages::depuis(&crate::config::Config::default());
+        for i in 0..10 {
+            crate::behavior::pas(
+                &mut ch,
+                &m,
+                &entrees_neutres(),
+                &crate::behavior::desire::TableEnvies::defaut(),
+                &reglages,
+                Duration::from_secs_f32(1.0 + i as f32 * DT),
+                DT,
+                &mut rng,
+            );
+        }
+
+        assert!(
+            matches!(ch.attachment, Attachment::On { face: Face::Right, .. }),
+            "il doit tenir le mur, il est {:?}",
+            ch.attachment
+        );
+    }
+
+    #[test]
+    fn jete_dans_un_coin_il_atterrit_au_lieu_de_s_accrocher() {
+        let m = World::from_screens(&FakeProbe::un_ecran().screens());
+        let mut ch = perso(&m);
+        ch.attachment = Attachment::Falling {
+            pos: Point::new(30.0, 1020.0),
+            vel: crate::geom::Vec2::new(-600.0, 400.0),
+        };
+
+        for i in 0..20 {
+            let r = appliquer(
+                &mut ch,
+                &m,
+                &entrees_neutres(),
+                Duration::from_secs_f32(i as f32 * DT),
+                DT,
+            );
+            if r == Reflexe::Atterrissage || r == Reflexe::Accroche {
+                break;
+            }
+        }
+
+        assert!(
+            matches!(ch.attachment, Attachment::On { face: Face::Top, .. }),
+            "le sol gagne sur le mur"
+        );
     }
 }
