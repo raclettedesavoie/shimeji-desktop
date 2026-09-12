@@ -149,6 +149,7 @@ qu'à l'œil et sur plusieurs minutes :
 | `SHIMEJI_QUITTER_APRES=<s>` | appelle `exit(0)` — la ligne de « Quitter » — après *s* secondes |
 | `SHIMEJI_SIGNAUX=1` | imprime, deux fois par seconde, les cinq signaux et le biais qu'ils produisent — étape 2 |
 | `SHIMEJI_ESCALADE=1` | force l'intention `Grimper` dès la première image, et trace (phase, face, offset, pose) à chaque changement — étape 4a, voir plus bas « mesurer l'ancre » |
+| `SHIMEJI_MENU=1` | signale quand Windows **refuse le premier plan** à l'ouverture du menu contextuel — la cause du menu qui reste collé à l'écran, voir `render::prendre_le_premier_plan` |
 
 **Et un fichier témoin** : créer `characters/recharger.txt` déclenche un rechargement à
 chaud, puis le fichier est supprimé.
@@ -642,6 +643,13 @@ https://sprites.shimejis.xyz/directory/<slug>/img/shime1.png … shime46.png
 ```
 
 Le slug se trouve dans le HTML de `https://shimejis.xyz/directory`.
+
+> ✅ **La hitbox ne se règle plus à l'œil — elle se mesure** (2026-09-12).
+> `docs/outils/mesurer-hitbox.ps1 -Pack <nom> -Ecrire` relève, pour chaque
+> pose, la boîte englobante des pixels opaques de ses frames et l'écrit dans le
+> `mascot.json`. C'est ce qui a corrigé une hitbox de `blob` deux fois trop
+> étroite (48 px déclarés pour 91 px dessinés, et 19 px amputés en haut) : le
+> personnage n'était cliquable que sur une colonne centrale.
 
 > ⚠️ **Mesurer l'ancre et la hitbox — ne pas recopier celles de `blob`.** La
 > numérotation des poses est un standard de fait et se transpose telle quelle ; les

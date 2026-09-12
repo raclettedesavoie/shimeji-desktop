@@ -190,6 +190,22 @@ pub fn ouvrir(
 
     let _ = crate::render::autoriser_activation(win, true);
 
+    // Puis on prend RÉELLEMENT le premier plan, et on vérifie que Windows a
+    // accepté — `muda` le demande aussi mais ignore son refus, et un refus
+    // donne précisément le menu qui ne se referme pas quand on clique
+    // ailleurs. Tout le raisonnement est dans `prendre_le_premier_plan`.
+    let devant = crate::render::prendre_le_premier_plan(win).unwrap_or(false);
+
+    // Un diagnostic plutôt qu'un `if` : on ne peut RIEN faire d'utile d'un
+    // refus ici — afficher quand même vaut mieux que ne rien afficher. Mais
+    // si le menu se recolle un jour à l'écran, cette ligne dit en une seconde
+    // si la cause est là ou ailleurs, au lieu de relire trois crates.
+    if !devant && std::env::var_os("SHIMEJI_MENU").is_some() {
+        eprintln!(
+            "menu : Windows a refusé le premier plan — le menu risque de ne pas se refermer au clic"
+        );
+    }
+
     // `popup_menu` place le menu au curseur et **bloque** jusqu'au choix.
     // Vérifié : `WebviewWindow::popup_menu`
     // (`tauri-2.11.5/src/webview/webview_window.rs:1681`), qui délègue à
@@ -202,6 +218,10 @@ pub fn ouvrir(
     // l'avertissement de `autoriser_activation`. C'est la raison pour
     // laquelle le résultat est mis de côté au lieu d'être propagé par `?`.
     let _ = crate::render::autoriser_activation(win, false);
+
+    // La seconde moitié de la recette : sans ce message vide, c'est le menu
+    // SUIVANT qui se comporte mal. Voir `reveiller_la_file`.
+    crate::render::reveiller_la_file(win);
 
     // Puis on rend le focus. Après avoir remis `WS_EX_NOACTIVATE`, pour que
     // notre fenêtre ne puisse plus le reprendre entre les deux appels.

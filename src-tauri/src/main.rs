@@ -695,9 +695,9 @@ fn boucle(
     // Le bouton droit était-il enfoncé à l'image précédente ?
     //
     // C'est ce qui transforme un état — « le bouton est enfoncé », vrai
-    // pendant les ~15 images que dure un clic humain — en un **front
-    // montant**, qui n'arrive qu'une fois. Sans lui, maintenir le bouton
-    // rouvrirait le menu en boucle dès sa fermeture.
+    // pendant les ~15 images que dure un clic humain — en un **front**, qui
+    // n'arrive qu'une fois. Sans lui, maintenir le bouton rouvrirait le menu
+    // en boucle dès sa fermeture.
     let mut bouton_droit_precedent = false;
 
     loop {
@@ -922,14 +922,25 @@ fn boucle(
 
         // ── Clic droit sur le personnage : le menu contextuel ───────────
         //
-        // Front montant ET curseur dans la hitbox : un clic droit sur le
-        // bureau à côté de lui ne doit rien ouvrir. Le test de hitbox est le
-        // MÊME que celui qui absorbe les clics gauches, donc la zone
-        // cliquable est exactement celle qu'on voit.
-        let front_montant_droit = m.right_down && !bouton_droit_precedent;
+        // Front **descendant** (le bouton vient d'être RELÂCHÉ) ET curseur
+        // dans la hitbox : un clic droit sur le bureau à côté de lui ne doit
+        // rien ouvrir. Le test de hitbox est le MÊME que celui qui absorbe
+        // les clics gauches, donc la zone cliquable est exactement celle
+        // qu'on voit.
+        //
+        // ⚠️ **Au relâchement et non à l'enfoncement**, et pour deux raisons
+        // qui pointent dans le même sens :
+        //
+        // 1. c'est la convention de Windows — l'explorateur, comme toute
+        //    application, ouvre son menu contextuel sur `WM_RBUTTONUP` ;
+        // 2. ouvrir au bouton encore enfoncé lance `TrackPopupMenu` pendant
+        //    que Windows suit toujours un clic droit en cours. Le menu hérite
+        //    alors d'un suivi de souris qui ne lui appartient pas, et se
+        //    referme mal — ce qu'on a justement cherché à corriger ici.
+        let front_descendant_droit = !m.right_down && bouton_droit_precedent;
         bouton_droit_precedent = m.right_down;
 
-        if front_montant_droit && sur_le_personnage {
+        if front_descendant_droit && sur_le_personnage {
             // `let … else` : si la fenêtre a été fermée, on sort du thread.
             // Équivalent d'un `match` dont la branche `None` ferait `return`.
             let Some(win) = handle.get_webview_window(&label) else {
