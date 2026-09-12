@@ -148,6 +148,7 @@ qu'à l'œil et sur plusieurs minutes :
 | `SHIMEJI_CACHE=1` | démarre caché, comme si « Afficher » était décoché |
 | `SHIMEJI_QUITTER_APRES=<s>` | appelle `exit(0)` — la ligne de « Quitter » — après *s* secondes |
 | `SHIMEJI_SIGNAUX=1` | imprime, deux fois par seconde, les cinq signaux et le biais qu'ils produisent — étape 2 |
+| `SHIMEJI_ESCALADE=1` | force l'intention `Grimper` dès la première image, et trace (phase, face, offset, pose) à chaque changement — étape 4a, voir plus bas « mesurer l'ancre » |
 
 **Et un fichier témoin** : créer `characters/recharger.txt` déclenche un rechargement à
 chaud, puis le fichier est supprimé.
@@ -606,9 +607,9 @@ y compris celles qui débloquent les comportements difficiles :
 
 | Frames | Pose |
 |---|---|
-| 23, 24, 25 | agripper une paroi verticale (**escalade**) |
+| 12, 13, 14 | agripper et escalader une **paroi verticale** |
+| 23, 24, 25 | se suspendre et se déplacer au **plafond** |
 | 34, 35, 36 | se hisser par-dessus un bord |
-| 22 | suspension au plafond |
 | 39, 40, 41 | s'asseoir puis dormir |
 | 10 / 4 | chute / atterrissage |
 | 18, 20, 21 | ramper |
@@ -660,9 +661,9 @@ Chaque étape est agréable en elle-même, et aucune ne dépend d'un dessin manq
 |---|---|---|
 | ✅ 0 | Validation technique | fenêtre transparente, sans bordure, au premier plan, hors taskbar, clics traversants, PNG déplacé à 60 Hz sur 2 écrans |
 | ✅ 1 | **Il vit sur le sol** | marche, court, s'arrête, demi-tour, tous les écrans ; attrapable et il tombe ; tray, démarrage auto |
-| **2** | **Il réagit** ← *la prochaine* | s'endort quand on part, se réveille au retour, mange à midi |
-| 3 | **Un deuxième personnage** | ils coexistent et se remarquent |
-| 4 | **Il grimpe** | bords de fenêtres, barres de titre, chute quand la fenêtre se ferme |
+| ✅ 2 | **Il réagit** | s'endort quand on part, se réveille au retour, mange à midi |
+| ⏸️ 3 | **Un deuxième personnage** | **mise de côté, à la demande de l'auteur** — ils coexisteraient et se remarqueraient |
+| 4 | **Il grimpe** | ✅ **4a** : bords et plafond de l'**écran** — reste **les fenêtres** (barres de titre, chute quand la fenêtre se ferme) ← *la prochaine* |
 | 5 | **Il suit** | se déplace vers l'application au premier plan |
 
 **L'étape 0 est un spike jetable et non négociable.** Le seul point faible de Tauri face
@@ -691,12 +692,14 @@ avant d'écrire une ligne de physique, pas après.
 
 ## État actuel
 
-**L'étape 1 est terminée — l'application existe et se vit au quotidien.** Un personnage
+**L'étape 4a est terminée — il grimpe les bords et le plafond de l'écran.** Un personnage
 `blob` marche, court, s'arrête, fait demi-tour, circule sur les deux écrans, s'attrape à
-la souris, se lance et atterrit ; un tray l'affiche, le cache, le recharge, le fait
-démarrer avec Windows et le quitte ; un `config.json` règle son caractère sans
-recompiler. **140 tests**, exe release de **2,7 Mo**, **12 % d'un cœur** en marche et
-**0,9 %** caché.
+la souris, se lance et atterrit ; il grimpe les murs et le plafond de chaque écran, de
+lui-même ou parce qu'on l'a jeté contre un bord, et redescend ou se laisse tomber ; un
+tray l'affiche, le cache, le recharge, le fait démarrer avec Windows et le quitte ; un
+`config.json` règle son caractère sans recompiler. **225 tests**, exe release de
+**2,7 Mo**, **12 % d'un cœur** en marche et **0,8 %** caché (mesuré à l'étape 4a,
+sous la référence de 0,9 % — voir « Mesurer le CPU »).
 
 | Où | Contenu |
 |---|---|
@@ -707,7 +710,9 @@ recompiler. **140 tests**, exe release de **2,7 Mo**, **12 % d'un cœur** en mar
 | `docs/plans/2026-09-09-etape-1b-tour-du-proprietaire.md` | le plan de l'étape 1b, **soldé** — tray, config, démarrage auto, rechargement à chaud, CPU |
 | `docs/specs/2026-09-09-frames-shimeji.md` | **la correspondance frames → poses**, tirée des sources de Shimeji-ee — à lire avant de toucher au `mascot.json` |
 | `docs/specs/2026-09-09-etape-2-design.md` | le design de l'étape 2 : les cinq signaux, le biais, le sommeil, l'interruption |
-| `docs/plans/2026-09-09-etape-2-il-reagit.md` | **le plan à exécuter** : 7 tâches, 71 étapes |
+| `docs/plans/2026-09-09-etape-2-il-reagit.md` | le plan de l'étape 2, **exécuté** — 7 tâches, 71 étapes |
+| `docs/specs/2026-09-11-etape-4a-il-grimpe-design.md` | le design de l'étape 4a : les plateformes verticales, `contact()`, l'intention `Grimper`, le monde vertical |
+| `docs/plans/2026-09-11-etape-4a-il-grimpe.md` | le plan de l'étape 4a, **soldé** — 7 tâches |
 | `docs/conception/2026-09-08-journal-decisions.md` | **pourquoi** chaque décision, et ce qu'elle a écarté — à lire avant d'en défaire une |
 | `docs/conception/2026-09-08-discussion.md` | la discussion de conception intégrale, verbatim |
 | `docs/spike-etape-0/` | le spike **archivé et gelé** + la sonde Win32 rejouable — ne pas le faire évoluer vers l'application |
@@ -870,41 +875,48 @@ signature**, comme pour n'importe quelle graine fixe.
 > maintenant le test le plus lent du projet, à surveiller si la suite continue de
 > grossir.
 
+### L'étape 4a est faite (2026-09-11)
+
+Les 7 tâches sont exécutées. Le personnage grimpe les murs et le plafond de **chaque
+écran** (pas encore les fenêtres, voir plus bas), de lui-même ou parce qu'on l'a jeté
+contre un bord, s'y accroche un temps tiré au sort, puis redescend ou se laisse tomber.
+`World::from_screens` expose désormais quatre plateformes par écran (sol, deux murs,
+plafond) au lieu d'une seule ; `geom.rs` est resté inchangé, exactement comme le design le
+visait.
+
+Une régression a été trouvée **par l'invariant du monde vertical** ajouté à `sim.rs` à la
+dernière tâche — la même vérification qui aurait dû attraper « il marche sur un mur »
+depuis le début, et qui a effectivement attrapé un bug réel, survécu à trois tâches et
+leurs relectures : quand l'intention `Grimper` expirait à son délai d'abandon (120 s)
+pendant que le personnage était encore accroché au plafond, il y restait accroché — et la
+couche 3 lui repostait aussitôt un `Grimper` neuf, qui le faisait « marcher » en pose
+`walk` le long de la face verticale. Corrigé par deux garde-fous complémentaires plutôt
+qu'un seul : `lacher_si_accroche` (une fonction unique, appelée à la fois par la garde de
+chaque image et par le point où le délai d'abandon efface l'intention — deux copies de la
+même règle avaient justement fini par diverger) et une garde structurelle sur la phase
+`Choisir`, qui refuse désormais de partir d'autre chose que `Face::Top`. **La leçon à
+retenir : une règle de sécurité qui ne vit qu'à un seul des endroits où elle s'applique
+finit par ne protéger qu'un des deux chemins.**
+
+> ⚠️ **La mesure de l'ancre de `grabWall`/`climbWall` reste à faire par l'auteur.** Elle
+> demande de REGARDER le personnage accroché à un mur — la seule vérification du projet
+> qui ne se scripte pas. Marche à suivre : `cargo build` puis `cargo run` avec
+> `SHIMEJI_ESCALADE=1` (voir le tableau des variables de diagnostic) — le personnage part
+> grimper dès la première image, et la console trace chaque changement de phase ; si le
+> rendu ne convient pas à l'œil, l'ancre se corrige dans `characters/blob/mascot.json`,
+> jamais dans `attach.rs` (voir « Décisions de design à ne pas défaire », n° 1).
+
 ### La prochaine action
 
-**Exécuter le plan de l'étape 2**, `docs/plans/2026-09-09-etape-2-il-reagit.md` — 7 tâches,
-dans l'ordre, chacune se fermant sur un commit. Son design est dans
-`docs/specs/2026-09-09-etape-2-design.md`, à lire d'abord : le plan argumente depuis lui.
+**L'étape 3 (un deuxième personnage) est mise de côté, à la demande de l'auteur.** La
+suite est l'**étape 4 complète** — les plateformes de **fenêtres** (barres de titre,
+chute quand la fenêtre se ferme, soustraction d'intervalles 1D pour les bords recouverts,
+spec §2.2 et décision n° 2) — puis l'**étape 5** (il suit l'application au premier plan).
 
-Le contenu, cadré par l'annexe du plan 1b et par la spec §7 :
-
-| Contenu | Fichiers |
-|---|---|
-| Les signaux : inactivité, appli au premier plan, heure, batterie, verrouillage | `signals.rs`, `probe/` étendu |
-| Les modificateurs par application dans `config.json` | `config.rs` + `desire.rs` |
-| `tirer_avec` branché sur les signaux — **le point d'entrée existe déjà** | `behavior/mod.rs`, une ligne |
-| S'endormir, se réveiller, manger | `intention.rs` |
-| Suspendre la boucle quand la session est verrouillée | `main.rs` |
-
-> ⚠️ **Deux points de contenu, dont un déjà tranché.**
->
-> 1. ~~L'animation de sommeil n'existe pas.~~ **Tranché le 2026-09-09** : il **s'assoit
->    (11) puis s'affale (21)**, et la pose est déclarée sous le nom `sleep` — le code ne
->    doit pas savoir qu'il s'agit d'un substitut. Détail et sprites vérifiés dans
->    `docs/specs/2026-09-09-frames-shimeji.md`.
-> 2. **L'inactivité ne se mesure pas par capture de frappe** — c'est une exclusion
->    explicite du besoin. `GetLastInputInfo` rend un simple compteur de millisecondes,
->    sans jamais dire *quelle* touche : c'est la seule voie acceptable.
-
-> **Et le rappel qui tient toute l'étape 2 :** décision n° 3, **les signaux biaisent, ils
-> ne commandent pas**. Si « inactif 2 min » *déclenche* le sommeil, on a livré un
-> afficheur d'état système déguisé en personnage. Il doit **multiplier un poids**.
-
-Rappel de périmètre : l'étape 2 **n'a toujours pas** de plateformes de fenêtres. Le monde
-n'expose que le sol de chaque écran, donc **pas de soustraction d'intervalles 1D** et
-**pas de filtrage de fenêtres** — ils appartiennent à l'étape 4. YAGNI. Seul le signal
-« appli au premier plan » touche aux fenêtres, et il ne demande que `GetForegroundWindow`,
-pas un recensement.
+L'étape 4a a posé les plateformes d'**écran** et toute la physique verticale
+(`contact()`, l'intention `Grimper`, le monde vertical) ; l'étape 4 restante n'ajoute
+**que** le recensement des fenêtres et leur filtrage (fenêtres fantômes, occlusion) —
+`geom.rs`, `Attachment` et le comportement d'escalade ne devraient pas avoir à changer.
 
 ### Ce que le spike a déjà établi
 
