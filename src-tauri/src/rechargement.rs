@@ -73,12 +73,17 @@ pub fn nouvelle_demande() -> Demande {
 /// que l'appelant affiche, parce qu'un rechargement silencieusement raté est
 /// le pire des cas : on croit tester son nouveau timing et on regarde
 /// l'ancien.
-pub fn preparer(demande: &Demande, dossier: &Path, personnage: &str) -> Result<u64, String> {
+/// `dossier_perso` est le dossier **du personnage** et non son parent : il est
+/// désormais résolu par `config::dossier_du_personnage`, qui consulte la
+/// bibliothèque puis le dossier livré. Recevoir le chemin déjà résolu évite
+/// que cette fonction ait à connaître cette règle — et lui permet de charger
+/// un personnage de la bibliothèque comme un autre, sans le savoir.
+pub fn preparer(demande: &Demande, dossier_perso: &Path) -> Result<u64, String> {
     // ── Les entrées-sorties D'ABORD, verrou non tenu ────────────────────
     // Si le manifeste est illisible on sort ici, **sans avoir rien touché** :
     // le personnage continue avec ce qu'il avait. C'est le point le plus
     // important de ce fichier — on va éditer ce JSON des dizaines de fois.
-    let manifeste = Manifest::load(&dossier.join(personnage))
+    let manifeste = Manifest::load(dossier_perso)
         .map_err(|e| format!("manifeste illisible, rien n'a changé : {e}"))?;
 
     let config = crate::config::charger();

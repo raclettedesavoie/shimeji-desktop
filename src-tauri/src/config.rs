@@ -376,6 +376,68 @@ pub fn dossier_personnages() -> PathBuf {
     resoudre("characters").unwrap_or_else(|| PathBuf::from("characters"))
 }
 
+/// La bibliothèque : là où le catalogue **installe**.
+///
+/// Contrairement à `resoudre`, elle ne CHERCHE pas : c'est une destination
+/// d'écriture, toujours au même endroit. Rendre un chemin qui n'existe pas
+/// encore est donc normal — c'est à l'installation de le créer.
+///
+/// `Option` parce que `%APPDATA%` peut manquer sur un système exotique, et
+/// que l'absence de bibliothèque n'est pas une erreur : on retombe alors sur
+/// le seul dossier livré.
+pub fn dossier_bibliotheque() -> Option<PathBuf> {
+    match std::env::var("APPDATA") {
+        Ok(appdata) => Some(
+            PathBuf::from(appdata)
+                .join("shimeji-desktop")
+                .join("characters"),
+        ),
+        Err(_) => None,
+    }
+}
+
+/// Où trouver le personnage nommé `nom` : la bibliothèque D'ABORD, le
+/// dossier livré ENSUITE.
+///
+/// ⚠️ **`resoudre` n'est volontairement PAS modifiée.** Ses appelants gardent
+/// exactement le comportement qu'ils ont, ce qui rend ce changement sans
+/// risque de régression. On ajoute à côté, on ne détourne pas l'existant.
+///
+/// Ça referme aussi un piège connu : en `cargo run`, `resoudre("characters")`
+/// trouvait toujours le dossier du dépôt et masquait `%APPDATA%`. Ici les
+/// deux racines sont consultées, dans un ordre fixe et écrit.
+pub fn dossier_du_personnage(nom: &str) -> Option<PathBuf> {
+    // `as_deref` : `Option<PathBuf>` → `Option<&Path>`. On prête le chemin
+    // sans le copier ni céder la propriété de l'`Option` locale, qui doit
+    // vivre jusqu'à la fin de l'expression.
+    let biblio = dossier_bibliotheque();
+    personnage_dans(biblio.as_deref(), &dossier_personnages(), nom)
+}
+
+/// Le cœur de `dossier_du_personnage`, **paramétré par ses deux racines**.
+///
+/// Séparée pour une raison de test et non d'esthétique : la version publique
+/// lit `%APPDATA%` par `env::var`, variable GLOBALE au processus. La modifier
+/// dans un test la modifierait pour tous les tests tournant en parallèle.
+/// Aucune variable d'environnement n'entre donc dans aucun test.
+pub fn personnage_dans(bibliotheque: Option<&Path>, livre: &Path, nom: &str) -> Option<PathBuf> {
+    // `if let Some(b)` : la bibliothèque peut ne pas exister, ce qui n'est
+    // pas une erreur — on passe simplement au dossier livré.
+    if let Some(b) = bibliotheque {
+        let candidat = b.join(nom);
+        if candidat.is_dir() {
+            return Some(candidat);
+        }
+    }
+
+    let candidat = livre.join(nom);
+    if candidat.is_dir() {
+        return Some(candidat);
+    }
+
+    None
+}
+
 /// Charge la configuration. **Ne peut pas échouer.**
 pub fn charger() -> Config {
     match resoudre("config.json") {
@@ -423,6 +485,51 @@ pub fn charger_depuis(chemin: &Path) -> Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// La bibliothèque gagne sur le dossier livré.
+    ///
+    /// C'est le seul ordre défendable : un pack installé par l'utilisateur
+    /// qui porte le nom d'un pack livré doit gagner, sinon on obtient un
+    /// « je l'ai installé et il ne se passe rien » indébogable.
+    ///
+    /// ⚠️ On teste la fonction **paramétrée** et jamais la publique : celle-ci
+    /// lit `%APPDATA%` par `env::var`, qui est global au PROCESSUS. Le
+    /// modifier ici le modifierait pour tous les tests tournant en
+    /// parallèle — le genre d'échec qui n'arrive qu'une fois sur dix et
+    /// coûte une soirée.
+    #[test]
+    fn la_bibliotheque_gagne_sur_le_dossier_livre() {
+        let base = std::env::temp_dir().join("shimeji-test-resolution");
+        let biblio = base.join("biblio");
+        let livre = base.join("livre");
+
+        // `let _ =` : l'erreur « existe déjà » est sans intérêt, un test
+        // relancé retrouvant les dossiers du précédent.
+        let _ = std::fs::create_dir_all(biblio.join("blob"));
+        let _ = std::fs::create_dir_all(livre.join("blob"));
+        let _ = std::fs::create_dir_all(livre.join("seulement-livre"));
+
+        assert_eq!(
+            personnage_dans(Some(&biblio), &livre, "blob"),
+            Some(biblio.join("blob")),
+            "la bibliothèque doit gagner"
+        );
+        assert_eq!(
+            personnage_dans(Some(&biblio), &livre, "seulement-livre"),
+            Some(livre.join("seulement-livre")),
+            "à défaut, le dossier livré"
+        );
+        assert_eq!(
+            personnage_dans(Some(&biblio), &livre, "inexistant"),
+            None,
+            "introuvable partout → None"
+        );
+        assert_eq!(
+            personnage_dans(None, &livre, "blob"),
+            Some(livre.join("blob")),
+            "sans bibliothèque, le dossier livré suffit"
+        );
+    }
 
     static COMPTEUR: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 

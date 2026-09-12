@@ -81,7 +81,14 @@ fn main() {
             .and_then(|s| s.parse::<u32>().ok())
             .unwrap_or(42);
 
-        let dossier = config::dossier_personnages().join("blob");
+        // La MÊME résolution que l'application : la simulation doit jouer
+        // avec le `blob` que le programme afficherait réellement, sinon elle
+        // mesurerait le comportement d'un autre personnage que celui qu'on
+        // observe à l'écran.
+        let Some(dossier) = config::dossier_du_personnage("blob") else {
+            eprintln!("simulation impossible : personnage « blob » introuvable");
+            std::process::exit(1);
+        };
         println!(
             "simulation de {minutes} min, graine {graine}, personnage {}",
             dossier.display()
@@ -195,7 +202,21 @@ fn lancer_application() {
     // ── Le manifeste, avant tout le reste ───────────────────────────────
     // Sans personnage, il n'y a rien à afficher : autant échouer tout de
     // suite avec un message clair que d'ouvrir une fenêtre vide.
-    let manifeste = match character::manifest::Manifest::load(&dossier.join(&nom_personnage)) {
+    // Le personnage se cherche dans la bibliothèque PUIS dans le dossier
+    // livré : un pack installé par le catalogue est prioritaire sur un pack
+    // du dépôt qui porterait le même nom.
+    //
+    // `let … else` : sans dossier, il n'y a rien à afficher. On échoue tout
+    // de suite avec un message qui NOMME le personnage cherché, plutôt que
+    // d'ouvrir une fenêtre vide.
+    let Some(dossier_perso) = config::dossier_du_personnage(&nom_personnage) else {
+        eprintln!(
+            "personnage « {nom_personnage} » introuvable (ni bibliothèque, ni dossier livré)"
+        );
+        std::process::exit(1);
+    };
+
+    let manifeste = match character::manifest::Manifest::load(&dossier_perso) {
         Ok(m) => m,
         Err(e) => {
             eprintln!("personnage « {nom_personnage} » illisible : {e}");
@@ -213,10 +234,6 @@ fn lancer_application() {
     let table = behavior::desire::TableEnvies::depuis_config(&configuration);
     let echelle_config = configuration.echelle;
 
-    // Le dossier est déplacé dans la fermeture du schéma URI ci-dessous ;
-    // on en garde une copie pour la suite.
-    let dossier_pour_protocole = dossier.clone();
-
     tauri::Builder::default()
         // ── Le schéma URI qui sert les PNG externes ─────────────────────
         // Les personnages sont des fichiers externes au binaire (spec §8.1),
@@ -227,8 +244,12 @@ fn lancer_application() {
         // Vérifié : `Builder::register_uri_scheme_protocol`
         // (tauri-2.11.5/src/app.rs:2130) ; l'hôte `.localhost` sur Windows
         // (src/manager/mod.rs:342).
+        // Plus de dossier capturé : `servir_frame` résout lui-même le
+        // personnage nommé dans l'URL, par la MÊME règle que le chargement
+        // (bibliothèque puis dossier livré). Capturer un dossier unique
+        // reviendrait à ne pouvoir servir qu'une seule des deux racines.
         .register_uri_scheme_protocol("shime", move |_ctx, requete| {
-            servir_frame(&dossier_pour_protocole, requete.uri().path())
+            servir_frame(requete.uri().path())
         })
         .setup(move |app| {
             // ── La topologie, et le monde ───────────────────────────────
@@ -317,10 +338,15 @@ fn lancer_application() {
 
             // Tout ce dont les DEUX menus ont besoin pour agir, en un seul
             // objet partagé — voir l'en-tête d'`actions.rs`.
+            // `dossier_perso` et non `dossier` : les actions travaillent
+            // désormais sur le dossier DU PERSONNAGE, déjà résolu. C'est ce
+            // qui leur évite de refaire la résolution — et « Ouvrir le
+            // dossier » ouvre du coup celui du personnage, plus utile que
+            // son parent.
             let actions = actions::Actions::nouvelles(
                 visibilite.clone(),
                 demande.clone(),
-                dossier.clone(),
+                dossier_perso.clone(),
                 nom_personnage.clone(),
                 commande.clone(),
             );
@@ -453,7 +479,7 @@ fn lancer_application() {
 /// forme exacte plutôt que de composer un chemin de fichier depuis une
 /// chaîne arbitraire : un `..` dans l'URL ne doit pas pouvoir désigner un
 /// fichier hors du dossier des personnages.
-fn servir_frame(dossier: &std::path::Path, chemin: &str) -> tauri::http::Response<Vec<u8>> {
+fn servir_frame(chemin: &str) -> tauri::http::Response<Vec<u8>> {
     let refus = |code: u16| {
         tauri::http::Response::builder()
             .status(code)
@@ -484,10 +510,13 @@ fn servir_frame(dossier: &std::path::Path, chemin: &str) -> tauri::http::Respons
         return refus(404);
     }
 
-    let fichier = dossier
-        .join(personnage)
-        .join("img")
-        .join(format!("shime{n}.png"));
+    // Même résolution que le chargement : bibliothèque puis dossier livré.
+    // La validation du nom ci-dessus protège désormais DEUX racines, ce qui
+    // la rend d'autant plus nécessaire.
+    let Some(dossier_perso) = crate::config::dossier_du_personnage(personnage) else {
+        return refus(404);
+    };
+    let fichier = dossier_perso.join("img").join(format!("shime{n}.png"));
 
     // On ne trace que les ÉCHECS. Tracer les succès a servi une fois — c'est
     // ainsi qu'on a diagnostiqué le sprite invisible (voir `render::pousser`)
@@ -576,8 +605,6 @@ fn boucle(
     // Tauri jusqu'à l'unique gestionnaire installé par `tray.rs`.
     commande: actions::Commande,
 ) {
-    // Le dossier des personnages, pour le rechargement par témoin.
-    let dossier_boucle = config::dossier_personnages();
     use behavior::Entrees;
     use std::time::{Duration, Instant};
     // `get_webview_window` est une méthode du trait `Manager` : sans cet
@@ -785,9 +812,16 @@ fn boucle(
             // on le retire pour ne pas boucler.
             if temoin.exists() {
                 let _ = std::fs::remove_file(&temoin);
-                match rechargement::preparer(&demande, &dossier_boucle, &nom_personnage) {
-                    Ok(v) => println!("rechargement demandé par témoin (version {v})"),
-                    Err(e) => eprintln!("rechargement impossible : {e}"),
+                // On résout le dossier À CHAQUE fois plutôt qu'une fois au
+                // démarrage : le personnage a pu être installé dans la
+                // bibliothèque entre-temps, et un chemin mémorisé ne le
+                // verrait jamais.
+                match config::dossier_du_personnage(&nom_personnage) {
+                    Some(d) => match rechargement::preparer(&demande, &d) {
+                        Ok(v) => println!("rechargement demandé par témoin (version {v})"),
+                        Err(e) => eprintln!("rechargement impossible : {e}"),
+                    },
+                    None => eprintln!("rechargement impossible : « {nom_personnage} » introuvable"),
                 }
             }
 

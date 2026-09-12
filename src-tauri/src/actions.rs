@@ -201,11 +201,10 @@ pub fn executer(actions: &Actions, app: &AppHandle, id: &str, cases_du_tray: &Ca
 
         // ── Les entrées communes aux deux menus ─────────────────────────
         ID_RECHARGER => {
-            match crate::rechargement::preparer(
-                &actions.demande,
-                &actions.dossier,
-                &actions.personnage,
-            ) {
+            // `actions.dossier` désigne désormais le dossier DU PERSONNAGE,
+            // déjà résolu au démarrage (bibliothèque puis dossier livré) :
+            // il n'y a plus de nom à joindre ici.
+            match crate::rechargement::preparer(&actions.demande, &actions.dossier) {
                 Ok(v) => println!("rechargement demandé (version {v})"),
                 // **Bruyant.** Un rechargement silencieusement raté est le
                 // pire des cas : on croit tester son nouveau timing et on
@@ -215,6 +214,11 @@ pub fn executer(actions: &Actions, app: &AppHandle, id: &str, cases_du_tray: &Ca
         }
 
         ID_DOSSIER => {
+            // Ouvre désormais le dossier DU PERSONNAGE et non son parent,
+            // `actions.dossier` ayant changé de sens. C'est plus utile : on
+            // ouvre ce menu pour éditer un `mascot.json` ou regarder des
+            // frames, jamais pour voir la liste des personnages.
+            //
             // `explorer` plutôt qu'un plugin Tauri : c'est une ligne, ça
             // n'ajoute aucune dépendance, et l'échec (dossier absent) n'a pas
             // de conséquence.
