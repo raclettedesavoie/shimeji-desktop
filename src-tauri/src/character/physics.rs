@@ -435,11 +435,33 @@ fn contact_mur(world: &World, avant: Point, apres: Point) -> Option<(PlatformId,
             // Le bon sens, et c'est le cœur du test. Une face `Left` regarde
             // vers la gauche : on la heurte en allant vers la DROITE. Une
             // face `Right` regarde vers la droite : on la heurte en allant
-            // vers la gauche. Sans cette condition, un personnage qui se
-            // lâche se rattraperait à l'image suivante.
+            // vers la gauche.
+            //
+            // ⚠️ **Correction de bug, et l'asymétrie strict/large n'est PAS
+            // une coquetterie.** Le côté DÉPART (`avant`) est maintenant
+            // testé en **strict** (`<` / `>`), alors que le côté ARRIVÉE
+            // (`apres`) reste large (`>=` / `<=`). « Franchir » veut dire
+            // qu'on était strictement d'un côté avant, et qu'on est passé de
+            // l'autre — quelqu'un déjà pile SUR le plan du mur ne franchit
+            // rien, il y est déjà.
+            //
+            // Avec l'ancienne version, large des deux côtés, un personnage
+            // qui vient de LÂCHER un mur repart avec `pos.x == x_face`
+            // exactement (voir `intention::grimper`, phase `Accroche` :
+            // `Falling { pos: plat.rect.point_on(face, offset), .. }`) et une
+            // vitesse horizontale nulle. Son `x` ne bouge donc plus d'une
+            // image à l'autre pendant que la gravité le fait descendre :
+            // `avant.x == apres.x == x_face` satisfaisait quand même
+            // `avant.x >= x_face && apres.x <= x_face`, donc il se
+            // raccrochait IMMÉDIATEMENT, indéfiniment — impossible de se
+            // décoller d'un mur, à la fin d'une escalade (Tâche 4) comme
+            // après un lancer (Tâche 5). Rendre le côté départ strict
+            // élimine exactement ce cas : `avant.x` pile sur `x_face` ne
+            // vérifie plus `avant.x > x_face` (ni `<`), donc `franchie` est
+            // `false` et il continue de tomber.
             let franchie = match face {
-                Face::Left => avant.x <= x_face && apres.x >= x_face,
-                Face::Right => avant.x >= x_face && apres.x <= x_face,
+                Face::Left => avant.x < x_face && apres.x >= x_face,
+                Face::Right => avant.x > x_face && apres.x <= x_face,
                 // Les faces horizontales ne passent jamais par ici : le
                 // tableau ci-dessus n'en contient pas. `false` est le repli
                 // muet correct.

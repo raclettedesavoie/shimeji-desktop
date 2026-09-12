@@ -414,6 +414,77 @@ mod tests {
     }
 
     #[test]
+    fn lacher_un_mur_le_fait_vraiment_tomber_sur_plusieurs_images() {
+        // ── Le test qui manquait depuis les Tâches 3, 4 et 5 ────────────
+        //
+        // Bug corrigé (relecture de la Tâche 5) : `intention::grimper`
+        // lâche un mur avec `Falling { pos: plat.rect.point_on(face,
+        // offset), vel: Vec2::zero() }` — `x` reste donc EXACTEMENT sur le
+        // plan du mur. Comme la vitesse horizontale est nulle, `x` ne bouge
+        // plus d'une image à l'autre pendant que la gravité fait descendre
+        // `y` seul, et l'ancien test de franchissement de `contact_mur`
+        // (large des deux côtés) considérait ça comme un nouveau
+        // franchissement : il se raccrochait IMMÉDIATEMENT, indéfiniment.
+        //
+        // Ce bug ne se voit QUE sur plusieurs images de la boucle complète
+        // — `une_intention_finie_sur_un_mur_le_fait_lacher` ci-dessus ne
+        // vérifie qu'un seul appel à `pas`, et l'état qu'il obtient
+        // (`Falling` avec `vel = zero`) est EXACTEMENT celui du bug : la
+        // toute première image après le lâcher est indiscernable, qu'on
+        // retombe vraiment ou qu'on se rattrape à l'image suivante. Il faut
+        // faire tourner la boucle pour le voir.
+        let m = monde();
+        let mut ch = perso(&m);
+        let mur = mur_gauche(&m);
+
+        ch.attachment = Attachment::On {
+            platform: mur.id,
+            face: Face::Right,
+            offset: 400.0,
+        };
+        ch.intention = None;
+
+        let mut rng = XorShift32::seeded(1);
+        let table = desire::TableEnvies::defaut();
+        let reglages = crate::config::Reglages::depuis(&crate::config::Config::default());
+
+        // Une demi-seconde simulée : assez pour distinguer « il tombe » de
+        // « il se rattrape à chaque image », mais pas assez pour qu'il ait
+        // atteint le sol depuis y = 400 (632 px plus bas) — sinon le test
+        // ne pourrait plus distinguer « il tombe encore » de « il a fini de
+        // tomber », ce qui serait vrai aussi.
+        for i in 0..30 {
+            pas(
+                &mut ch,
+                &m,
+                &entrees(true, 1.0),
+                &table,
+                &reglages,
+                Duration::from_secs(1) + Duration::from_secs_f32(i as f32 * DT),
+                DT,
+                &mut rng,
+            );
+        }
+
+        match ch.attachment {
+            Attachment::Falling { vel, .. } => {
+                // La vitesse de chute doit avoir GRANDI : c'est la
+                // signature d'une chute réelle sous la gravité, pas d'un
+                // lâcher suivi d'un raccrochage immédiat (qui laisserait
+                // `vel` à zéro, remise à zéro à chaque image).
+                assert!(
+                    vel.y > 50.0,
+                    "il devrait être tombé sous l'effet de la gravité, vy = {}",
+                    vel.y
+                );
+            }
+            autre => panic!(
+                "il devrait être tombé du mur et le rester, il est {autre:?}"
+            ),
+        }
+    }
+
+    #[test]
     fn une_intention_finie_sur_le_sol_ne_le_fait_pas_lacher() {
         // Le contre-exemple, indispensable : sans lui, un bug qui
         // détacherait TOUT LE MONDE (pas seulement les faces verticales)

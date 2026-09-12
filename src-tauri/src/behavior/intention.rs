@@ -696,6 +696,29 @@ fn grimper(
         PhaseGrimpe::Accroche => {
             ch.set_pose(POSE_GRAB_WALL, maintenant);
 
+            // `jusqu_a == ZERO` : première image de cette phase, sa durée
+            // n'a pas encore été tirée. C'est le cas normal en sortie de
+            // `Paroi` ci-dessus (ligne "sera tirée…" plus haut n'existe pas
+            // ici, la durée y est déjà posée) — mais surtout le cas d'une
+            // intention installée de l'EXTÉRIEUR par
+            // `ActiveIntention::accroche_au_mur` (Tâche 5, un lancer contre
+            // un mur), qui pose `jusqu_a: ZERO` précisément pour que cette
+            // toute première image tire la durée d'accroche.
+            //
+            // ⚠️ **Correction de bug** : sans cette branche, `maintenant >=
+            // Duration::ZERO` est toujours vrai, donc la toute première
+            // image sautait directement au tirage lâcher/redescendre — le
+            // personnage jeté contre un mur décidait de repartir 16 ms après
+            // s'être accroché, sans jamais tenir la seconde promise. Même
+            // motif que `se_reposer`, qui traite `jusqu_a == ZERO` comme
+            // « pas encore tirée » avant de tester l'expiration.
+            if jusqu_a == Duration::ZERO {
+                let d = reglages.escalade.duree_accroche;
+                jusqu_a = maintenant + Duration::from_secs_f32(rng.range(d[0], d[1]));
+                ai.etat = EtatIntention::Grimpe { phase, jusqu_a };
+                return Issue::EnCours;
+            }
+
             if maintenant < jusqu_a {
                 ai.etat = EtatIntention::Grimpe { phase, jusqu_a };
                 return Issue::EnCours;
@@ -2392,12 +2415,24 @@ mod tests {
                 offset: 300.0,
             };
             // Une accroche déjà expirée : la prochaine image tire la sortie.
+            //
+            // ⚠️ **`jusqu_a` ne peut PAS valoir `Duration::ZERO` ici, et ce
+            // n'est pas un détail.** `ZERO` ne veut PAS dire « déjà
+            // expirée » mais « durée pas encore tirée » — c'est la
+            // convention d'`ActiveIntention::nouvelle` et de `reveil`, et le
+            // bras `PhaseGrimpe::Accroche` de `grimper()` l'applique
+            // maintenant (correction du bug relevé en relecture de la
+            // Tâche 5 : sans cette lecture, la toute première image
+            // sautait le tirage lâcher/redescendre). Un test qui veut une
+            // accroche VRAIMENT expirée doit donc donner un `jusqu_a` non
+            // nul et déjà dépassé — ici 1 ms, largement avant le
+            // `maintenant` d'une seconde de l'appel ci-dessous.
             ch.intention = Some(ActiveIntention {
                 kind: Intention::Grimper,
                 depuis: Duration::ZERO,
                 etat: EtatIntention::Grimpe {
                     phase: PhaseGrimpe::Accroche,
-                    jusqu_a: Duration::ZERO,
+                    jusqu_a: Duration::from_millis(1),
                 },
             });
 

@@ -1155,6 +1155,39 @@ mod tests {
             "il doit tenir le mur, il est {:?}",
             ch.attachment
         );
+
+        // ── La bonne raison, et pas seulement le bon résultat ───────────
+        //
+        // Bug corrigé (relecture de la Tâche 5) : `PhaseGrimpe::Accroche`
+        // n'avait aucune initialisation paresseuse de `jusqu_a`, donc la
+        // toute première image sautait directement au tirage
+        // lâcher/redescendre — il ne tenait jamais la seconde promise. Ce
+        // test passait quand même, mais pour la MAUVAISE raison : un bug
+        // séparé dans `contact_mur` (le franchissement large des deux
+        // côtés) faisait se raccrocher IMMÉDIATEMENT tout personnage lâché
+        // pile sur le plan du mur, ce qui reproduisait accidentellement
+        // `Attachment::On`. On vérifie donc maintenant l'ÉTAT INTERNE :
+        // l'intention doit être `Grimper`, en phase `Accroche`, avec un
+        // `jusqu_a` déjà tiré (donc non nul) — la preuve qu'il tient
+        // vraiment le mur pendant sa durée d'accroche, et non qu'il
+        // s'est lâché puis instantanément rattrapé.
+        let tient_vraiment = matches!(
+            ch.intention,
+            Some(crate::behavior::intention::ActiveIntention {
+                kind: crate::behavior::intention::Intention::Grimper,
+                etat: crate::behavior::intention::EtatIntention::Grimpe {
+                    phase: crate::behavior::intention::PhaseGrimpe::Accroche,
+                    jusqu_a,
+                },
+                ..
+            }) if jusqu_a != Duration::ZERO
+        );
+        assert!(
+            tient_vraiment,
+            "il devrait être en train de tenir le mur (Grimper/Accroche, \
+             jusqu_a tiré), il est {:?}",
+            ch.intention
+        );
     }
 
     #[test]
