@@ -254,7 +254,7 @@ pub fn executer(
 
     // Pour la détection de blocage : ce qu'on observait au dernier
     // changement, et quand.
-    let mut derniere_empreinte = (String::new(), 0i64, 0u64);
+    let mut derniere_empreinte = (String::new(), 0i64, 0i64, 0u64);
     let mut depuis_changement = Duration::ZERO;
 
     // On identifie une intention par `(type, depuis)` et non par son seul
@@ -338,6 +338,9 @@ pub fn executer(
                     behavior::intention::Intention::Jouer(
                         behavior::intention::Jeu::JambesQuiBalancent,
                     ) => 4u64,
+                    // L'escalade (étape 4a) : son propre jeton, pour que deux
+                    // histoires qui grimpent différemment se distinguent.
+                    behavior::intention::Intention::Grimper => 5u64,
                 };
                 resume.signature = resume
                     .signature
@@ -350,11 +353,18 @@ pub fn executer(
         resume.poses_vues.insert(ch.pose.clone());
 
         // ── Détection de blocage ────────────────────────────────────────
-        // L'empreinte : la pose, la position arrondie au pixel, et le nombre
-        // d'intentions tirées.
+        // L'empreinte : la pose, la position (x ET y) arrondie au pixel, et
+        // le nombre d'intentions tirées.
         //
         // · On arrondit la position parce qu'un flottant qui bouge de 1e-6
         //   par image ferait croire à un mouvement.
+        // · `y` a rejoint `x` avec l'étape 4a : jusque-là tout déplacement
+        //   était horizontal, et l'empreinte n'avait donc besoin que de `x`.
+        //   Une escalade avance en `y` à x constant — sans ce terme, monter
+        //   un mur de 1032 px à 16,1 px/s (64 s, cf. `VITESSE_ESCALADE`)
+        //   ressemblait à un blocage de 64 s, largement au-dessus de la
+        //   limite de 21 s, alors qu'il grimpait bel et bien. Un faux
+        //   positif du détecteur, pas une régression du comportement.
         // · Le compteur d'intentions est indispensable : deux repos tirés de
         //   suite laissent la pose et la position identiques pendant 30 s,
         //   alors que rien n'est bloqué — c'est une SUITE DE CHOIX. Sans ce
@@ -363,6 +373,7 @@ pub fn executer(
         let empreinte = (
             ch.pose.clone(),
             ch.pos_connue.x.round() as i64,
+            ch.pos_connue.y.round() as i64,
             resume.intentions_tirees,
         );
         if empreinte != derniere_empreinte {

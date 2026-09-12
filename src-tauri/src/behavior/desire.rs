@@ -18,7 +18,9 @@
 //!     (le plan 1b les sortira dans `config.json`).
 
 use super::intention::{Intention, Jeu};
-use crate::character::manifest::{Manifest, POSE_SIT, POSE_WALK};
+use crate::character::manifest::{
+    Manifest, POSE_CLIMB_WALL, POSE_GRAB_WALL, POSE_SIT, POSE_WALK,
+};
 use crate::rng::Rng;
 
 /// Une ligne de la table d'envies.
@@ -102,6 +104,20 @@ impl TableEnvies {
                     intention: Intention::Jouer(Jeu::JambesQuiBalancent),
                     base: config.envies.jouer,
                     poses_requises: Jeu::JambesQuiBalancent.poses_requises(),
+                },
+                // L'escalade (étape 4a). Les deux poses suffisent : sans
+                // `grabWall` il ne saurait pas tenir, sans `climbWall` il ne
+                // saurait pas monter. Un pack qui n'a ni l'une ni l'autre ne
+                // grimpera JAMAIS, et il n'y a aucun cas particulier ailleurs
+                // (spec §8.6).
+                //
+                // `climbCeiling` n'y figure pas volontairement : un pack qui
+                // sait grimper mais pas se suspendre grimpe quand même, et
+                // s'arrête en haut du mur (Tâche 6).
+                EntreeEnvie {
+                    intention: Intention::Grimper,
+                    base: config.envies.grimper,
+                    poses_requises: &[POSE_GRAB_WALL, POSE_CLIMB_WALL],
                 },
             ],
         }
@@ -216,6 +232,9 @@ mod tests {
                 // par erreur, on veut un panic bruyant, pas un total qui ne
                 // correspond plus à `n`.
                 Some(Intention::Jouer(_)) => unreachable!("aucune pose de jeu dans ce manifeste"),
+                // Même raison, pour la ligne `Grimper` de l'étape 4a : ces
+                // manifestes n'ont ni `grabWall` ni `climbWall`.
+                Some(Intention::Grimper) => unreachable!("aucune pose d'escalade dans ce manifeste"),
                 None => rien += 1,
             }
         }
@@ -284,6 +303,9 @@ mod tests {
                 // `spinHead` ni `sitDangle`, le poids des lignes `Jouer` est
                 // nul, la branche est inatteignable.
                 Some(Intention::Jouer(_)) => unreachable!("aucune pose de jeu dans ce manifeste"),
+                // Même raison, pour la ligne `Grimper` de l'étape 4a : ces
+                // manifestes n'ont ni `grabWall` ni `climbWall`.
+                Some(Intention::Grimper) => unreachable!("aucune pose d'escalade dans ce manifeste"),
                 None => {}
             }
         }
@@ -346,6 +368,9 @@ mod tests {
                 // `spinHead` ni `sitDangle`, le poids des lignes `Jouer` est
                 // nul, la branche est inatteignable.
                 Some(Intention::Jouer(_)) => unreachable!("aucune pose de jeu dans ce manifeste"),
+                // Même raison, pour la ligne `Grimper` de l'étape 4a : ces
+                // manifestes n'ont ni `grabWall` ni `climbWall`.
+                Some(Intention::Grimper) => unreachable!("aucune pose d'escalade dans ce manifeste"),
                 None => {}
             }
         }

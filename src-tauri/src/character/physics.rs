@@ -81,6 +81,26 @@ pub const VITESSE_MARCHE: f32 = 50.0;
 /// `-8,0` (200 px/s) qu'on n'utilise pas encore.
 pub const VITESSE_COURSE: f32 = 100.0;
 
+/// Vitesse d'escalade, en px/s.
+///
+/// **Relevée dans `conf/actions.xml`, pas réglée à l'œil.** L'action
+/// `ClimbWall` enchaîne huit poses de durées 16, 4, 4, 4, 16, 4, 4, 4 ticks,
+/// de vitesses 0, −1, −1, −1, 0, −2, −2, −2 px/tick. Déplacement :
+/// `3×4×1 + 3×4×2 = 36 px`. Durée : `56 × 40 ms = 2,24 s`. Soit **16,1 px/s**,
+/// c'est-à-dire **trois fois plus lent que la marche** (50 px/s).
+///
+/// C'est cette lenteur qui donne le « il se hisse » plutôt que « il glisse ».
+/// Ne pas l'accélérer pour rendre l'escalade « plus fluide » : on perdrait
+/// exactement ce qui la rend jolie. Un mur de 1032 px prend donc 64 s, ce qui
+/// est la raison du délai d'abandon à 120 s (design §4.4).
+pub const VITESSE_ESCALADE: f32 = 16.1;
+
+/// Bornes `[min, max]` de la durée d'accroche à une paroi, en secondes.
+///
+/// `HoldOntoWall` de `conf/actions.xml` : `Duration="${500+Math.random()*1000}"`,
+/// en millisecondes — donc de 0,5 s à 1,5 s.
+pub const DUREE_ACCROCHE: [f32; 2] = [0.5, 1.5];
+
 // ── Le balancier du personnage porté ──────────────────────────────────
 //
 // **Ce n'est pas une animation, c'est un ressort amorti.** Découvert dans

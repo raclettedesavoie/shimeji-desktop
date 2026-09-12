@@ -88,6 +88,18 @@ pub const POSE_SIT_DANGLE: &str = "sitDangle";
 /// Porté, au repos : il pend droit. Frame 1.
 pub const POSE_DRAGGED: &str = "dragged";
 
+/// La pose d'accroche à une paroi verticale — `GrabWall`, frame **13**.
+///
+/// ⚠️ Ce sont bien les frames **12, 13, 14** qui font le mur. Les frames
+/// 23, 24, 25 sont celles du **plafond** (`GrabCeiling` / `ClimbCeiling`) :
+/// la table de `CLAUDE.md` les attribuait à tort à la paroi verticale.
+/// `docs/specs/2026-09-09-frames-shimeji.md` fait foi.
+pub const POSE_GRAB_WALL: &str = "grabWall";
+
+/// L'escalade d'une paroi — `ClimbWall`, frames 14, 12, 13.
+pub const POSE_CLIMB_WALL: &str = "climbWall";
+
+
 /// Les poses de balancement, **tête à gauche**, du plus léger au plus ample.
 ///
 /// Frames 6, 8, 10. Le pied traîne alors à droite, ce qui arrive quand le

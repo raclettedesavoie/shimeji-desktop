@@ -53,6 +53,7 @@ const ENVIES: &[(&str, &str, Intention)] = &[
         "Balancer les jambes",
         Intention::Jouer(Jeu::JambesQuiBalancent),
     ),
+    ("perso.grimper", "Grimper au mur", Intention::Grimper),
 ];
 
 /// L'intention que désigne un identifiant d'entrée, s'il en désigne une.
@@ -260,6 +261,26 @@ mod tests {
             assert!(
                 table.entrees.iter().any(|e| e.intention == *intention),
                 "« {id} » n'est pas dans la table d'envies : l'entrée serait toujours cachée"
+            );
+        }
+    }
+
+    #[test]
+    fn toute_intention_de_la_table_d_envies_est_proposee_par_le_menu() {
+        // ⚠️ Ce test est le rattrapage de l'oubli que `CLAUDE.md` décrit :
+        // une intention qui existe pour le tirage mais qu'aucune entrée de
+        // menu ne propose est un manque SILENCIEUX. Il ne l'est plus.
+        //
+        // C'est la RÉCIPROQUE de `toutes_les_envies_du_menu_sont_dans_la_table`
+        // ci-dessus : celui-là interdit une entrée de menu sans ligne de
+        // table, celui-ci interdit une ligne de table sans entrée de menu.
+        // Il faut les deux pour que la correspondance soit exacte.
+        let table = TableEnvies::defaut();
+        for entree in &table.entrees {
+            assert!(
+                ENVIES.iter().any(|(_, _, i)| *i == entree.intention),
+                "{:?} est tirable mais absente du menu contextuel",
+                entree.intention
             );
         }
     }

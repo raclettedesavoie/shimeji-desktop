@@ -19,12 +19,13 @@
 
 use crate::character::attach::Attachment;
 use crate::character::manifest::{
-    POSE_RUN, POSE_SIT, POSE_SIT_DANGLE, POSE_SLEEP, POSE_SPIN_HEAD, POSE_STAND, POSE_WAKE,
-    POSE_WALK,
+    POSE_CLIMB_WALL, POSE_GRAB_WALL, POSE_RUN, POSE_SIT, POSE_SIT_DANGLE, POSE_SLEEP,
+    POSE_SPIN_HEAD, POSE_STAND, POSE_WAKE, POSE_WALK,
 };
 use crate::config::Reglages;
 use crate::character::Character;
-use crate::geom::Face;
+use crate::character::Facing;
+use crate::geom::{Face, Point};
 use crate::rng::Rng;
 use crate::world::{PlatformId, World};
 use std::time::Duration;
@@ -36,6 +37,34 @@ use std::time::Duration;
 /// flânerie qui expire produit simplement un nouveau tirage : de la variété
 /// gratuite.
 pub const DELAI_ABANDON: Duration = Duration::from_secs(20);
+
+/// Délai d'abandon de 120 s pour l'escalade (design §4.4).
+///
+/// **Pourquoi pas 20 s comme le reste.** L'escalade va à 16,1 px/s : un mur
+/// de 1032 px prend 64 s, et la marche jusqu'au bord en ajoute jusqu'à 19.
+/// Avec le délai commun, il abandonnerait toujours au tiers du mur et
+/// n'atteindrait jamais le plafond.
+///
+/// La décision n° 4 écrit « ~20 s » avec un tilde : c'est une règle de
+/// sécurité anti-blocage, pas un trait de caractère, et elle n'a pas de
+/// raison d'être identique pour une intention trois fois plus lente.
+pub const DELAI_ABANDON_GRIMPE: Duration = Duration::from_secs(120);
+
+/// Le délai d'abandon qui s'applique à cette intention-là.
+///
+/// Une fonction et non une méthode de `Intention` : le délai est une règle
+/// du moteur de comportement, pas une propriété de l'étiquette — la même
+/// raison qui a fait de `vitesse_de(allure)` une fonction libre.
+pub fn delai_abandon(kind: Intention) -> Duration {
+    match kind {
+        Intention::Grimper => DELAI_ABANDON_GRIMPE,
+        // `|` : les trois autres partagent le délai commun. Un `_` les
+        // couvrirait aussi, mais il avalerait silencieusement toute
+        // intention future — alors que ce `match` exhaustif obligera à se
+        // poser la question.
+        Intention::Flaner | Intention::SeReposer | Intention::Jouer(_) => DELAI_ABANDON,
+    }
+}
 
 /// À quoi il joue.
 ///
@@ -90,6 +119,17 @@ pub enum Intention {
     Flaner,
     SeReposer,
     Jouer(Jeu),
+
+    /// Aller sur un mur et y monter (étape 4a).
+    ///
+    /// **Cette intention possède tout le monde vertical**, et `Flaner`
+    /// continue de ne connaître que le sol. L'alternative — généraliser
+    /// `Flaner` à n'importe quelle face — est un piège : `avancer` déplace
+    /// l'offset *le long de la face courante*, donc un `Flaner` sur un mur
+    /// ferait monter et descendre le personnage en pose de marche, allure et
+    /// demi-tours compris. Séparer coûte une variante ; fondre coûterait une
+    /// matrice pose × face (design §4.1).
+    Grimper,
 }
 
 /// À quelle vitesse il se déplace pendant une flânerie.
@@ -154,6 +194,42 @@ pub enum PhaseRepos {
     Selevant,
 }
 
+/// Où en est une escalade.
+///
+/// Même forme que `PhaseRepos`, et pour la même raison : ce ne sont pas des
+/// choix distincts, c'est *la suite* d'une même intention. Les mettre dans la
+/// table d'envies demanderait au tirage de savoir où le personnage est
+/// accroché, ce qui n'a rien à y faire.
+///
+/// `PartialEq` sans `Eq` : la variante `Paroi` porte un `f32`, et `f32`
+/// n'implémente pas `Eq` en Rust (NaN n'est égal à rien, pas même à
+/// lui-même). C'est la même raison qui prive déjà `EtatIntention` d'`Eq`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PhaseGrimpe {
+    /// Première image : choisir le mur. Existe pour que
+    /// `ActiveIntention::nouvelle` reste **sans `World` ni `Rng`** — c'est
+    /// déjà le parti pris des autres intentions, dont l'état initial est
+    /// délibérément périmé pour que la première image décide.
+    Choisir,
+
+    /// Marcher vers le mur retenu. On mémorise **son identité**, jamais sa
+    /// position : le monde est reconstruit à 8 Hz, et une position serait
+    /// périmée (décision n° 1).
+    Rejoindre { mur: PlatformId },
+
+    /// Se déplacer le long de la paroi vers `cible`.
+    ///
+    /// La phase s'appelle `Paroi` et non `Monter` parce qu'elle sert dans les
+    /// **deux sens** : monter, c'est une cible plus petite que l'offset
+    /// courant ; redescendre, une cible plus grande. C'est la structure de
+    /// `ClimbWall` chez Shimeji-ee, dont les deux animations sont
+    /// conditionnées par `TargetY < mascot.anchor.y`.
+    Paroi { cible: f32 },
+
+    /// Accroché, immobile, le temps tiré au sort.
+    Accroche,
+}
+
 /// L'état interne d'une intention en cours.
 ///
 /// Séparé de `Intention` : celle-ci est une **étiquette** (`Copy`, `Eq`),
@@ -168,6 +244,13 @@ pub enum EtatIntention {
         jusqu_a: Duration,
     },
     Jeu { jusqu_a: Duration },
+
+    /// L'escalade en cours. `jusqu_a` n'est lu que par la phase `Accroche` —
+    /// les trois autres n'ont pas de durée, elles ont un but à atteindre.
+    Grimpe {
+        phase: PhaseGrimpe,
+        jusqu_a: Duration,
+    },
 }
 
 /// Une intention en cours, avec le moment où elle a commencé — c'est de là
@@ -197,6 +280,14 @@ impl ActiveIntention {
                 jusqu_a: Duration::ZERO,
             },
             Intention::Jouer(_) => EtatIntention::Jeu {
+                jusqu_a: Duration::ZERO,
+            },
+            // `Choisir` est l'équivalent du `jusqu_a: ZERO` des autres : un
+            // état volontairement « pas encore décidé », que la première
+            // image de `grimper` tranchera — c'est ce qui dispense cette
+            // fonction d'un `World` et d'un `Rng`.
+            Intention::Grimper => EtatIntention::Grimpe {
+                phase: PhaseGrimpe::Choisir,
                 jusqu_a: Duration::ZERO,
             },
         };
@@ -265,7 +356,7 @@ pub fn poursuivre(
     // ── Le délai d'abandon, avant tout le reste ─────────────────────────
     // Décision n° 4. `saturating_sub` : si l'horloge de test recule (elle
     // le peut, `FakeClock::set` existe), on ne veut pas de débordement.
-    if maintenant.saturating_sub(ai.depuis) > DELAI_ABANDON {
+    if maintenant.saturating_sub(ai.depuis) > delai_abandon(ai.kind) {
         ch.intention = None;
         return Issue::Echouee;
     }
@@ -296,6 +387,14 @@ pub fn poursuivre(
 
         Intention::Jouer(jeu) => {
             let issue = jouer(ch, jeu, &mut ai, maintenant, rng);
+            if ch.intention.is_some() {
+                ch.intention = Some(ai);
+            }
+            issue
+        }
+
+        Intention::Grimper => {
+            let issue = grimper(ch, world, reglages, &mut ai, maintenant, dt, rng);
             if ch.intention.is_some() {
                 ch.intention = Some(ai);
             }
@@ -385,6 +484,327 @@ fn flaner(
 
     ai.etat = EtatIntention::Flanerie { allure, jusqu_a };
     Issue::EnCours
+}
+
+/// Grimper : rejoindre un mur, y monter, s'y accrocher, puis en sortir.
+///
+/// Les transitions de coin (sol → mur, mur → sol) vivent ici et non dans
+/// `world.rs` parce que ce sont des **décisions de navigation**, pas des
+/// propriétés du monde — la même raison qui place déjà `face_voisine` dans ce
+/// fichier (design §4.2).
+///
+/// Les quatre phases s'enchaînent **une par image** : chaque appel n'en
+/// exécute qu'une, et écrit la suivante dans `ai.etat`. C'est ce qui rend la
+/// fonction lisible sans boucle interne, au prix d'une image de transition
+/// que personne ne voit à 60 Hz.
+fn grimper(
+    ch: &mut Character,
+    world: &World,
+    reglages: &Reglages,
+    ai: &mut ActiveIntention,
+    maintenant: Duration,
+    dt: f32,
+    rng: &mut dyn Rng,
+) -> Issue {
+    // Même motif que `flaner` : on n'extrait l'état que sous la bonne
+    // variante, et une incohérence de construction se solde par un échec
+    // plutôt que par un `panic!`.
+    let EtatIntention::Grimpe {
+        mut phase,
+        mut jusqu_a,
+    } = ai.etat
+    else {
+        ch.intention = None;
+        return Issue::Echouee;
+    };
+
+    match phase {
+        // ── Choisir le mur ──────────────────────────────────────────────
+        PhaseGrimpe::Choisir => {
+            // `let … else` : s'il n'est pas posé quelque part, il n'y a pas
+            // d'écran de référence. Les réflexes s'occupent de lui.
+            let Attachment::On { platform, .. } = ch.attachment else {
+                ch.intention = None;
+                return Issue::Echouee;
+            };
+
+            let Some(mur) = mur_le_plus_proche(world, platform, ch) else {
+                // Aucun mur sur cet écran — l'écran du milieu d'une rangée de
+                // trois. L'intention échoue, la couche 3 en tire une autre.
+                // **Aucun cas particulier ailleurs** : c'est le même esprit
+                // que la couverture partielle (spec §8.6).
+                ch.intention = None;
+                return Issue::Echouee;
+            };
+
+            phase = PhaseGrimpe::Rejoindre { mur };
+        }
+
+        // ── Marcher jusqu'au pied du mur ────────────────────────────────
+        PhaseGrimpe::Rejoindre { mur } => {
+            let Some(plat_mur) = world.get(mur) else {
+                // Écran débranché en cours de route.
+                ch.intention = None;
+                return Issue::Echouee;
+            };
+
+            // La face du mur est la seule de sa liste — un mur n'en expose
+            // qu'une. `copied()` transforme l'`Option<&Face>` rendue par
+            // `first()` en `Option<Face>` : `Face` est `Copy`, et l'on
+            // préfère la valeur à la référence pour ne pas garder d'emprunt.
+            let Some(face_mur) = plat_mur.faces.first().copied() else {
+                ch.intention = None;
+                return Issue::Echouee;
+            };
+
+            let x_mur = plat_mur.rect.point_on(face_mur, 0.0).x;
+            let Some(pos) = position_actuelle(ch, world) else {
+                ch.intention = None;
+                return Issue::Echouee;
+            };
+
+            // Il regarde le mur, et il marche vers lui.
+            ch.facing = if x_mur < pos.x {
+                Facing::Left
+            } else {
+                Facing::Right
+            };
+            ch.set_pose(POSE_WALK, maintenant);
+
+            let pas = reglages.vitesse_marche * dt;
+
+            if (x_mur - pos.x).abs() <= pas {
+                // Arrivé : on s'accroche au BAS du mur. L'offset d'une face
+                // verticale compte vers le bas depuis le haut du rectangle,
+                // donc le bas du mur est à `face_length`.
+                let longueur = plat_mur.rect.face_length(face_mur);
+                ch.attachment = Attachment::On {
+                    platform: mur,
+                    face: face_mur,
+                    offset: longueur,
+                };
+
+                // **La pose change dans la MÊME image que l'attache.** Sans
+                // cette ligne, la face serait déjà verticale alors que la
+                // pose dirait encore `walk` — un personnage qui marche dans
+                // le vide pendant une image, et l'invariant de simulation de
+                // la Tâche 7 se déclencherait exactement là-dessus.
+                ch.set_pose(POSE_GRAB_WALL, maintenant);
+
+                // Jusqu'où monter ? Deux comportements de Shimeji-ee :
+                // `ClimbAlongWall` va jusqu'en haut, `ClimbHalfwayAlongWall`
+                // s'arrête à une hauteur tirée. On tire entre les deux — la
+                // marge est le produit (décision n° 3).
+                let cible = if rng.unit_f32() < 0.5 {
+                    0.0
+                } else {
+                    rng.range(0.0, longueur * 0.7)
+                };
+                phase = PhaseGrimpe::Paroi { cible };
+            } else {
+                avancer(ch, world, pas * ch.facing.signe());
+            }
+        }
+
+        // ── Monter, ou redescendre ──────────────────────────────────────
+        PhaseGrimpe::Paroi { cible } => {
+            let Attachment::On {
+                platform,
+                face,
+                offset,
+            } = ch.attachment
+            else {
+                // Il a été attrapé, ou il est tombé : les réflexes ont déjà
+                // tranché, on ne discute pas.
+                ch.intention = None;
+                return Issue::Echouee;
+            };
+
+            let Some(plat) = world.get(platform) else {
+                ch.intention = None;
+                return Issue::Echouee;
+            };
+
+            ch.set_pose(POSE_CLIMB_WALL, maintenant);
+
+            let pas = reglages.vitesse_escalade * dt;
+            let reste = cible - offset;
+
+            if reste.abs() <= pas {
+                // Cible atteinte. Si c'était le bas du mur, l'escalade est
+                // finie et il repasse sur le sol.
+                let longueur = plat.rect.face_length(face);
+                if cible >= longueur - 1.0 {
+                    match sol_au_pied_du_mur(world, platform) {
+                        Some((sol, offset_sol)) => {
+                            ch.attachment = Attachment::On {
+                                platform: sol,
+                                face: Face::Top,
+                                offset: offset_sol,
+                            };
+                            ch.set_pose(POSE_STAND, maintenant);
+                            ch.intention = None;
+                            return Issue::Finie;
+                        }
+                        None => {
+                            // Pas de sol retrouvé : il se lâche. La règle de
+                            // sécurité l'aurait fait de toute façon, mais le
+                            // dire ici évite une image de flottement.
+                            ch.intention = None;
+                            return Issue::Echouee;
+                        }
+                    }
+                }
+
+                phase = PhaseGrimpe::Accroche;
+                let d = reglages.escalade.duree_accroche;
+                jusqu_a = maintenant + Duration::from_secs_f32(rng.range(d[0], d[1]));
+            } else {
+                // `signum` donne le sens : −1 vers le haut (la cible est
+                // au-dessus, donc son offset est plus petit), +1 vers le bas.
+                ch.attachment = Attachment::On {
+                    platform,
+                    face,
+                    offset: offset + pas * reste.signum(),
+                };
+            }
+        }
+
+        // ── Accroché, puis la sortie tirée au sort ──────────────────────
+        PhaseGrimpe::Accroche => {
+            ch.set_pose(POSE_GRAB_WALL, maintenant);
+
+            if maintenant < jusqu_a {
+                ai.etat = EtatIntention::Grimpe { phase, jusqu_a };
+                return Issue::EnCours;
+            }
+
+            let Attachment::On {
+                platform,
+                face,
+                offset,
+            } = ch.attachment
+            else {
+                ch.intention = None;
+                return Issue::Echouee;
+            };
+            let Some(plat) = world.get(platform) else {
+                ch.intention = None;
+                return Issue::Echouee;
+            };
+
+            // Décision n° 5 : les deux poids viennent de `config.json`, on
+            // règle s'il est casse-cou ou prudent sans recompiler.
+            let e = &reglages.escalade;
+            let lache = match rng.weighted(&[e.poids_lacher, e.poids_redescendre]) {
+                Some(0) => true,
+                // `Some(1)` redescend, et `None` aussi — il n'arrive que si
+                // les deux poids sont nuls, auquel cas redescendre est le
+                // repli le moins surprenant.
+                _ => false,
+            };
+
+            if lache {
+                // On repart du rectangle COURANT pour savoir d'où il tombe
+                // (décision n° 1), et la vitesse initiale est nulle : il ne
+                // se jette pas, il lâche prise.
+                ch.attachment = Attachment::Falling {
+                    pos: plat.rect.point_on(face, offset),
+                    vel: crate::geom::Vec2::zero(),
+                };
+                ch.intention = None;
+                return Issue::Finie;
+            }
+
+            // Redescendre, c'est viser le bas du mur : la même phase
+            // `Paroi`, avec une cible plus GRANDE que l'offset courant.
+            phase = PhaseGrimpe::Paroi {
+                cible: plat.rect.face_length(face),
+            };
+        }
+    }
+
+    ai.etat = EtatIntention::Grimpe { phase, jusqu_a };
+    Issue::EnCours
+}
+
+/// Le mur de l'écran du personnage le plus proche de lui.
+///
+/// « De son écran » : c'est à cela que sert `PlatformId::meme_ecran`. Sans ce
+/// filtre, un personnage sur l'écran de gauche pourrait viser le mur droit de
+/// l'écran de droite, à 3 000 px — une marche de 60 s pour rien.
+///
+/// Rend `None` quand cet écran-là n'a aucun mur : c'est le cas de l'écran du
+/// milieu d'une rangée de trois, dont les deux bords sont recouverts par ses
+/// voisins (design §2.3).
+fn mur_le_plus_proche(world: &World, depuis: PlatformId, ch: &Character) -> Option<PlatformId> {
+    // `?` : pas de position connue (plateforme disparue), pas de mur à viser.
+    let pos = position_actuelle(ch, world)?;
+
+    // (identité, distance) — la distance ne sert qu'à comparer, et on la
+    // laisse tomber à la fin. Même motif que `World::nearest_floor`.
+    let mut meilleur: Option<(PlatformId, f32)> = None;
+
+    for plat in world.platforms() {
+        if !plat.id.meme_ecran(depuis) {
+            continue;
+        }
+        // Un mur, c'est-à-dire une plateforme dont l'unique face est
+        // verticale. Le sol (`Top`) et le plafond (`Bottom`) sont écartés
+        // par le test qui suit.
+        let Some(face) = plat.faces.first().copied() else {
+            continue;
+        };
+        if face != Face::Left && face != Face::Right {
+            continue;
+        }
+
+        let d = (plat.rect.point_on(face, 0.0).x - pos.x).abs();
+        // `match` explicite plutôt qu'une chaîne de combinateurs sur
+        // `Option` : la comparaison se relit mieux (même choix que
+        // `nearest_floor`).
+        let remplace = match meilleur {
+            None => true,
+            Some((_, best)) => d < best,
+        };
+        if remplace {
+            meilleur = Some((plat.id, d));
+        }
+    }
+
+    meilleur.map(|(id, _)| id)
+}
+
+/// Le sol sur lequel reposer en bas d'un mur, et l'offset où y arriver.
+///
+/// Le mur et le sol appartiennent au même écran, donc `meme_ecran` suffit —
+/// inutile de chercher géométriquement.
+fn sol_au_pied_du_mur(world: &World, mur: PlatformId) -> Option<(PlatformId, f32)> {
+    let plat_mur = world.get(mur)?;
+    let face_mur = plat_mur.faces.first().copied()?;
+    let x = plat_mur.rect.point_on(face_mur, 0.0).x;
+
+    for plat in world.platforms() {
+        if !plat.id.meme_ecran(mur) || !plat.has_face(Face::Top) {
+            continue;
+        }
+        // `clamp` : on rabat dans les bornes du sol, le mur étant exactement
+        // sur son bord à un pixel près.
+        let offset = (x - plat.rect.left()).clamp(0.0, plat.rect.face_length(Face::Top));
+        return Some((plat.id, offset));
+    }
+
+    None
+}
+
+/// La position écran actuelle, quand elle existe.
+///
+/// Enveloppe `attach::world_position` avec un curseur factice : le personnage
+/// n'est jamais `Dragged` quand cette fonction est appelée depuis une
+/// intention — les réflexes ont la priorité sur le portage, et ils rendent la
+/// main avant. Le point passé n'est donc jamais lu.
+fn position_actuelle(ch: &Character, world: &World) -> Option<Point> {
+    crate::character::attach::world_position(&ch.attachment, world, Point::new(0.0, 0.0))
 }
 
 /// Avance de `pas` pixels le long de la face courante, et traite le bord.
@@ -756,8 +1176,9 @@ mod tests {
     use crate::behavior::Entrees;
     use crate::character::manifest::Manifest;
     use crate::geom::Point;
+    use crate::geom::Rect;
     use crate::probe::fake::FakeProbe;
-    use crate::probe::SystemProbe;
+    use crate::probe::{ScreenInfo, SystemProbe};
     use crate::rng::XorShift32;
 
     const DT: f32 = 1.0 / 60.0;
@@ -784,6 +1205,12 @@ mod tests {
     // Tâche 4. Le test `sans_la_pose_sleep_il_reste_assis_au_lieu_d_echouer`
     // construit, lui, son propre manifeste SANS elle — c'est justement ce
     // qu'il vérifie.
+    //
+    // `grabWall` et `climbWall` (frames 15, 16, arbitraires elles aussi)
+    // sont celles de l'escalade (étape 4a, Tâche 4). Sans elles, `set_pose`
+    // les ignorerait — c'est la couverture partielle (spec §8.6) — et
+    // `grimper_pose_les_bonnes_animations` échouerait pour une raison qui
+    // n'aurait rien à voir avec l'escalade.
     fn manifeste() -> Manifest {
         let json = r#"{
             "id": "t", "name": "T", "frameSize": [128,128], "scale": 1,
@@ -798,7 +1225,9 @@ mod tests {
                 "spinHead":  { "frames": [9, 10], "frameMs": 200 },
                 "sitDangle": { "frames": [11], "anchor": [64, 112] },
                 "sleep":     { "frames": [12] },
-                "wake":      { "frames": [13, 14], "frameMs": 100 }
+                "wake":      { "frames": [13, 14], "frameMs": 100 },
+                "grabWall":  { "frames": [15] },
+                "climbWall": { "frames": [15, 16], "frameMs": 150, "loop": true }
             }
         }"#;
         serde_json::from_str(json).unwrap()
@@ -809,15 +1238,39 @@ mod tests {
     }
 
     fn perso(monde: &World, offset: f32) -> Character {
+        perso_sur(monde, monde.platforms()[0].id, offset)
+    }
+
+    /// Un personnage posé sur la face `Top` de la plateforme donnée.
+    ///
+    /// Extraite de `perso` plutôt qu'ajoutée à côté : les tests d'escalade
+    /// ont besoin de choisir LEUR plateforme (le sol de l'écran du milieu,
+    /// par exemple), et deux constructeurs indépendants auraient fini par
+    /// diverger sur le manifeste ou l'ancre.
+    fn perso_sur(monde: &World, platform: PlatformId, offset: f32) -> Character {
+        // La position passée à `Character::new` n'est qu'un point de départ
+        // pour le rendu : dès la première image, `world_position` la
+        // recalcule depuis la plateforme (décision n° 1).
+        let depart = match monde.get(platform) {
+            Some(plat) => plat.rect.point_on(Face::Top, offset),
+            None => Point::new(offset, 1032.0),
+        };
+
         Character::new(
             manifeste(),
             Attachment::On {
-                platform: monde.platforms()[0].id,
+                platform,
                 face: Face::Top,
                 offset,
             },
-            Point::new(offset, 1032.0),
+            depart,
         )
+    }
+
+    /// Un personnage au milieu du premier sol du monde donné.
+    fn perso_sur_le_sol(monde: &World) -> Character {
+        let sol = monde.premier_sol().expect("un monde de test a un sol");
+        perso_sur(monde, sol.id, 500.0)
     }
 
     fn offset_de(ch: &Character) -> f32 {
@@ -859,6 +1312,8 @@ mod tests {
                 flaner: 1.0,
                 se_reposer: x,
                 jouer: 1.0,
+                // Neutre : aucun de ces tests ne parle d'escalade.
+                grimper: 1.0,
             },
             utilisateur_actif: false,
             commande: None,
@@ -1663,5 +2118,285 @@ mod tests {
             assert_eq!(ch.pose, POSE_SLEEP, "sans `wake`, il reste affalé");
         }
         assert_eq!(issue, Issue::Finie, "le réveil doit se terminer");
+    }
+
+    // ── L'intention `Grimper` (Tâche 4, étape 4a) ───────────────────────
+
+    /// Un monde d'un écran isolé — donc avec ses deux murs.
+    ///
+    /// `FakeProbe::deux_ecrans` ne conviendrait pas : deux écrans côte à côte
+    /// se masquent mutuellement un mur (design §2.3), et l'on veut ici le cas
+    /// le plus simple.
+    fn monde_mure() -> World {
+        World::from_screens(&FakeProbe::un_ecran().screens())
+    }
+
+    /// Fait tourner l'intention jusqu'à ce que `condition` soit vraie, ou
+    /// jusqu'à `max_s` secondes simulées. Rend le temps écoulé.
+    ///
+    /// Écrite une fois ici plutôt que recopiée dans chaque test : les tests
+    /// d'escalade durent des dizaines de secondes simulées, et la boucle est
+    /// toujours la même.
+    ///
+    /// `impl FnMut(&Character) -> bool` plutôt qu'un `&dyn Fn` : le
+    /// compilateur intègre la fermeture à l'appel, et le point d'appel reste
+    /// une simple lambda. `FnMut` et non `Fn` pour qu'une condition puisse
+    /// compter ce qu'elle voit passer si besoin.
+    fn derouler(
+        ch: &mut Character,
+        world: &World,
+        rng: &mut dyn Rng,
+        max_s: f32,
+        mut condition: impl FnMut(&Character) -> bool,
+    ) -> f32 {
+        let reglages = reglages();
+        let mut t = Duration::ZERO;
+        let mut ecoule = 0.0;
+
+        while ecoule < max_s {
+            if condition(ch) {
+                return ecoule;
+            }
+            poursuivre(ch, world, &entrees_neutres(), &reglages, t, DT, rng);
+            t += Duration::from_secs_f32(DT);
+            ecoule += DT;
+        }
+
+        ecoule
+    }
+
+    #[test]
+    fn grimper_rejoint_le_mur_puis_s_y_accroche() {
+        let m = monde_mure();
+        let mut ch = perso_sur_le_sol(&m);
+        ch.intention = Some(ActiveIntention::nouvelle(Intention::Grimper, Duration::ZERO));
+
+        let mut rng = XorShift32::seeded(7);
+        derouler(&mut ch, &m, &mut rng, 60.0, |c| {
+            matches!(c.attachment, Attachment::On { face, .. } if face != Face::Top)
+        });
+
+        match ch.attachment {
+            Attachment::On { face, .. } => {
+                assert!(face == Face::Left || face == Face::Right, "il est sur un mur");
+            }
+            autre => panic!("il devrait être accroché, il est {autre:?}"),
+        }
+    }
+
+    #[test]
+    fn grimper_monte_vraiment() {
+        let m = monde_mure();
+        let mut ch = perso_sur_le_sol(&m);
+        ch.intention = Some(ActiveIntention::nouvelle(Intention::Grimper, Duration::ZERO));
+
+        let mut rng = XorShift32::seeded(7);
+
+        // On le laisse rejoindre le mur et grimper un moment.
+        derouler(&mut ch, &m, &mut rng, 90.0, |c| {
+            matches!(c.attachment, Attachment::On { face, offset, .. }
+                     if face != Face::Top && offset < 900.0)
+        });
+
+        match ch.attachment {
+            Attachment::On { face, offset, .. } => {
+                assert_ne!(face, Face::Top);
+                // L'offset d'une face verticale compte vers le bas : plus
+                // petit = plus haut. Le bas du mur est à 1032.
+                assert!(offset < 1000.0, "il devrait avoir quitté le bas du mur");
+            }
+            autre => panic!("il devrait être sur le mur, il est {autre:?}"),
+        }
+    }
+
+    #[test]
+    fn grimper_pose_les_bonnes_animations() {
+        let m = monde_mure();
+        let mut ch = perso_sur_le_sol(&m);
+        ch.intention = Some(ActiveIntention::nouvelle(Intention::Grimper, Duration::ZERO));
+
+        let mut rng = XorShift32::seeded(7);
+        derouler(&mut ch, &m, &mut rng, 90.0, |c| c.pose == POSE_CLIMB_WALL);
+        assert_eq!(ch.pose, POSE_CLIMB_WALL);
+    }
+
+    #[test]
+    fn l_attache_au_mur_et_la_pose_changent_dans_la_meme_image() {
+        // Sans cette garantie, la face serait déjà verticale alors que la
+        // pose dirait encore `walk` — une image de marche dans le vide, que
+        // l'invariant de simulation de la Tâche 7 relèverait.
+        let m = monde_mure();
+        let mut ch = perso_sur_le_sol(&m);
+        ch.intention = Some(ActiveIntention::nouvelle(Intention::Grimper, Duration::ZERO));
+
+        let mut rng = XorShift32::seeded(7);
+        derouler(&mut ch, &m, &mut rng, 60.0, |c| {
+            matches!(c.attachment, Attachment::On { face, .. } if face != Face::Top)
+        });
+
+        // `derouler` rend la main à l'image où la condition devient vraie,
+        // c'est-à-dire AVANT d'appeler `poursuivre` une fois de plus : la
+        // pose observée est donc bien celle posée par l'image de l'attache.
+        assert_eq!(
+            ch.pose, POSE_GRAB_WALL,
+            "la pose doit basculer dans la même image que la face"
+        );
+    }
+
+    #[test]
+    fn grimper_regarde_le_mur() {
+        // Mur gauche → il regarde à gauche ; mur droit → à droite. Sans quoi
+        // il grimperait dos à la paroi.
+        let m = monde_mure();
+        let mut ch = perso_sur_le_sol(&m);
+        ch.intention = Some(ActiveIntention::nouvelle(Intention::Grimper, Duration::ZERO));
+
+        let mut rng = XorShift32::seeded(7);
+        derouler(&mut ch, &m, &mut rng, 90.0, |c| {
+            matches!(c.attachment, Attachment::On { face, .. } if face != Face::Top)
+        });
+
+        // ⚠️ Une face `Right` appartient au mur GAUCHE : le personnage se
+        // tient à sa droite, donc à l'intérieur de l'écran (design §2.1).
+        // C'est contre-intuitif la première fois.
+        match ch.attachment {
+            Attachment::On {
+                face: Face::Right, ..
+            } => {
+                assert_eq!(ch.facing, Facing::Left, "mur gauche → il regarde à gauche")
+            }
+            Attachment::On {
+                face: Face::Left, ..
+            } => {
+                assert_eq!(ch.facing, Facing::Right, "mur droit → il regarde à droite")
+            }
+            autre => panic!("il devrait être sur un mur, il est {autre:?}"),
+        }
+    }
+
+    #[test]
+    fn grimper_echoue_immediatement_sans_mur() {
+        // L'écran du MILIEU d'une rangée de trois n'a aucun mur : ses deux
+        // bords sont recouverts par ses voisins (design §2.3). L'intention
+        // doit échouer tout de suite pour qu'une autre soit tirée — et
+        // surtout pas figer le personnage.
+        let entoure = World::from_screens(&[
+            ScreenInfo {
+                id: 1,
+                work_area: Rect::new(-1920.0, 0.0, 1920.0, 1032.0),
+                scale: 1.0,
+            },
+            ScreenInfo {
+                id: 2,
+                work_area: Rect::new(0.0, 0.0, 1920.0, 1032.0),
+                scale: 1.0,
+            },
+            ScreenInfo {
+                id: 3,
+                work_area: Rect::new(1920.0, 0.0, 1920.0, 1032.0),
+                scale: 1.0,
+            },
+        ]);
+
+        // Le personnage est sur le sol de l'écran 2, celui du milieu.
+        let sol_milieu = entoure
+            .platforms()
+            .iter()
+            .find(|p| p.has_face(Face::Top) && p.rect.left() == 0.0)
+            .expect("le sol du milieu");
+        let mut ch = perso_sur(&entoure, sol_milieu.id, 500.0);
+        ch.intention = Some(ActiveIntention::nouvelle(Intention::Grimper, Duration::ZERO));
+
+        let mut rng = XorShift32::seeded(3);
+        let issue = poursuivre(
+            &mut ch,
+            &entoure,
+            &entrees_neutres(),
+            &reglages(),
+            Duration::ZERO,
+            DT,
+            &mut rng,
+        );
+
+        assert_eq!(issue, Issue::Echouee);
+        assert!(ch.intention.is_none());
+    }
+
+    #[test]
+    fn grimper_a_un_delai_d_abandon_de_120_s() {
+        assert_eq!(delai_abandon(Intention::Grimper), Duration::from_secs(120));
+        assert_eq!(delai_abandon(Intention::Flaner), DELAI_ABANDON);
+        assert_eq!(delai_abandon(Intention::SeReposer), DELAI_ABANDON);
+        assert_eq!(delai_abandon(Intention::Jouer(Jeu::TeteQuiTourne)), DELAI_ABANDON);
+    }
+
+    #[test]
+    fn une_escalade_complete_tient_dans_le_delai_d_abandon() {
+        // Le calcul du design §4.4, vérifié plutôt que supposé : marcher
+        // jusqu'au bord (960 px au pire, à 50 px/s) plus grimper toute la
+        // hauteur (1032 px à 16,1 px/s) doit tenir sous 120 s.
+        let marche = 960.0 / crate::character::physics::VITESSE_MARCHE;
+        let montee = 1032.0 / crate::character::physics::VITESSE_ESCALADE;
+        assert!(
+            marche + montee < 120.0,
+            "une escalade complète dure {}s, au-dessus du délai",
+            marche + montee
+        );
+    }
+
+    #[test]
+    fn en_fin_d_accroche_il_lache_parfois_et_redescend_parfois() {
+        // Décision n° 3 appliquée à la sortie de mur : les deux issues
+        // doivent réellement sortir. Une seule graine, l'état qui avance —
+        // re-semer par petits entiers biaiserait le premier tirage et
+        // rendrait un faux négatif complet (piège documenté de `CLAUDE.md`).
+        let m = monde_mure();
+        let mut rng = XorShift32::seeded(12345);
+        let reglages = reglages();
+
+        let mut laches = 0;
+        let mut descentes = 0;
+
+        for _ in 0..200 {
+            let mur = m
+                .platforms()
+                .iter()
+                .find(|p| p.has_face(Face::Right))
+                .expect("mur gauche");
+            let mut ch = perso_sur_le_sol(&m);
+            ch.attachment = Attachment::On {
+                platform: mur.id,
+                face: Face::Right,
+                offset: 300.0,
+            };
+            // Une accroche déjà expirée : la prochaine image tire la sortie.
+            ch.intention = Some(ActiveIntention {
+                kind: Intention::Grimper,
+                depuis: Duration::ZERO,
+                etat: EtatIntention::Grimpe {
+                    phase: PhaseGrimpe::Accroche,
+                    jusqu_a: Duration::ZERO,
+                },
+            });
+
+            poursuivre(
+                &mut ch,
+                &m,
+                &entrees_neutres(),
+                &reglages,
+                Duration::from_secs(1),
+                DT,
+                &mut rng,
+            );
+
+            match ch.attachment {
+                Attachment::Falling { .. } => laches += 1,
+                Attachment::On { .. } => descentes += 1,
+                _ => {}
+            }
+        }
+
+        assert!(laches > 10, "il ne se lâche jamais ({laches} sur 200)");
+        assert!(descentes > 10, "il ne redescend jamais ({descentes} sur 200)");
     }
 }

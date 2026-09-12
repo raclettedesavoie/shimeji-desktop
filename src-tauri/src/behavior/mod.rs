@@ -171,26 +171,24 @@ pub fn pas(
     // intention se termine. C'est ce qui couvre le chemin de la commande
     // en plus du chemin normal des couches 2/3.
     //
-    // ⚠️⚠️ **TÂCHE 4** : `Intention::Grimper` n'existe pas encore. En
-    // attendant, la condition ci-dessous teste seulement `ch.intention.is_none()`
-    // — donc, pour l'instant, TOUTE intention (pas seulement `Grimper`)
-    // empêche de se lâcher. Le jour où `Intention::Grimper` existera
-    // (Tâche 4), cette condition DOIT devenir « l'intention n'est pas
-    // `Grimper` », sans quoi grimper lui-même déclencherait cette règle et
-    // le ferait tomber du mur qu'il est justement en train d'escalader.
+    // La condition est « l'intention courante n'est pas `Grimper` »,
+    // **`None` compris** (Tâche 4). Les deux sens comptent, et chacun
+    // couvre un bug réel :
+    //
+    //   · une intention autre que `Grimper` — `Flaner` posée par un clic
+    //     droit, par exemple — doit le faire lâcher, sans quoi il
+    //     marcherait verticalement le long du mur ;
+    //   · `Grimper` ne doit PAS le faire lâcher, sans quoi l'escalade se
+    //     ferait tomber elle-même dès sa première image sur la paroi.
     //
     // Conséquence de PLACEMENT, à ne pas confondre avec ce qui précède :
     // cette règle s'exécute AVANT la couche 2, donc `intention::poursuivre`
     // n'est même pas appelée quand elle tire. Le scénario « une intention
     // se termine PENDANT la couche 2, puis la couche 3 en tire une
     // nouvelle, dans la même image » n'est donc rattrapé qu'à l'image
-    // SUIVANTE — le temps qu'`is_none()` (au tout début de CETTE image) le
-    // voie. Une image de retard (16 ms à 60 Hz), sans conséquence visible,
-    // et qui ne se referme complètement qu'à la Tâche 4 : avec la
-    // condition « pas `Grimper` », même une intention fraîchement tirée
-    // (autre que `Grimper`) sera rattrapée dès l'image suivante — ce qui
-    // est déjà le cas aujourd'hui, cette remarque ne change donc rien au
-    // comportement, elle documente juste le délai qui existe déjà.
+    // SUIVANTE — le temps que la condition (évaluée au tout début de
+    // CETTE image) la voie. Une image de retard (16 ms à 60 Hz), sans
+    // conséquence visible.
     //
     // Conséquence à retenir : **le sol est le seul endroit où l'on peut ne
     // rien faire.** C'est aussi ce qui rend le délai d'abandon lisible à
@@ -210,7 +208,14 @@ pub fn pas(
         offset,
     } = ch.attachment
     {
-        if face != crate::geom::Face::Top && ch.intention.is_none() {
+        // `!matches!(…)` : vrai quand l'intention n'est PAS `Grimper`,
+        // `None` inclus — `matches!` sur un `Option` ne filtre que le cas
+        // `Some(Grimper)`, et tout le reste (y compris `None`) tombe donc
+        // dans la négation. C'est exactement la règle voulue, en une
+        // expression plutôt qu'en deux tests.
+        let sans_escalade = !matches!(ch.intention, Some(ai) if ai.kind == intention::Intention::Grimper);
+
+        if face != crate::geom::Face::Top && sans_escalade {
             // On repart du rectangle COURANT pour savoir d'où il tombe
             // (décision n° 1). `if let Some(…)` : si la plateforme a
             // disparu dans le même souffle, le Réflexe 1 s'en occupera à
@@ -340,6 +345,8 @@ mod tests {
                 flaner: 1.0,
                 se_reposer: biais_repos,
                 jouer: 1.0,
+                // Neutre : aucun de ces tests ne parle d'escalade.
+                grimper: 1.0,
             },
             utilisateur_actif: actif,
             commande: None,
@@ -348,12 +355,12 @@ mod tests {
 
     // ── La règle de sécurité du monde vertical (Tâche 3, étape 4a) ──────
     //
-    // Ces trois tests verrouillent la règle « accroché à une face autre
-    // que `Top`, sans intention `Grimper` (pour l'instant : sans AUCUNE
-    // intention — voir le ⚠️ TÂCHE 4 sur la règle elle-même), il se
-    // lâche ». Ils couvrent : le cas nominal, le contre-exemple (le sol
-    // ne doit jamais déclencher la règle), et la non-régression d'une
-    // chute déjà en cours.
+    // Ces tests verrouillent la règle « accroché à une face autre que
+    // `Top`, sans intention `Grimper`, il se lâche ». Ils couvrent : le
+    // cas nominal (aucune intention), le contre-exemple (le sol ne doit
+    // jamais déclencher la règle), la non-régression d'une chute déjà en
+    // cours, et — depuis la Tâche 4 — les DEUX sens de la condition sur
+    // l'intention : `Flaner` sur un mur fait lâcher, `Grimper` non.
 
     /// Le mur gauche du monde de test (`FakeProbe::un_ecran`), face
     /// `Right` — la face regarde vers l'intérieur de l'écran (spec du
@@ -467,6 +474,87 @@ mod tests {
             Attachment::Falling { vel, .. } => assert!(vel.y > 300.0),
             autre => panic!("il devrait toujours tomber, il est {autre:?}"),
         }
+    }
+
+    #[test]
+    fn une_intention_flaner_sur_un_mur_le_fait_lacher() {
+        // Le sens qui motive la règle : `Flaner` appelle `avancer`, qui
+        // déplace l'offset *le long de la face courante*. Sans cette
+        // règle, un personnage accroché à qui l'on tire (ou impose, via un
+        // clic droit) une `Flaner` se mettrait à « marcher » verticalement
+        // le long du mur au lieu de lâcher prise.
+        let m = monde();
+        let mut ch = perso(&m);
+        let mur = mur_gauche(&m);
+
+        ch.attachment = Attachment::On {
+            platform: mur.id,
+            face: Face::Right,
+            offset: 400.0,
+        };
+        ch.intention = Some(intention::ActiveIntention::nouvelle(
+            intention::Intention::Flaner,
+            Duration::ZERO,
+        ));
+
+        let mut rng = XorShift32::seeded(1);
+        pas(
+            &mut ch,
+            &m,
+            &entrees(true, 1.0),
+            &desire::TableEnvies::defaut(),
+            &crate::config::Reglages::depuis(&crate::config::Config::default()),
+            Duration::from_secs(1),
+            DT,
+            &mut rng,
+        );
+
+        assert!(
+            matches!(ch.attachment, Attachment::Falling { .. }),
+            "une Flaner sur un mur doit le faire lâcher, il est {:?}",
+            ch.attachment
+        );
+    }
+
+    #[test]
+    fn une_intention_grimper_sur_un_mur_ne_le_fait_pas_lacher() {
+        // Le sens contraire, tout aussi indispensable : sans lui, l'escalade
+        // se ferait tomber elle-même dès sa première image sur la paroi —
+        // `Grimper` accroche le personnage à une face autre que `Top`
+        // exactement comme le fait cette règle de sécurité, donc si la
+        // condition ne l'exemptait pas, il ne resterait jamais assez
+        // longtemps sur le mur pour monter.
+        let m = monde();
+        let mut ch = perso(&m);
+        let mur = mur_gauche(&m);
+
+        ch.attachment = Attachment::On {
+            platform: mur.id,
+            face: Face::Right,
+            offset: 400.0,
+        };
+        ch.intention = Some(intention::ActiveIntention::nouvelle(
+            intention::Intention::Grimper,
+            Duration::ZERO,
+        ));
+
+        let mut rng = XorShift32::seeded(1);
+        pas(
+            &mut ch,
+            &m,
+            &entrees(true, 1.0),
+            &desire::TableEnvies::defaut(),
+            &crate::config::Reglages::depuis(&crate::config::Config::default()),
+            Duration::from_secs(1),
+            DT,
+            &mut rng,
+        );
+
+        assert!(
+            matches!(ch.attachment, Attachment::On { .. }),
+            "une Grimper en cours ne doit pas le faire lâcher, il est {:?}",
+            ch.attachment
+        );
     }
 
     #[test]

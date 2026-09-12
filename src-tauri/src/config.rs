@@ -32,6 +32,14 @@ pub struct Envies {
     /// jeu serait un réglage de plus sans effet observable, puisque rien ne
     /// les distingue pour l'utilisateur.
     pub jouer: f32,
+
+    /// Le poids de l'envie de grimper (étape 4a).
+    ///
+    /// Le même que `se_reposer` : l'escalade est longue (jusqu'à 64 s pour un
+    /// mur entier, contre quelques secondes pour un repos), donc un poids
+    /// égal se traduit déjà, à l'œil, par beaucoup de temps passé sur les
+    /// murs. Le monter le ferait vivre en hauteur.
+    pub grimper: f32,
 }
 
 impl Default for Envies {
@@ -41,6 +49,7 @@ impl Default for Envies {
             flaner: 5.0,
             se_reposer: 1.0,
             jouer: 1.0,
+            grimper: 1.0,
         }
     }
 }
@@ -85,6 +94,42 @@ impl Default for Allures {
             duree_marche: [1.5, 5.0],
             duree_course: [0.6, 1.8],
             chance_demi_tour: 0.25,
+        }
+    }
+}
+
+/// Ce qui décide s'il est casse-cou ou prudent sur un mur (décision n° 5).
+///
+/// Séparée d'`Allures` parce qu'elle ne décrit pas la même chose : `Allures`
+/// règle la flânerie au sol, celle-ci règle la sortie d'une accroche. Les
+/// fondre donnerait une structure dont la moitié des champs ne s'applique
+/// jamais au cas courant.
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Escalade {
+    /// Poids du tirage de sortie, en fin d'accroche : se lâcher et tomber.
+    pub poids_lacher: f32,
+
+    /// Poids du tirage de sortie : redescendre tranquillement.
+    ///
+    /// Deux fois le poids de `poids_lacher` par défaut : un personnage qui se
+    /// lâcherait une fois sur deux passerait son temps en l'air, et la chute
+    /// perdrait sa valeur de surprise.
+    pub poids_redescendre: f32,
+
+    /// Bornes `[min, max]` de la durée d'une accroche, en secondes.
+    pub duree_accroche: [f32; 2],
+}
+
+impl Default for Escalade {
+    fn default() -> Self {
+        Escalade {
+            poids_lacher: 1.0,
+            poids_redescendre: 2.0,
+            // Relevée dans `conf/actions.xml`, comme toutes les durées
+            // d'animation du projet : la valeur vit dans `physics.rs`, et la
+            // config ne fait que la reprendre comme valeur PAR DÉFAUT.
+            duree_accroche: crate::character::physics::DUREE_ACCROCHE,
         }
     }
 }
@@ -217,6 +262,9 @@ pub struct Config {
     pub envies: Envies,
     pub allures: Allures,
 
+    /// Les réglages de l'escalade (étape 4a).
+    pub escalade: Escalade,
+
     pub signaux: SignauxReglages,
 
     /// Les modificateurs par application, `"Code.exe"` → ses poids.
@@ -242,6 +290,7 @@ impl Default for Config {
             demarrage_automatique: false,
             envies: Envies::default(),
             allures: Allures::default(),
+            escalade: Escalade::default(),
             signaux: SignauxReglages::default(),
             // Vide par défaut : aucun modificateur d'application n'est
             // imposé. Le fichier d'exemple en montre deux, commentés par
@@ -265,7 +314,15 @@ impl Default for Config {
 pub struct Reglages {
     pub vitesse_marche: f32,
     pub vitesse_course: f32,
+
+    /// Vitesse d'escalade, déjà multipliée par le facteur de vitesse de
+    /// l'utilisateur — exactement comme la marche et la course. Sans ce
+    /// facteur, régler `vitesse` accélérerait la marche et laisserait
+    /// l'escalade à son rythme, ce qui serait incohérent à l'œil.
+    pub vitesse_escalade: f32,
+
     pub allures: Allures,
+    pub escalade: Escalade,
 
     /// À partir de quel biais de repos il s'affale au lieu de rester assis
     /// (Tâche 4, `behavior::intention::se_reposer`).
@@ -283,7 +340,7 @@ const FACTEUR_VITESSE_MAX: f32 = 10.0;
 
 impl Reglages {
     pub fn depuis(config: &Config) -> Reglages {
-        use crate::character::physics::{VITESSE_COURSE, VITESSE_MARCHE};
+        use crate::character::physics::{VITESSE_COURSE, VITESSE_ESCALADE, VITESSE_MARCHE};
 
         let facteur = config
             .vitesse
@@ -292,7 +349,9 @@ impl Reglages {
         Reglages {
             vitesse_marche: VITESSE_MARCHE * facteur,
             vitesse_course: VITESSE_COURSE * facteur,
+            vitesse_escalade: VITESSE_ESCALADE * facteur,
             allures: config.allures,
+            escalade: config.escalade,
             seuil_sommeil: config.signaux.seuil_sommeil,
         }
     }
