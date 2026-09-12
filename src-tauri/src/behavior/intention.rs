@@ -389,6 +389,20 @@ pub fn poursuivre(
     // Décision n° 4. `saturating_sub` : si l'horloge de test recule (elle
     // le peut, `FakeClock::set` existe), on ne veut pas de débordement.
     if maintenant.saturating_sub(ai.depuis) > delai_abandon(ai.kind) {
+        // ⚠️ **Bug corrigé (Tâche 7, trouvé par l'invariant du monde
+        // vertical de `sim.rs`).** `Grimper` est la SEULE intention qui peut
+        // expirer alors que le personnage est encore accroché à un mur ou au
+        // plafond — les trois autres ne vivent que sur `Face::Top`. Sans cet
+        // appel, il restait accroché, intention `None` ; la couche 3, juste
+        // après, lui repostait aussitôt un `Grimper` neuf (phase `Choisir`),
+        // et la garde de sécurité de `behavior::pas` ne s'en apercevait
+        // jamais puisqu'elle voit une intention `Grimper` valide à chaque
+        // image, celle-ci comme la précédente. `lacher_si_accroche` est la
+        // MÊME fonction que celle appelée à chaque image dans `pas` — voir
+        // son commentaire pour l'explication complète de pourquoi une seule
+        // fonction, appelée aux deux endroits, plutôt que deux copies de la
+        // même règle.
+        super::lacher_si_accroche(ch, world);
         ch.intention = None;
         return Issue::Echouee;
     }
@@ -555,10 +569,30 @@ fn grimper(
         PhaseGrimpe::Choisir => {
             // `let … else` : s'il n'est pas posé quelque part, il n'y a pas
             // d'écran de référence. Les réflexes s'occupent de lui.
-            let Attachment::On { platform, .. } = ch.attachment else {
+            let Attachment::On { platform, face, .. } = ch.attachment else {
                 ch.intention = None;
                 return Issue::Echouee;
             };
+
+            // ⚠️ **Garde structurelle (Tâche 7, après le bug du délai
+            // d'abandon).** `Rejoindre`, la phase suivante, est une marche
+            // AU SOL : elle pose `walk` et avance sans jamais vérifier sur
+            // quelle face il se trouve. Avec `lacher_si_accroche` appelée au
+            // bon endroit, `Choisir` ne devrait plus jamais être atteinte
+            // depuis un mur ou le plafond — mais cette garde ne DÉPEND pas
+            // de ça : elle refuse ici, structurellement, plutôt que de
+            // compter sur une règle lointaine (dans un autre fichier) pour
+            // ne jamais être violée. Une garde redondante coûte deux lignes ;
+            // son absence a coûté un bug qui a survécu trois tâches et
+            // leurs relectures.
+            //
+            // `ActiveIntention::accroche_au_mur` n'est PAS concernée : elle
+            // pose directement la phase `Accroche`, jamais `Choisir` — le
+            // lancer contre un mur continue de fonctionner sans passer ici.
+            if face != Face::Top {
+                ch.intention = None;
+                return Issue::Echouee;
+            }
 
             let Some(mur) = mur_le_plus_proche(world, platform, ch) else {
                 // Aucun mur sur cet écran — l'écran du milieu d'une rangée de
@@ -804,13 +838,13 @@ fn grimper(
             ch.set_pose(pose, maintenant);
 
             // `jusqu_a == ZERO` : première image de cette phase, sa durée
-            // n'a pas encore été tirée. C'est le cas normal en sortie de
-            // `Paroi` ci-dessus (ligne "sera tirée…" plus haut n'existe pas
-            // ici, la durée y est déjà posée) — mais surtout le cas d'une
-            // intention installée de l'EXTÉRIEUR par
-            // `ActiveIntention::accroche_au_mur` (Tâche 5, un lancer contre
-            // un mur), qui pose `jusqu_a: ZERO` précisément pour que cette
-            // toute première image tire la durée d'accroche.
+            // n'a pas encore été tirée. Ce n'est PAS le cas normal en sortie
+            // de `Paroi` ou `Plafond` ci-dessus : ces deux branches posent
+            // déjà `jusqu_a` avant de passer en `Accroche`. Le cas qui arrive
+            // réellement ici est celui d'une intention installée de
+            // l'EXTÉRIEUR par `ActiveIntention::accroche_au_mur` (Tâche 5, un
+            // lancer contre un mur), qui pose `jusqu_a: ZERO` précisément
+            // pour que cette toute première image tire la durée d'accroche.
             //
             // ⚠️ **Correction de bug** : sans cette branche, `maintenant >=
             // Duration::ZERO` est toujours vrai, donc la toute première
@@ -2418,6 +2452,73 @@ mod tests {
     }
 
     #[test]
+    fn choisir_depuis_un_mur_echoue_au_lieu_de_marcher_dessus() {
+        // La garde structurelle de la Tâche 7 : `Choisir` refuse de partir
+        // d'autre chose que `Face::Top`, même si plus rien d'autre ne devrait
+        // normalement l'y amener (`lacher_si_accroche` est censée avoir
+        // détaché le personnage avant). Une garde redondante ici coûte deux
+        // lignes ; son absence a coûté un bug qui a survécu trois tâches et
+        // leurs relectures — voir `expire_au_plafond_il_tombe_au_lieu_de_
+        // marcher_dessus` ci-dessus pour ce bug précis.
+        //
+        // `ActiveIntention::accroche_au_mur` n'est pas concernée par cette
+        // garde : elle pose directement la phase `Accroche`, jamais
+        // `Choisir` — voir `accroche_par_un_lancer_il_ne_lache_pas...` dans
+        // `reflex.rs`, qui continue de passer.
+        let m = monde_mure();
+        let mur = m
+            .platforms()
+            .iter()
+            .find(|p| p.has_face(Face::Right))
+            .expect("mur gauche");
+
+        let mut ch = perso_sur_le_sol(&m);
+        ch.attachment = Attachment::On {
+            platform: mur.id,
+            face: Face::Right,
+            offset: 300.0,
+        };
+        ch.intention = Some(ActiveIntention {
+            kind: Intention::Grimper,
+            depuis: Duration::ZERO,
+            etat: EtatIntention::Grimpe {
+                phase: PhaseGrimpe::Choisir,
+                jusqu_a: Duration::ZERO,
+            },
+        });
+
+        let mut rng = XorShift32::seeded(11);
+        let reglages = reglages();
+        let mut t = Duration::ZERO;
+
+        // Plusieurs images, pas une seule : la garde doit tenir à chacune,
+        // pas seulement à la première.
+        for _ in 0..5 {
+            let issue = poursuivre(&mut ch, &m, &entrees_neutres(), &reglages, t, DT, &mut rng);
+            assert_ne!(ch.pose, POSE_WALK, "il ne doit pas marcher sur le mur");
+            assert!(
+                matches!(issue, Issue::Echouee | Issue::Finie),
+                "phase Choisir depuis un mur : attendu un échec, obtenu {issue:?}"
+            );
+            t += Duration::from_secs_f32(DT);
+        }
+
+        assert!(
+            ch.intention.is_none(),
+            "l'intention doit avoir été abandonnée, elle est {:?}",
+            ch.intention
+        );
+        // La garde échoue AVANT tout déplacement, et elle ne le fait pas
+        // tomber non plus — ce n'est pas son rôle, `lacher_si_accroche` s'en
+        // charge ailleurs (`behavior::mod::pas`, à chaque image).
+        assert!(
+            matches!(ch.attachment, Attachment::On { face: Face::Right, .. }),
+            "il devrait être resté sur le mur, il est {:?}",
+            ch.attachment
+        );
+    }
+
+    #[test]
     fn grimper_rejoint_le_mur_puis_s_y_accroche() {
         let m = monde_mure();
         let mut ch = perso_sur_le_sol(&m);
@@ -2580,6 +2681,72 @@ mod tests {
         assert_eq!(delai_abandon(Intention::Flaner), DELAI_ABANDON);
         assert_eq!(delai_abandon(Intention::SeReposer), DELAI_ABANDON);
         assert_eq!(delai_abandon(Intention::Jouer(Jeu::TeteQuiTourne)), DELAI_ABANDON);
+    }
+
+    #[test]
+    fn expire_au_plafond_il_tombe_au_lieu_de_marcher_dessus() {
+        // **Le test du bug trouvé à la Tâche 7**, par l'invariant du monde
+        // vertical de `sim.rs`. Sans `lacher_si_accroche` appelée au point
+        // précis où le délai d'abandon efface l'intention `Grimper`, le
+        // personnage restait accroché au plafond (`Attachment::On { face:
+        // Bottom, .. }`), intention `None` — et la couche 3, juste après,
+        // lui repostait aussitôt un `Grimper` neuf (phase `Choisir`), qui le
+        // faisait « marcher » (pose `walk`) le long de la face `Bottom` :
+        // exactement le bug que l'invariant est fait pour attraper.
+        //
+        // **Plusieurs images, pas une seule** — la leçon de la Tâche 5, où
+        // deux bugs ont survécu trois tâches parce que les tests
+        // n'appelaient `poursuivre` qu'une fois. On continue d'appeler
+        // `poursuivre` après l'expiration pour vérifier que la chute
+        // s'installe VRAIMENT et ne se rattrape pas toute seule à l'image
+        // suivante.
+        let m = monde_mure();
+        let plafond = m
+            .platforms()
+            .iter()
+            .find(|p| p.has_face(Face::Bottom))
+            .expect("plafond");
+
+        let mut ch = perso_sur_le_sol(&m);
+        ch.attachment = Attachment::On {
+            platform: plafond.id,
+            face: Face::Bottom,
+            offset: 200.0,
+        };
+        // `depuis: ZERO`, et l'horloge du test démarre à 121 s : l'intention
+        // est donc déjà périmée dès la première image — exactement ce qui
+        // arrive à une escalade qui a trop traîné sur le plafond, sans avoir
+        // à dérouler 120 s de traversée pour y arriver.
+        ch.intention = Some(ActiveIntention {
+            kind: Intention::Grimper,
+            depuis: Duration::ZERO,
+            etat: EtatIntention::Grimpe {
+                phase: PhaseGrimpe::Plafond { cible: 900.0 },
+                jusqu_a: Duration::ZERO,
+            },
+        });
+
+        let mut rng = XorShift32::seeded(5);
+        let reglages = reglages();
+        let mut t = Duration::from_secs(121);
+
+        for _ in 0..10 {
+            poursuivre(&mut ch, &m, &entrees_neutres(), &reglages, t, DT, &mut rng);
+            t += Duration::from_secs_f32(DT);
+
+            // À CHAQUE image de ces dix-là, jamais la pose de marche — le
+            // symptôme exact du bug.
+            assert_ne!(
+                ch.pose, POSE_WALK,
+                "il ne doit jamais « marcher » sur le plafond"
+            );
+        }
+
+        assert!(
+            matches!(ch.attachment, Attachment::Falling { .. }),
+            "il devrait être tombé du plafond à l'expiration, il est {:?}",
+            ch.attachment
+        );
     }
 
     #[test]

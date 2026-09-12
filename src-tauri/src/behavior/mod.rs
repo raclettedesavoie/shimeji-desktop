@@ -12,7 +12,10 @@ pub mod desire;
 pub mod intention;
 pub mod reflex;
 
-use crate::geom::Point;
+use crate::character::attach::Attachment;
+use crate::character::Character;
+use crate::geom::{Face, Point, Vec2};
+use crate::world::World;
 
 /// Ce que le monde extérieur dit au personnage à cette image.
 ///
@@ -90,6 +93,53 @@ pub struct Entrees {
     /// puis **reprend sa vie tout seul**. On commande un instant, jamais
     /// durablement.
     pub commande: Option<intention::Intention>,
+}
+
+/// **La règle « accroché à une face non-`Top` sans raison d'y être, il
+/// lâche »**, factorisée en une seule fonction (Tâche 7, étape 4a).
+///
+/// Rend `true` si elle a agi (le personnage tombe désormais), `false`
+/// sinon — pour que l'appelant sache s'il doit rendre la main tout de suite
+/// (une chute qui démarre est un réflexe, pas une décision, et les couches
+/// 2/3 ne doivent pas tourner par-dessus).
+///
+/// ⚠️ **Pourquoi une fonction et non deux copies du même `if` — la leçon qui
+/// a coûté un bug.** Cette règle existait déjà, mais à un SEUL des deux
+/// endroits où elle doit s'appliquer : la garde de chaque image, ci-dessous
+/// dans `pas`. Elle manquait à `intention::poursuivre`, à l'endroit précis
+/// où une intention `Grimper` s'efface au délai d'abandon (120 s). Un
+/// personnage qui expirait au plafond restait donc accroché, intention
+/// `None` — et la couche 3, juste après, lui reposait aussitôt un `Grimper`
+/// neuf, en phase `Choisir`, sans que la garde de `pas` ne le voie jamais :
+/// elle ne s'exécute qu'AVANT que l'intention ne soit effacée, donc à
+/// l'image de l'abandon comme à la suivante elle voit toujours une
+/// intention `Grimper` valide. Deux copies de cette même règle auraient de
+/// toute façon fini par diverger — c'est exactement ce qu'illustre ce bug,
+/// où la règle vivait au bon endroit pour l'usage courant mais pas pour
+/// celui-ci. Il n'y en a maintenant qu'une, appelée aux deux endroits.
+///
+/// Ne se prononce que sur `Attachment::On` : `Falling` et `Dragged` ne sont
+/// pas concernés — on ne lâche pas ce qu'on ne tient pas.
+pub(crate) fn lacher_si_accroche(ch: &mut Character, world: &World) -> bool {
+    // `if let … = ch.attachment` : `Attachment` est `Copy` (voir son
+    // en-tête dans `attach.rs`), donc cette lecture en prend une COPIE — on
+    // peut réassigner `ch.attachment` dans le corps sans conflit d'emprunt.
+    if let Attachment::On { platform, face, offset } = ch.attachment {
+        if face != Face::Top {
+            // On repart du rectangle COURANT pour savoir d'où il tombe
+            // (décision n° 1). `if let Some(…)` : si la plateforme a
+            // disparu dans le même souffle, le Réflexe 1 s'en occupera à
+            // l'image suivante — il n'y a rien à faire ici.
+            if let Some(plat) = world.get(platform) {
+                ch.attachment = Attachment::Falling {
+                    pos: plat.rect.point_on(face, offset),
+                    vel: Vec2::zero(),
+                };
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Un pas de comportement : les trois couches, dans l'ordre, une fois.
@@ -185,54 +235,40 @@ pub fn pas(
     // cette règle s'exécute AVANT la couche 2, donc `intention::poursuivre`
     // n'est même pas appelée quand elle tire. Le scénario « une intention
     // se termine PENDANT la couche 2, puis la couche 3 en tire une
-    // nouvelle, dans la même image » n'est donc rattrapé qu'à l'image
-    // SUIVANTE — le temps que la condition (évaluée au tout début de
-    // CETTE image) la voie. Une image de retard (16 ms à 60 Hz), sans
-    // conséquence visible.
+    // nouvelle, dans la même image » n'est rattrapé à l'image SUIVANTE que
+    // si la couche 3 tire autre chose que `Grimper` — **ce n'était PAS
+    // garanti**, et c'est précisément ce qui a produit un vrai bug (Tâche 7,
+    // trouvé par l'invariant du monde vertical de `sim.rs`) : quand
+    // `Grimper` expirait à son délai d'abandon (120 s) pendant que le
+    // personnage était encore au plafond, la couche 3 lui repostait
+    // aussitôt un `Grimper` tout neuf — et cette règle-ci, qui n'exempte
+    // que le TYPE `Grimper` sans savoir s'il s'agit de la même escalade ou
+    // d'une autre, ne voyait donc jamais passer l'image où il aurait dû
+    // lâcher. D'où `lacher_si_accroche`, appelée maintenant aussi au point
+    // où l'intention `Grimper` s'efface (`intention::poursuivre`) — voir son
+    // commentaire pour le détail.
     //
     // Conséquence à retenir : **le sol est le seul endroit où l'on peut ne
     // rien faire.** C'est aussi ce qui rend le délai d'abandon lisible à
     // l'œil — au bout de deux minutes il en a marre, il lâche, il tombe.
     // C'est `FallFromWall` de Shimeji-ee.
+    // `!matches!(…)` : vrai quand l'intention n'est PAS `Grimper`, `None`
+    // inclus — `matches!` sur un `Option` ne filtre que le cas
+    // `Some(Grimper)`, et tout le reste (y compris `None`) tombe donc dans
+    // la négation. C'est exactement la règle voulue, en une expression
+    // plutôt qu'en deux tests.
     //
-    // `if let Attachment::On { … } = ch.attachment` : `Attachment` est
-    // `Copy` (voir son en-tête dans `attach.rs`), donc ce `if let` en
-    // prend une COPIE — on peut réassigner `ch.attachment` dans le corps
-    // sans conflit d'emprunt. Les états `Falling` et `Dragged` ne sont pas
-    // concernés : on ne lâche pas ce qu'on ne tient pas, et écraser une
-    // chute déjà en cours remettrait sa vitesse à zéro (voir le test
-    // `lacher_un_mur_n_ecrase_pas_une_chute_deja_en_cours`).
-    if let crate::character::attach::Attachment::On {
-        platform,
-        face,
-        offset,
-    } = ch.attachment
-    {
-        // `!matches!(…)` : vrai quand l'intention n'est PAS `Grimper`,
-        // `None` inclus — `matches!` sur un `Option` ne filtre que le cas
-        // `Some(Grimper)`, et tout le reste (y compris `None`) tombe donc
-        // dans la négation. C'est exactement la règle voulue, en une
-        // expression plutôt qu'en deux tests.
-        let sans_escalade = !matches!(ch.intention, Some(ai) if ai.kind == intention::Intention::Grimper);
+    // Pas besoin de tester `ch.attachment` ici : `lacher_si_accroche` le
+    // fait déjà, et rend `false` sans rien changer s'il n'y a rien à
+    // lâcher (au sol, en chute, ou porté).
+    let sans_escalade = !matches!(ch.intention, Some(ai) if ai.kind == intention::Intention::Grimper);
 
-        if face != crate::geom::Face::Top && sans_escalade {
-            // On repart du rectangle COURANT pour savoir d'où il tombe
-            // (décision n° 1). `if let Some(…)` : si la plateforme a
-            // disparu dans le même souffle, le Réflexe 1 s'en occupera à
-            // l'image suivante — il n'y a rien à faire ici.
-            if let Some(plat) = world.get(platform) {
-                ch.attachment = crate::character::attach::Attachment::Falling {
-                    pos: plat.rect.point_on(face, offset),
-                    vel: crate::geom::Vec2::zero(),
-                };
-
-                // On rend la main : la chute est un réflexe, et c'est lui
-                // qui posera la pose `fall` à l'image suivante. Tirer une
-                // envie maintenant la ferait s'appliquer à un personnage
-                // en l'air.
-                return r;
-            }
-        }
+    if sans_escalade && lacher_si_accroche(ch, world) {
+        // On rend la main : la chute est un réflexe, et c'est lui
+        // qui posera la pose `fall` à l'image suivante. Tirer une
+        // envie maintenant la ferait s'appliquer à un personnage
+        // en l'air.
+        return r;
     }
 
     // ── L'interruption : un signal ARRÊTE, il ne CHOISIT pas ────────────

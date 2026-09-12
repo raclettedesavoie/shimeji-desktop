@@ -16,7 +16,9 @@
 
 use crate::behavior::{self, desire::TableEnvies, Entrees};
 use crate::character::attach::Attachment;
-use crate::character::manifest::Manifest;
+use crate::character::manifest::{
+    Manifest, POSE_CLIMB_CEILING, POSE_CLIMB_WALL, POSE_GRAB_CEILING, POSE_GRAB_WALL,
+};
 use crate::character::Character;
 use crate::geom::{Face, Point};
 use crate::probe::fake::FakeProbe;
@@ -88,6 +90,19 @@ pub struct Resume {
     /// dorme, il faut qu'il dorme quand l'utilisateur n'est pas là. Un total
     /// ne le dirait pas.
     pub endormi_par_heure: [u32; 24],
+
+    /// Combien de temps il a passé accroché à une face verticale ou au
+    /// plafond (étape 4a) — sol exclu, donc `Face::Top` ne compte pas.
+    ///
+    /// C'est le chiffre qui prouve que l'escalade a bien été EXERCÉE par
+    /// cette simulation, et pas seulement rendue possible : un poids
+    /// `envies.grimper` mis à zéro par erreur laisserait ce champ à zéro sans
+    /// qu'aucun autre test ne le remarque.
+    pub temps_accroche: Duration,
+
+    /// Combien de fois il a atteint le plafond (transition `Paroi` →
+    /// `Plafond`, comptée une fois par bascule, pas par image).
+    pub plafonds_atteints: u64,
 }
 
 /// La journée scriptée que la simulation joue.
@@ -243,6 +258,8 @@ pub fn executer(
         secondes_endormi: 0,
         reveils: 0,
         endormi_par_heure: [0; 24],
+        temps_accroche: Duration::ZERO,
+        plafonds_atteints: 0,
     };
 
     // Le sommeil, compté en images puis converti en secondes une seule fois
@@ -251,6 +268,16 @@ pub fn executer(
     let mut images_endormi: u64 = 0;
     let mut images_endormi_par_heure = [0u64; 24];
     let mut dormait = false;
+
+    // Même principe pour le temps accroché (étape 4a) : un compteur
+    // d'images converti une seule fois à la fin, pour la même raison
+    // d'arrondi.
+    let mut images_accroche: u64 = 0;
+
+    // La dernière phase de `Grimper` vue, pour détecter la TRANSITION vers
+    // `Plafond` (et compter « atteint le plafond » une fois par bascule, pas
+    // une fois par image passée dessus).
+    let mut derniere_phase_grimpe: Option<behavior::intention::PhaseGrimpe> = None;
 
     // Pour la détection de blocage : ce qu'on observait au dernier
     // changement, et quand.
@@ -315,6 +342,55 @@ pub fn executer(
             resume.reveils += 1;
         }
         dormait = dort;
+
+        // ── L'invariant du monde vertical (étape 4a) ────────────────────
+        //
+        // Le filet de la règle de sécurité, vérifié 60 fois par seconde
+        // simulée : si le personnage est accroché à une face verticale ou au
+        // plafond, sa pose est forcément une pose d'escalade. C'est ce qui
+        // attrape la régression « il marche sur un mur », qu'aucun test
+        // unitaire ne verrait parce qu'elle demande la conjonction d'un
+        // tirage et d'une transition.
+        if let Attachment::On { face, .. } = ch.attachment {
+            if face != Face::Top {
+                // Une image de plus passée hors du sol : compté en images
+                // pour la même raison que le sommeil, converti à la fin.
+                images_accroche += 1;
+
+                let attendue = matches!(
+                    ch.pose.as_str(),
+                    POSE_GRAB_WALL | POSE_CLIMB_WALL | POSE_GRAB_CEILING | POSE_CLIMB_CEILING
+                );
+                assert!(
+                    attendue,
+                    "pose « {} » sur une face {:?} à t = {:?}",
+                    ch.pose, face, maintenant
+                );
+            }
+        }
+
+        // Combien de fois il a atteint le plafond : une TRANSITION de phase,
+        // pas un total d'images — sinon un personnage qui traverse
+        // lentement le plafond compterait des centaines d'« atteintes ».
+        if let Some(behavior::intention::ActiveIntention {
+            etat: behavior::intention::EtatIntention::Grimpe { phase, .. },
+            ..
+        }) = ch.intention
+        {
+            let etait_deja_au_plafond =
+                matches!(derniere_phase_grimpe, Some(behavior::intention::PhaseGrimpe::Plafond { .. }));
+            if matches!(phase, behavior::intention::PhaseGrimpe::Plafond { .. }) && !etait_deja_au_plafond
+            {
+                resume.plafonds_atteints += 1;
+            }
+            derniere_phase_grimpe = Some(phase);
+        } else {
+            // Il n'est plus en train de grimper : la prochaine escalade
+            // repart d'un historique vierge, sinon une deuxième bascule sur
+            // le plafond d'une AUTRE escalade ne compterait pas — l'ancienne
+            // phase `Plafond` traînerait encore.
+            derniere_phase_grimpe = None;
+        }
 
         // Une intention tirée = l'identité `(type, depuis)` a changé.
         let intention_actuelle = ch.intention.map(|ai| (ai.kind, ai.depuis));
@@ -394,6 +470,7 @@ pub fn executer(
     for h in 0..24 {
         resume.endormi_par_heure[h] = (images_endormi_par_heure[h] as f32 * DT) as u32;
     }
+    resume.temps_accroche = Duration::from_secs_f32(images_accroche as f32 * DT);
 
     Ok(resume)
 }
@@ -423,6 +500,11 @@ pub fn imprimer(r: &Resume) {
     );
     println!("endormi           : {} s au total", r.secondes_endormi);
     println!("réveils           : {}", r.reveils);
+    println!(
+        "accroché (mur/plafond) : {:.1} s",
+        r.temps_accroche.as_secs_f32()
+    );
+    println!("plafonds atteints : {}", r.plafonds_atteints);
     println!("sommeil par heure :");
     for h in 0..24 {
         let s = r.endormi_par_heure[h];
@@ -559,9 +641,12 @@ mod tests {
 
     #[test]
     fn une_journee_entiere_dort_au_bon_moment() {
-        // **LE test de l'étape**, et il vérifie quatre choses d'un coup.
+        // **LE test de l'étape**, et il vérifie cinq choses d'un coup — la
+        // cinquième (il a grimpé) a rejoint les quatre premières à l'étape
+        // 4a, Tâche 7, précisément pour ne pas payer une deuxième
+        // simulation de 24 h.
         //
-        // Une seule simulation pour les quatre : dérouler 24 h fait
+        // Une seule simulation pour les cinq : dérouler 24 h fait
         // 5,2 millions d'images, soit une à trois secondes en debug. La
         // lancer quatre fois multiplierait par quatre le temps de la suite
         // entière, qui tient aujourd'hui en 0,43 s.
@@ -654,6 +739,22 @@ mod tests {
             r.blocage_max < crate::behavior::intention::DELAI_ABANDON,
             "blocage de {:?}, au-delà du délai d'abandon",
             r.blocage_max
+        );
+
+        // ── 5. Il a grimpé (étape 4a) ────────────────────────────────────
+        //
+        // Réutilise la MÊME simulation de 24 h plutôt que d'en ajouter une
+        // seconde : ce test coûte déjà ~7 s à lui seul (5,2 millions
+        // d'images), et le lancer deux fois doublerait ce coût pour rien.
+        // L'invariant du monde vertical est vérifié À CHAQUE IMAGE dans la
+        // boucle ci-dessus (`Attachment::On { face != Top, .. }` ⇒ pose
+        // d'escalade) — ici on vérifie seulement qu'il a eu l'OCCASION de
+        // s'exercer : un poids `envies.grimper` remis à zéro par erreur
+        // laisserait l'invariant vrai par vacuité, sans qu'aucune assertion
+        // précédente ne le remarque.
+        assert!(
+            r.temps_accroche > Duration::ZERO,
+            "en 24 h il n'a jamais grimpé une seule fois"
         );
     }
 }

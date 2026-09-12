@@ -111,7 +111,6 @@ pub const POSE_GRAB_CEILING: &str = "grabCeiling";
 /// Le déplacement au plafond — `ClimbCeiling`, frames 23, 24, 25.
 pub const POSE_CLIMB_CEILING: &str = "climbCeiling";
 
-
 /// Les poses de balancement, **tête à gauche**, du plus léger au plus ample.
 ///
 /// Frames 6, 8, 10. Le pied traîne alors à droite, ce qui arrive quand le

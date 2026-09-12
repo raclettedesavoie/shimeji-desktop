@@ -594,6 +594,33 @@ fn boucle(
     let sonde = probe::win32::Win32Probe::new();
     let horloge = clock::SystemClock::new();
 
+    // `SHIMEJI_ESCALADE=1` : force l'intention `Grimper` dès la première
+    // image, au lieu d'attendre qu'elle sorte du tirage pondéré (elle partage
+    // aujourd'hui le poids de `se_reposer`, donc l'attendre à l'œil peut
+    // prendre plusieurs minutes).
+    //
+    // Ajoutée à la Tâche 7 pour une raison précise : mesurer l'ancre de
+    // `grabWall`/`climbWall` demande de REGARDER le personnage accroché à un
+    // mur, et ça, aucun script ne peut le faire à la place d'un humain — la
+    // seule exception du projet à « tout ce qui demanderait un clic reçoit un
+    // équivalent scriptable » (voir CLAUDE.md). Mais le TRAJET jusqu'à ce
+    // moment-là, lui, se scripte très bien : cette variable évite à l'auteur
+    // d'ouvrir le menu contextuel et de choisir « Grimper » à la main, et la
+    // trace ci-dessous (à chaque changement de phase) lui dit quand regarder
+    // l'écran sans avoir à fixer le personnage pendant plusieurs minutes.
+    let trace_escalade = std::env::var("SHIMEJI_ESCALADE").is_ok();
+    if trace_escalade {
+        ch.intention = Some(behavior::intention::ActiveIntention::nouvelle(
+            behavior::intention::Intention::Grimper,
+            horloge.elapsed(),
+        ));
+        println!("SHIMEJI_ESCALADE : intention Grimper forcée au démarrage");
+    }
+    // Le dernier triplet (phase, face, pose) imprimé : on ne retrace qu'au
+    // CHANGEMENT, sinon la console serait inondée à 60 Hz pour une
+    // information qui ne bouge qu'à la transition.
+    let mut derniere_trace_grimpe: Option<(String, String, String)> = None;
+
     // Graine issue de l'horloge système : deux lancements ne doivent pas
     // donner la même histoire. C'est le seul endroit du programme où
     // l'aléatoire n'est pas reproductible, et c'est voulu — le mode
@@ -952,6 +979,32 @@ fn boucle(
         // La MÊME fonction que le mode simulation.
         let dt = PERIODE.as_secs_f32();
         behavior::pas(&mut ch, &monde, &entrees, &table, &reglages, maintenant, dt, &mut rng);
+
+        // ── Diagnostic : `SHIMEJI_ESCALADE=1` ───────────────────────────
+        // Rien qu'une intention `Grimper` en cours ne trace : c'est
+        // exactement le moment que l'auteur doit regarder pour mesurer
+        // l'ancre de `grabWall`/`climbWall` à l'œil.
+        if trace_escalade {
+            if let Some(ai) = ch.intention {
+                if let behavior::intention::EtatIntention::Grimpe { phase, .. } = ai.etat {
+                    let face = match ch.attachment {
+                        character::attach::Attachment::On { face, offset, .. } => {
+                            format!("{face:?} offset={offset:.1}")
+                        }
+                        character::attach::Attachment::Falling { .. } => "chute".to_string(),
+                        character::attach::Attachment::Dragged => "porté".to_string(),
+                    };
+                    let cle = (format!("{phase:?}"), face.clone(), ch.pose.clone());
+                    if derniere_trace_grimpe.as_ref() != Some(&cle) {
+                        println!(
+                            "SHIMEJI_ESCALADE : phase={:?} {} pose={}",
+                            phase, face, ch.pose
+                        );
+                        derniere_trace_grimpe = Some(cle);
+                    }
+                }
+            }
+        }
 
         // ── Sur changement seulement : la taille de la fenêtre ──────────
         // Elle ne dépend que du manifeste et de l'échelle de l'écran.
