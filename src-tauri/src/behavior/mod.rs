@@ -103,20 +103,32 @@ pub struct Entrees {
 /// (une chute qui démarre est un réflexe, pas une décision, et les couches
 /// 2/3 ne doivent pas tourner par-dessus).
 ///
-/// ⚠️ **Pourquoi une fonction et non deux copies du même `if` — la leçon qui
-/// a coûté un bug.** Cette règle existait déjà, mais à un SEUL des deux
-/// endroits où elle doit s'appliquer : la garde de chaque image, ci-dessous
-/// dans `pas`. Elle manquait à `intention::poursuivre`, à l'endroit précis
-/// où une intention `Grimper` s'efface au délai d'abandon (120 s). Un
-/// personnage qui expirait au plafond restait donc accroché, intention
-/// `None` — et la couche 3, juste après, lui reposait aussitôt un `Grimper`
-/// neuf, en phase `Choisir`, sans que la garde de `pas` ne le voie jamais :
-/// elle ne s'exécute qu'AVANT que l'intention ne soit effacée, donc à
-/// l'image de l'abandon comme à la suivante elle voit toujours une
-/// intention `Grimper` valide. Deux copies de cette même règle auraient de
-/// toute façon fini par diverger — c'est exactement ce qu'illustre ce bug,
-/// où la règle vivait au bon endroit pour l'usage courant mais pas pour
-/// celui-ci. Il n'y en a maintenant qu'une, appelée aux deux endroits.
+/// ⚠️ **Pourquoi une fonction et non des copies du même `if` — la leçon qui
+/// a coûté un bug, puis un second.** Cette règle existait déjà, mais à un
+/// SEUL des endroits où elle doit s'appliquer : la garde de chaque image,
+/// ci-dessous dans `pas`. Elle manquait à `intention::poursuivre` — et une
+/// première correction (Tâche 7) ne l'y avait ajoutée qu'à UN des deux
+/// points de sortie possibles : le délai d'abandon. Un personnage qui
+/// expirait au plafond restait donc accroché, intention `None` — et la
+/// couche 3, juste après, lui reposait aussitôt un `Grimper` neuf, en phase
+/// `Choisir`, sans que la garde de `pas` ne le voie jamais : elle ne
+/// s'exécute qu'AVANT que l'intention ne soit effacée, donc à l'image de
+/// l'abandon comme à la suivante elle voit toujours une intention `Grimper`
+/// valide.
+///
+/// **Et ce correctif partiel a repoussé exactement le même bug d'un cran**
+/// (relecture finale de l'étape 4a) : `grimper()` a sept points de sortie,
+/// et deux d'entre eux — la garde de face de la phase `Choisir`, et
+/// l'absence de sol au pied du mur — laissaient eux aussi le personnage
+/// accroché sans que le délai d'abandon n'y soit pour rien. `poursuivre`
+/// appelle maintenant cette fonction à un unique point d'étranglement, APRÈS
+/// avoir calculé l'issue de l'intention, quelle qu'en soit la source — voir
+/// son commentaire. Deux copies (ou deux appels à des endroits différents
+/// pour des raisons différentes) de cette même règle finissent toujours par
+/// diverger : c'est exactement ce qu'illustrent ces deux bugs successifs, où
+/// la règle vivait au bon endroit pour l'usage courant mais pas pour celui-ci.
+/// Il n'y en a maintenant qu'une, appelée aux deux endroits qui comptent : à
+/// chaque image dans `pas`, et une fois par appel dans `poursuivre`.
 ///
 /// Ne se prononce que sur `Attachment::On` : `Falling` et `Dragged` ne sont
 /// pas concernés — on ne lâche pas ce qu'on ne tient pas.
@@ -244,9 +256,11 @@ pub fn pas(
     // aussitôt un `Grimper` tout neuf — et cette règle-ci, qui n'exempte
     // que le TYPE `Grimper` sans savoir s'il s'agit de la même escalade ou
     // d'une autre, ne voyait donc jamais passer l'image où il aurait dû
-    // lâcher. D'où `lacher_si_accroche`, appelée maintenant aussi au point
-    // où l'intention `Grimper` s'efface (`intention::poursuivre`) — voir son
-    // commentaire pour le détail.
+    // lâcher. D'où `lacher_si_accroche`, appelée maintenant aussi dans
+    // `intention::poursuivre`, à SON point d'étranglement unique — voir son
+    // commentaire pour le détail, et pour la seconde moitié de ce bug
+    // (les sorties de `grimper()` autres que le délai d'abandon), corrigée
+    // dans la même vague.
     //
     // Conséquence à retenir : **le sol est le seul endroit où l'on peut ne
     // rien faire.** C'est aussi ce qui rend le délai d'abandon lisible à
@@ -631,10 +645,105 @@ mod tests {
         // exactement comme le fait cette règle de sécurité, donc si la
         // condition ne l'exemptait pas, il ne resterait jamais assez
         // longtemps sur le mur pour monter.
+        //
+        // ⚠️ **État de départ corrigé (relecture finale, après correction 1).**
+        // Une version antérieure démarrait ce test avec une intention
+        // `Grimper` TOUTE FRAÎCHE (`ActiveIntention::nouvelle`, phase
+        // `Choisir`) tout en étant déjà accroché à un mur — un état qui
+        // n'arrive plus jamais en jeu (`Choisir` ne s'atteint qu'au sol, et
+        // `accroche_au_mur`/`Rejoindre` posent directement `Accroche` ou
+        // `Paroi`). Ce n'était pas un test de « une escalade en cours tient
+        // le mur » : c'était, sans le savoir, un test du bug que la
+        // correction 1 corrige précisément — la garde de face de `Choisir`
+        // échouant et laissant le personnage pendu. Une fois la règle
+        // corrigée, ce même état fait maintenant tomber le personnage (voir
+        // `une_grimper_qui_echoue_sur_un_mur_le_fait_tomber_sur_plusieurs_images`
+        // ci-dessus, qui verrouille CE côté-là).
+        //
+        // La propriété que CE test-ci doit garder est différente et reste
+        // vraie : une escalade **légitimement en cours**, en phase `Paroi`
+        // (donc déjà en train de monter ou descendre la paroi), ne doit
+        // jamais se lâcher elle-même. D'où un départ en `Paroi { cible }` à
+        // mi-mur plutôt qu'en `Choisir` — la phase est ce qui sépare les deux
+        // tests : une intention `Grimper` VALIDE tient le mur, une intention
+        // `Grimper` qui échoue ou se termine le lâche, quelle que soit sa
+        // phase.
         let m = monde();
         let mut ch = perso(&m);
         let mur = mur_gauche(&m);
 
+        ch.attachment = Attachment::On {
+            platform: mur.id,
+            face: Face::Right,
+            offset: 400.0,
+        };
+        ch.intention = Some(intention::ActiveIntention {
+            kind: intention::Intention::Grimper,
+            depuis: Duration::ZERO,
+            etat: intention::EtatIntention::Grimpe {
+                // Une cible loin de l'offset de départ (400) : sur la durée
+                // du test, il n'a pas le temps de l'atteindre, donc la phase
+                // reste `Paroi` — en train de grimper, pas en train de
+                // choisir ou de sortir.
+                phase: intention::PhaseGrimpe::Paroi { cible: 0.0 },
+                jusqu_a: Duration::ZERO,
+            },
+        });
+
+        let mut rng = XorShift32::seeded(1);
+        let table = desire::TableEnvies::defaut();
+        let reglages = crate::config::Reglages::depuis(&crate::config::Config::default());
+
+        // Plusieurs images, pas une seule : une escalade en cours doit tenir
+        // sur la durée, pas seulement à la première image.
+        for i in 0..60 {
+            pas(
+                &mut ch,
+                &m,
+                &entrees(true, 1.0),
+                &table,
+                &reglages,
+                Duration::from_secs(1) + Duration::from_secs_f32(i as f32 * DT),
+                DT,
+                &mut rng,
+            );
+        }
+
+        assert!(
+            matches!(ch.attachment, Attachment::On { face: Face::Right, .. }),
+            "une Grimper en cours (phase Paroi) ne doit pas le faire lâcher, il est {:?}",
+            ch.attachment
+        );
+    }
+
+    #[test]
+    fn une_grimper_qui_echoue_sur_un_mur_le_fait_tomber_sur_plusieurs_images() {
+        // ── Le test du point d'étranglement unique (relecture finale) ──────
+        //
+        // Avant cette correction, `lacher_si_accroche` n'était appelée dans
+        // `intention::poursuivre` qu'au délai d'abandon — jamais depuis les
+        // six AUTRES points de sortie de `grimper()`. Celui qu'on déclenche
+        // ici est la garde de la phase `Choisir` (`face != Face::Top`) : un
+        // personnage encore accroché à un mur, mais dont l'intention
+        // `Grimper` vient tout juste d'être posée fraîche (donc en phase
+        // `Choisir`), fait échouer cette garde dès la première image de
+        // `poursuivre` — exactement le même défaut que celui de la Tâche 7,
+        // sur un chemin différent.
+        //
+        // Sans le point d'étranglement unique, ce scénario laissait le
+        // personnage accroché avec `intention = None`, et la couche 3
+        // repostait aussitôt un `Grimper` neuf — qui retombait en phase
+        // `Choisir`, qui échouait à nouveau : une boucle silencieuse,
+        // jamais détectée par la garde de `pas` (qui n'agit que quand
+        // l'intention n'est PAS `Grimper`).
+        let m = monde();
+        let mut ch = perso(&m);
+        let mur = mur_gauche(&m);
+
+        // Accroché à un mur (face `Right`), mais avec une intention
+        // `Grimper` TOUTE FRAÎCHE : `ActiveIntention::nouvelle` la construit
+        // en phase `Choisir`, précisément la phase dont la garde de face
+        // échoue ici puisque la face n'est pas `Top`.
         ch.attachment = Attachment::On {
             platform: mur.id,
             face: Face::Right,
@@ -646,22 +755,38 @@ mod tests {
         ));
 
         let mut rng = XorShift32::seeded(1);
-        pas(
-            &mut ch,
-            &m,
-            &entrees(true, 1.0),
-            &desire::TableEnvies::defaut(),
-            &crate::config::Reglages::depuis(&crate::config::Config::default()),
-            Duration::from_secs(1),
-            DT,
-            &mut rng,
-        );
+        let table = desire::TableEnvies::defaut();
+        let reglages = crate::config::Reglages::depuis(&crate::config::Config::default());
 
-        assert!(
-            matches!(ch.attachment, Attachment::On { .. }),
-            "une Grimper en cours ne doit pas le faire lâcher, il est {:?}",
-            ch.attachment
-        );
+        // Plusieurs images, comme pour `lacher_un_mur_le_fait_vraiment_tomber_sur_plusieurs_images` :
+        // la toute première image après le lâcher a une vitesse nulle, donc
+        // indiscernable d'un raccrochage immédiat. Il faut voir la vitesse
+        // croître sous la gravité pour être sûr qu'il tombe vraiment.
+        for i in 0..30 {
+            pas(
+                &mut ch,
+                &m,
+                &entrees(true, 1.0),
+                &table,
+                &reglages,
+                Duration::from_secs(1) + Duration::from_secs_f32(i as f32 * DT),
+                DT,
+                &mut rng,
+            );
+        }
+
+        match ch.attachment {
+            Attachment::Falling { vel, .. } => {
+                assert!(
+                    vel.y > 50.0,
+                    "il devrait être tombé du mur sous la gravité, vy = {}",
+                    vel.y
+                );
+            }
+            autre => panic!(
+                "une escalade qui échoue sur un mur doit le faire tomber, il est {autre:?}"
+            ),
+        }
     }
 
     #[test]

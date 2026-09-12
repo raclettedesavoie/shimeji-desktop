@@ -38,16 +38,23 @@ use std::time::Duration;
 /// gratuite.
 pub const DELAI_ABANDON: Duration = Duration::from_secs(20);
 
-/// Délai d'abandon de 120 s pour l'escalade (design §4.4).
+/// Délai d'abandon de 120 s pour l'escalade, à vitesse ×1 (design §4.4).
 ///
 /// **Pourquoi pas 20 s comme le reste.** L'escalade va à 16,1 px/s : un mur
-/// de 1032 px prend 64 s, et la marche jusqu'au bord en ajoute jusqu'à 19.
-/// Avec le délai commun, il abandonnerait toujours au tiers du mur et
-/// n'atteindrait jamais le plafond.
+/// de 1032 px prend 64 s, et la marche jusqu'au bord en ajoute jusqu'à 38 —
+/// **un écran entier**, 1920 px, et non sa moitié : sur deux écrans côte à
+/// côte, chaque écran n'expose qu'UN SEUL mur (design §2.3), donc le pire
+/// cas n'est pas de se trouver déjà au milieu, il est de partir de l'autre
+/// bord. Avec le délai commun de 20 s, il abandonnerait toujours au tiers du
+/// mur et n'atteindrait jamais le plafond.
 ///
 /// La décision n° 4 écrit « ~20 s » avec un tilde : c'est une règle de
 /// sécurité anti-blocage, pas un trait de caractère, et elle n'a pas de
 /// raison d'être identique pour une intention trois fois plus lente.
+///
+/// ⚠️ **Cette constante seule ne suffit plus** depuis que `vitesse` est
+/// réglable (`config.json`) : voir `delai_abandon`, qui la corrige par le
+/// facteur de l'utilisateur.
 pub const DELAI_ABANDON_GRIMPE: Duration = Duration::from_secs(120);
 
 /// Le délai d'abandon qui s'applique à cette intention-là.
@@ -55,13 +62,43 @@ pub const DELAI_ABANDON_GRIMPE: Duration = Duration::from_secs(120);
 /// Une fonction et non une méthode de `Intention` : le délai est une règle
 /// du moteur de comportement, pas une propriété de l'étiquette — la même
 /// raison qui a fait de `vitesse_de(allure)` une fonction libre.
-pub fn delai_abandon(kind: Intention) -> Duration {
+///
+/// ⚠️ **Prend maintenant les réglages, et c'est une correction, pas un
+/// confort** (relecture finale de l'étape 4a). `DELAI_ABANDON_GRIMPE` est une
+/// CONSTANTE, mais `vitesse_escalade` (comme `vitesse_marche`) est multipliée
+/// par le facteur `vitesse` de `config.json`, borné à `FACTEUR_VITESSE_MIN =
+/// 0.1`. Un délai fixe face à des vitesses réglables est un piège : à ×0.5,
+/// l'escalade complète calculée ci-dessus (102 s à ×1) passe à 205 s contre
+/// un abandon toujours fixé à 120 s — **toute** escalade expirerait aux deux
+/// tiers du mur, le personnage tomberait, et comme `Grimper` garde son poids
+/// dans le tirage, il recommencerait aussitôt. Il passerait sa vie à tomber
+/// des murs, sans qu'aucune ligne du code n'ait l'air fausse en la relisant
+/// isolément — c'est exactement le symptôme que le design §4.4 décrit pour
+/// justifier les 120 s, réintroduit par un chemin que personne n'avait
+/// regardé.
+///
+/// Le facteur est déductible de `vitesse_marche`, déjà calculé par
+/// `Reglages::depuis` : `reglages.vitesse_marche / VITESSE_MARCHE`. Diviser
+/// le délai par ce même facteur garde la marge de 15 % constante quel que
+/// soit le réglage, plutôt que de la faire fondre à mesure que `vitesse`
+/// baisse — voir le test `une_escalade_complete_tient_dans_le_delai_d_abandon`,
+/// qui le vérifie à plusieurs facteurs, dont le minimum autorisé (0.1).
+pub fn delai_abandon(kind: Intention, reglages: &Reglages) -> Duration {
     match kind {
-        Intention::Grimper => DELAI_ABANDON_GRIMPE,
+        Intention::Grimper => {
+            let facteur = reglages.vitesse_marche / crate::character::physics::VITESSE_MARCHE;
+            Duration::from_secs_f32(DELAI_ABANDON_GRIMPE.as_secs_f32() / facteur)
+        }
         // `|` : les trois autres partagent le délai commun. Un `_` les
         // couvrirait aussi, mais il avalerait silencieusement toute
         // intention future — alors que ce `match` exhaustif obligera à se
         // poser la question.
+        //
+        // Elles ne sont PAS corrigées par le facteur de vitesse : leur délai
+        // de 20 s est une règle de sécurité anti-blocage générique (décision
+        // n° 4), pas un calcul de traversée comme celui de l'escalade — rien
+        // dans leur conception n'affirme qu'il doit couvrir un trajet complet
+        // à vitesse réduite.
         Intention::Flaner | Intention::SeReposer | Intention::Jouer(_) => DELAI_ABANDON,
     }
 }
@@ -388,65 +425,90 @@ pub fn poursuivre(
     // ── Le délai d'abandon, avant tout le reste ─────────────────────────
     // Décision n° 4. `saturating_sub` : si l'horloge de test recule (elle
     // le peut, `FakeClock::set` existe), on ne veut pas de débordement.
-    if maintenant.saturating_sub(ai.depuis) > delai_abandon(ai.kind) {
-        // ⚠️ **Bug corrigé (Tâche 7, trouvé par l'invariant du monde
-        // vertical de `sim.rs`).** `Grimper` est la SEULE intention qui peut
-        // expirer alors que le personnage est encore accroché à un mur ou au
-        // plafond — les trois autres ne vivent que sur `Face::Top`. Sans cet
-        // appel, il restait accroché, intention `None` ; la couche 3, juste
-        // après, lui repostait aussitôt un `Grimper` neuf (phase `Choisir`),
-        // et la garde de sécurité de `behavior::pas` ne s'en apercevait
-        // jamais puisqu'elle voit une intention `Grimper` valide à chaque
-        // image, celle-ci comme la précédente. `lacher_si_accroche` est la
-        // MÊME fonction que celle appelée à chaque image dans `pas` — voir
-        // son commentaire pour l'explication complète de pourquoi une seule
-        // fonction, appelée aux deux endroits, plutôt que deux copies de la
-        // même règle.
-        super::lacher_si_accroche(ch, world);
+    //
+    // ⚠️ On ne lâche PAS ici, contrairement à une version antérieure. Voir
+    // le commentaire du point d'étranglement unique, en bas de cette
+    // fonction, pour la raison : appeler `lacher_si_accroche` à cet endroit
+    // ET après le `match` ci-dessous aurait recréé exactement le défaut que
+    // cette vague de relecture corrige — la même règle vivant à deux
+    // endroits, avec un risque qu'un futur point de sortie (une cinquième
+    // intention, une nouvelle phase) n'en voie qu'un des deux.
+    let issue = if maintenant.saturating_sub(ai.depuis) > delai_abandon(ai.kind, reglages) {
         ch.intention = None;
-        return Issue::Echouee;
+        Issue::Echouee
+    } else {
+        match ai.kind {
+            Intention::Flaner => {
+                let issue = flaner(ch, world, reglages, &mut ai, maintenant, dt, rng);
+                // On réécrit l'intention : `ai` est une COPIE (le type est
+                // `Copy`), donc modifier `ai.etat` ne touche pas `ch.intention`
+                // tant qu'on ne le réaffecte pas. Oublier cette ligne donnerait
+                // un personnage qui retire une allure à chaque image.
+                //
+                // `if` : `flaner` a pu annuler l'intention (elle est alors
+                // `None`) — la réécrire l'aurait ressuscitée.
+                if ch.intention.is_some() {
+                    ch.intention = Some(ai);
+                }
+                issue
+            }
+
+            Intention::SeReposer => {
+                let issue = se_reposer(ch, &mut ai, e, reglages, maintenant, rng);
+                if ch.intention.is_some() {
+                    ch.intention = Some(ai);
+                }
+                issue
+            }
+
+            Intention::Jouer(jeu) => {
+                let issue = jouer(ch, jeu, &mut ai, maintenant, rng);
+                if ch.intention.is_some() {
+                    ch.intention = Some(ai);
+                }
+                issue
+            }
+
+            Intention::Grimper => {
+                let issue = grimper(ch, world, reglages, &mut ai, maintenant, dt, rng);
+                if ch.intention.is_some() {
+                    ch.intention = Some(ai);
+                }
+                issue
+            }
+        }
+    };
+
+    // ── Le point d'étranglement unique de la règle du monde vertical ────
+    //
+    // ⚠️ **Bug corrigé (relecture finale de l'étape 4a).** `grimper()` a SEPT
+    // points de sortie (`ch.intention = None; return Issue::…`), et deux
+    // d'entre eux laissent le personnage accroché à une face non-`Top` : la
+    // garde `face != Face::Top` de la phase `Choisir`, et la branche `None`
+    // de `sol_au_pied_du_mur` — cette dernière deviendra SYSTÉMATIQUE dès que
+    // les murs de fenêtres n'auront pas de sol au même écran. Une version
+    // antérieure n'appelait `lacher_si_accroche` qu'au moment précis où le
+    // délai d'abandon expirait (voir le commentaire ci-dessus, maintenant
+    // supprimé de cet endroit) : c'était le bug de la Tâche 7 tel quel,
+    // déplacé d'un cran — la couche 3 re-tirait aussitôt un `Grimper` neuf
+    // sur un personnage toujours accroché, et la garde de `behavior::pas` ne
+    // voyait jamais l'image où il aurait fallu lâcher.
+    //
+    // La correction : un SEUL appel, ici, qui couvre les quatre intentions et
+    // toutes leurs sorties d'un coup — que l'issue vienne du délai d'abandon
+    // ci-dessus ou de n'importe quel `return Issue::Echouee`/`Finie` à
+    // l'intérieur de `flaner`/`se_reposer`/`jouer`/`grimper`. C'est le même
+    // principe que la factorisation de `lacher_si_accroche` elle-même : une
+    // règle qui vit à un seul endroit ne peut pas en oublier un second.
+    //
+    // `EnCours` ne déclenche rien : l'intention continue, il n'y a rien à
+    // juger. C'est seulement quand elle FINIT — d'une façon ou d'une autre —
+    // qu'il faut vérifier s'il reste accroché sans raison de l'être.
+    if issue != Issue::EnCours {
+        super::lacher_si_accroche(ch, world);
     }
 
-    match ai.kind {
-        Intention::Flaner => {
-            let issue = flaner(ch, world, reglages, &mut ai, maintenant, dt, rng);
-            // On réécrit l'intention : `ai` est une COPIE (le type est
-            // `Copy`), donc modifier `ai.etat` ne touche pas `ch.intention`
-            // tant qu'on ne le réaffecte pas. Oublier cette ligne donnerait
-            // un personnage qui retire une allure à chaque image.
-            //
-            // `if` : `flaner` a pu annuler l'intention (elle est alors
-            // `None`) — la réécrire l'aurait ressuscitée.
-            if ch.intention.is_some() {
-                ch.intention = Some(ai);
-            }
-            issue
-        }
-
-        Intention::SeReposer => {
-            let issue = se_reposer(ch, &mut ai, e, reglages, maintenant, rng);
-            if ch.intention.is_some() {
-                ch.intention = Some(ai);
-            }
-            issue
-        }
-
-        Intention::Jouer(jeu) => {
-            let issue = jouer(ch, jeu, &mut ai, maintenant, rng);
-            if ch.intention.is_some() {
-                ch.intention = Some(ai);
-            }
-            issue
-        }
-
-        Intention::Grimper => {
-            let issue = grimper(ch, world, reglages, &mut ai, maintenant, dt, rng);
-            if ch.intention.is_some() {
-                ch.intention = Some(ai);
-            }
-            issue
-        }
-    }
+    issue
 }
 
 /// Flâner : avancer, s'arrêter, courir, faire demi-tour, changer d'écran.
@@ -2455,8 +2517,7 @@ mod tests {
     fn choisir_depuis_un_mur_echoue_au_lieu_de_marcher_dessus() {
         // La garde structurelle de la Tâche 7 : `Choisir` refuse de partir
         // d'autre chose que `Face::Top`, même si plus rien d'autre ne devrait
-        // normalement l'y amener (`lacher_si_accroche` est censée avoir
-        // détaché le personnage avant). Une garde redondante ici coûte deux
+        // normalement l'y amener. Une garde redondante ici coûte deux
         // lignes ; son absence a coûté un bug qui a survécu trois tâches et
         // leurs relectures — voir `expire_au_plafond_il_tombe_au_lieu_de_
         // marcher_dessus` ci-dessus pour ce bug précis.
@@ -2508,12 +2569,19 @@ mod tests {
             "l'intention doit avoir été abandonnée, elle est {:?}",
             ch.intention
         );
-        // La garde échoue AVANT tout déplacement, et elle ne le fait pas
-        // tomber non plus — ce n'est pas son rôle, `lacher_si_accroche` s'en
-        // charge ailleurs (`behavior::mod::pas`, à chaque image).
+        // ⚠️ **Assertion corrigée (relecture finale de l'étape 4a).** La
+        // garde échoue avant tout déplacement, mais elle NE laisse plus le
+        // personnage pendu en attendant qu'un appel ultérieur de
+        // `behavior::mod::pas` s'en aperçoive — c'était l'ancienne
+        // assertion ici, et c'était précisément le bug : une image de
+        // flottement, avec une dépendance à un appelant lointain pour s'en
+        // sortir, exactement le motif de la Tâche 7. `poursuivre` appelle
+        // maintenant `lacher_si_accroche` à son point d'étranglement unique,
+        // dans la MÊME image que l'échec de cette garde — voir le
+        // commentaire de ce point d'étranglement, en fin de `poursuivre`.
         assert!(
-            matches!(ch.attachment, Attachment::On { face: Face::Right, .. }),
-            "il devrait être resté sur le mur, il est {:?}",
+            matches!(ch.attachment, Attachment::Falling { .. }),
+            "il devrait être tombé du mur dans la même image que l'échec, il est {:?}",
             ch.attachment
         );
     }
@@ -2677,10 +2745,37 @@ mod tests {
 
     #[test]
     fn grimper_a_un_delai_d_abandon_de_120_s() {
-        assert_eq!(delai_abandon(Intention::Grimper), Duration::from_secs(120));
-        assert_eq!(delai_abandon(Intention::Flaner), DELAI_ABANDON);
-        assert_eq!(delai_abandon(Intention::SeReposer), DELAI_ABANDON);
-        assert_eq!(delai_abandon(Intention::Jouer(Jeu::TeteQuiTourne)), DELAI_ABANDON);
+        let r = reglages();
+        assert_eq!(delai_abandon(Intention::Grimper, &r), Duration::from_secs(120));
+        assert_eq!(delai_abandon(Intention::Flaner, &r), DELAI_ABANDON);
+        assert_eq!(delai_abandon(Intention::SeReposer, &r), DELAI_ABANDON);
+        assert_eq!(delai_abandon(Intention::Jouer(Jeu::TeteQuiTourne), &r), DELAI_ABANDON);
+    }
+
+    #[test]
+    fn le_delai_d_abandon_de_grimper_suit_le_facteur_de_vitesse() {
+        // **Le test de la vague de correction finale, point 3.** Sans la
+        // division par le facteur, une escalade à vitesse réduite expirerait
+        // toujours à 120 s pile — le même délai qu'à vitesse normale, alors
+        // qu'elle avance plus lentement. La marge doit rester la MÊME
+        // proportion (~15 %) quel que soit le réglage.
+        let a_vitesse = |facteur: f32| -> f32 {
+            let config = crate::config::Config {
+                vitesse: facteur,
+                ..crate::config::Config::default()
+            };
+            let r = crate::config::Reglages::depuis(&config);
+            delai_abandon(Intention::Grimper, &r).as_secs_f32()
+        };
+
+        assert_eq!(a_vitesse(1.0), 120.0);
+        // Deux fois plus lent, deux fois plus de délai — sinon toute
+        // escalade à ×0.5 expirerait aux deux tiers du mur (le bug décrit
+        // dans le commentaire de `delai_abandon`).
+        assert_eq!(a_vitesse(0.5), 240.0);
+        // Le minimum autorisé par `FACTEUR_VITESSE_MIN` : le cas le plus
+        // extrême que la config puisse produire.
+        assert_eq!(a_vitesse(0.1), 1200.0);
     }
 
     #[test]
@@ -2751,16 +2846,40 @@ mod tests {
 
     #[test]
     fn une_escalade_complete_tient_dans_le_delai_d_abandon() {
-        // Le calcul du design §4.4, vérifié plutôt que supposé : marcher
-        // jusqu'au bord (960 px au pire, à 50 px/s) plus grimper toute la
-        // hauteur (1032 px à 16,1 px/s) doit tenir sous 120 s.
-        let marche = 960.0 / crate::character::physics::VITESSE_MARCHE;
-        let montee = 1032.0 / crate::character::physics::VITESSE_ESCALADE;
-        assert!(
-            marche + montee < 120.0,
-            "une escalade complète dure {}s, au-dessus du délai",
-            marche + montee
-        );
+        // Le calcul du design §4.4, vérifié plutôt que supposé.
+        //
+        // ⚠️ **Le pire cas au sol est l'écran ENTIER (1920 px), pas sa
+        // moitié** (correction de la vague de relecture finale) : sur deux
+        // écrans côte à côte, chaque écran n'a qu'UN SEUL mur (design §2.3),
+        // et `mur_le_plus_proche` filtre par `meme_ecran` — donc rien ne
+        // borne la distance à la moitié d'un écran. Une version antérieure
+        // de ce test prenait 960 px et concluait à une marge de 30 % ; le
+        // vrai pire cas, 1920 px, ne laisse que 15 %.
+        //
+        // Et on le vérifie à PLUSIEURS facteurs de vitesse, dont le minimum
+        // autorisé (0.1) : `delai_abandon` divise maintenant le délai par ce
+        // même facteur (point 3 de la relecture), donc la marge doit rester
+        // la même proportion quel que soit le réglage — c'est ce test-ci qui
+        // le démontre, plutôt que de ne vérifier que le facteur ×1 comme
+        // avant.
+        for facteur in [1.0f32, 0.5, 0.1] {
+            let config = crate::config::Config {
+                vitesse: facteur,
+                ..crate::config::Config::default()
+            };
+            let r = crate::config::Reglages::depuis(&config);
+
+            let marche = 1920.0 / r.vitesse_marche;
+            let montee = 1032.0 / r.vitesse_escalade;
+            let delai = delai_abandon(Intention::Grimper, &r).as_secs_f32();
+
+            assert!(
+                marche + montee < delai,
+                "à vitesse ×{facteur}, une escalade complète dure {}s, au-dessus \
+                 du délai de {delai}s",
+                marche + montee
+            );
+        }
     }
 
     #[test]

@@ -285,13 +285,25 @@ pub fn appliquer(
         // FACE, parce qu'on ne se pose pas sur un mur comme sur un sol
         // (design §3.2, étape 4a).
         if let Some((platform, face, offset)) = contact(world, pos, nouvelle_pos) {
-            ch.attachment = Attachment::On { platform, face, offset };
-
             // `match` explicite plutôt qu'un `if face == Face::Top` : les
             // quatre cas se lisent d'un coup, et le compilateur exigera d'en
             // traiter un cinquième si `Face` en gagnait un.
+            //
+            // ⚠️ **`ch.attachment` n'est PLUS affecté avant ce `match`**
+            // (correction de la relecture finale). Une version antérieure
+            // l'écrivait ici, avant même de savoir quelle face avait été
+            // touchée — donc y compris pour `Face::Bottom`, qui ne pose
+            // AUCUNE pose et rend `Reflexe::Chute` en disant « on traite
+            // comme une chute qui continue ». Le code faisait donc
+            // l'inverse de ce que dit ce commentaire : il attachait quand
+            // même, laissant le personnage `Attachment::On` avec la pose
+            // `fall` toujours affichée. Latent aujourd'hui — `contact` ne
+            // rend jamais `Bottom` — mais armé dès que l'étape 4 exposera
+            // le dessous d'une fenêtre comme plateforme. Chaque bras qui
+            // veut vraiment attacher le fait maintenant lui-même.
             return match face {
                 Face::Top => {
+                    ch.attachment = Attachment::On { platform, face, offset };
                     ch.set_pose(POSE_LAND, maintenant);
                     ch.intention = None;
                     Reflexe::Atterrissage
@@ -302,6 +314,7 @@ pub fn appliquer(
                 // pour faire face à la paroi. Et symétriquement pour `Left`,
                 // qui est celle d'un mur DROIT.
                 Face::Right | Face::Left => {
+                    ch.attachment = Attachment::On { platform, face, offset };
                     ch.facing = if face == Face::Right {
                         Facing::Left
                     } else {
@@ -322,7 +335,10 @@ pub fn appliquer(
 
                 // `contact` ne rend jamais `Bottom` : le plafond n'attrape
                 // rien (design §3.2, d'après `Fall.java`). On ne panique pas
-                // pour autant — on traite comme une chute qui continue.
+                // pour autant — on traite comme une chute qui continue, et
+                // c'est pour de vrai maintenant : `ch.attachment` n'est
+                // touché par AUCUNE ligne de ce bras, il reste `Falling`
+                // exactement comme avant cet appel à `contact`.
                 Face::Bottom => Reflexe::Chute,
             };
         }

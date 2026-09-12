@@ -987,18 +987,44 @@ fn boucle(
         if trace_escalade {
             if let Some(ai) = ch.intention {
                 if let behavior::intention::EtatIntention::Grimpe { phase, .. } = ai.etat {
-                    let face = match ch.attachment {
+                    // Le MESSAGE affiché garde l'offset — il aide à situer le
+                    // personnage sur la paroi au moment précis où la trace
+                    // sort. Voir plus bas pourquoi la CLÉ, elle, ne le
+                    // contient plus.
+                    let face_affichee = match ch.attachment {
                         character::attach::Attachment::On { face, offset, .. } => {
                             format!("{face:?} offset={offset:.1}")
                         }
                         character::attach::Attachment::Falling { .. } => "chute".to_string(),
                         character::attach::Attachment::Dragged => "porté".to_string(),
                     };
-                    let cle = (format!("{phase:?}"), face.clone(), ch.pose.clone());
+
+                    // ⚠️ **La clé de dédoublonnage NE CONTIENT PAS l'offset**
+                    // (correction de la relecture finale, point 4) : seul le
+                    // nom de la face y entre, sans sa valeur numérique.
+                    //
+                    // L'offset avance en continu pendant `Rejoindre` et
+                    // `Paroi` (jusqu'à 0,83 px par image), donc l'inclure
+                    // dans la clé la faisait changer à presque CHAQUE image :
+                    // la trace sortait à ~60 lignes par seconde, alors que ce
+                    // commentaire promet « à chaque changement de phase ».
+                    // Inutilisable pour ce à quoi cette trace sert : dire à
+                    // l'auteur QUAND regarder l'écran pour mesurer l'ancre de
+                    // `grabWall`/`climbWall` — la seule vérification de ce
+                    // projet qui reste manuelle (voir plus haut, à la
+                    // déclaration de `trace_escalade`). La clé ne porte donc
+                    // que ce qui identifie une PHASE, pas une position dans
+                    // cette phase.
+                    let face_pour_la_cle = match ch.attachment {
+                        character::attach::Attachment::On { face, .. } => format!("{face:?}"),
+                        character::attach::Attachment::Falling { .. } => "chute".to_string(),
+                        character::attach::Attachment::Dragged => "porté".to_string(),
+                    };
+                    let cle = (format!("{phase:?}"), face_pour_la_cle, ch.pose.clone());
                     if derniere_trace_grimpe.as_ref() != Some(&cle) {
                         println!(
                             "SHIMEJI_ESCALADE : phase={:?} {} pose={}",
-                            phase, face, ch.pose
+                            phase, face_affichee, ch.pose
                         );
                         derniere_trace_grimpe = Some(cle);
                     }
