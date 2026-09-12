@@ -19,8 +19,8 @@
 
 use crate::character::attach::Attachment;
 use crate::character::manifest::{
-    POSE_CLIMB_WALL, POSE_GRAB_WALL, POSE_RUN, POSE_SIT, POSE_SIT_DANGLE, POSE_SLEEP,
-    POSE_SPIN_HEAD, POSE_STAND, POSE_WAKE, POSE_WALK,
+    POSE_CLIMB_CEILING, POSE_CLIMB_WALL, POSE_GRAB_CEILING, POSE_GRAB_WALL, POSE_RUN, POSE_SIT,
+    POSE_SIT_DANGLE, POSE_SLEEP, POSE_SPIN_HEAD, POSE_STAND, POSE_WAKE, POSE_WALK,
 };
 use crate::config::Reglages;
 use crate::character::Character;
@@ -228,6 +228,16 @@ pub enum PhaseGrimpe {
 
     /// Accroché, immobile, le temps tiré au sort.
     Accroche,
+
+    /// Se déplacer le long du plafond vers `cible`, un offset horizontal.
+    ///
+    /// Une phase distincte de `Paroi` et non un paramètre de face : les deux
+    /// n'ont ni la même pose, ni le même axe de déplacement (vertical pour
+    /// l'un, horizontal pour l'autre), ni la même sortie. Les fondre
+    /// demanderait un `match` sur la face dans chaque ligne du corps —
+    /// séparer coûte une variante, fondre coûterait une matrice pose × face
+    /// (design §4.1).
+    Plafond { cible: f32 },
 }
 
 /// L'état interne d'une intention en cours.
@@ -692,9 +702,106 @@ fn grimper(
             }
         }
 
+        // ── Traverser le plafond ─────────────────────────────────────────
+        PhaseGrimpe::Plafond { cible } => {
+            let Attachment::On {
+                platform,
+                face,
+                offset,
+            } = ch.attachment
+            else {
+                ch.intention = None;
+                return Issue::Echouee;
+            };
+            let Some(plat) = world.get(platform) else {
+                ch.intention = None;
+                return Issue::Echouee;
+            };
+
+            ch.set_pose(POSE_CLIMB_CEILING, maintenant);
+
+            let pas = reglages.vitesse_escalade * dt;
+            let reste = cible - offset;
+
+            // Au plafond, l'orientation suit le SENS DU DÉPLACEMENT, comme
+            // au sol — et non « il regarde la surface », qui n'a pas de sens
+            // à l'horizontale (design §3.4). Sur un mur, `ch.facing` ne
+            // varie pas pendant `Paroi` : c'est spécifique au plafond, où le
+            // personnage se déplace bien horizontalement.
+            ch.facing = if reste < 0.0 {
+                Facing::Left
+            } else {
+                Facing::Right
+            };
+
+            if reste.abs() <= pas {
+                phase = PhaseGrimpe::Accroche;
+                let d = reglages.escalade.duree_accroche;
+                jusqu_a = maintenant + Duration::from_secs_f32(rng.range(d[0], d[1]));
+            } else {
+                let nouveau = offset + pas * reste.signum();
+                let longueur = plat.rect.face_length(face);
+
+                // Au bout du plafond : le plafond du voisin le prolonge-
+                // t-il ? C'est le MÊME mécanisme qu'au sol, et c'est pour
+                // cela que `face_voisine` a été généralisée aux faces
+                // `Bottom`.
+                if nouveau < 0.0 || nouveau > longueur {
+                    match face_voisine(world, platform, face, reste > 0.0) {
+                        Some((voisine, entree)) => {
+                            ch.attachment = Attachment::On {
+                                platform: voisine,
+                                face,
+                                offset: entree,
+                            };
+                            // La cible appartenait à l'ancien plafond : on
+                            // s'arrête là et on s'accroche, plutôt que de
+                            // traduire un offset d'une plateforme à l'autre
+                            // (qui n'a pas de sens si les deux plafonds ont
+                            // des largeurs différentes).
+                            phase = PhaseGrimpe::Accroche;
+                            let d = reglages.escalade.duree_accroche;
+                            jusqu_a =
+                                maintenant + Duration::from_secs_f32(rng.range(d[0], d[1]));
+                        }
+                        None => {
+                            // Bout du monde : on s'accroche sur place plutôt
+                            // que de laisser l'offset déborder.
+                            ch.attachment = Attachment::On {
+                                platform,
+                                face,
+                                offset: nouveau.clamp(0.0, longueur),
+                            };
+                            phase = PhaseGrimpe::Accroche;
+                            let d = reglages.escalade.duree_accroche;
+                            jusqu_a =
+                                maintenant + Duration::from_secs_f32(rng.range(d[0], d[1]));
+                        }
+                    }
+                } else {
+                    ch.attachment = Attachment::On {
+                        platform,
+                        face,
+                        offset: nouveau,
+                    };
+                }
+            }
+        }
+
         // ── Accroché, puis la sortie tirée au sort ──────────────────────
         PhaseGrimpe::Accroche => {
-            ch.set_pose(POSE_GRAB_WALL, maintenant);
+            // La pose dépend de la FACE occupée, pas de la phase : accroché
+            // à un mur ou suspendu au plafond, ce ne sont pas les mêmes
+            // frames (Tâche 6). C'est la face de `ch.attachment`, pas un
+            // paramètre — cette même variante `Accroche` sert aux deux cas
+            // depuis que le plafond existe.
+            let pose = match ch.attachment {
+                Attachment::On {
+                    face: Face::Bottom, ..
+                } => POSE_GRAB_CEILING,
+                _ => POSE_GRAB_WALL,
+            };
+            ch.set_pose(pose, maintenant);
 
             // `jusqu_a == ZERO` : première image de cette phase, sa durée
             // n'a pas encore été tirée. C'est le cas normal en sortie de
@@ -761,10 +868,63 @@ fn grimper(
                 return Issue::Finie;
             }
 
-            // Redescendre, c'est viser le bas du mur : la même phase
-            // `Paroi`, avec une cible plus GRANDE que l'offset courant.
-            phase = PhaseGrimpe::Paroi {
-                cible: plat.rect.face_length(face),
+            // Troisième issue, réservée au HAUT d'un mur : passer au
+            // plafond. `offset <= pas_d_une_image` plutôt que `== 0.0` : on
+            // ne compare jamais deux flottants pour l'égalité après une
+            // accumulation de pas.
+            //
+            // `face != Face::Bottom` exclut le cas où l'on est DÉJÀ au
+            // plafond : cette bascule n'a de sens qu'en arrivant d'un mur.
+            let en_haut = face != Face::Bottom && offset <= reglages.vitesse_escalade * dt;
+            if en_haut && ch.manifest.has_pose(POSE_CLIMB_CEILING) {
+                // Couverture partielle (spec §8.6) : un pack sans pose de
+                // plafond grimpe quand même, il s'arrête simplement en haut
+                // du mur — c'est exactement pourquoi `climbCeiling` n'est
+                // PAS dans les `poses_requises` de `Grimper` (desire.rs).
+                if let Some((plafond, entree)) = plafond_au_sommet(world, platform, plat, face) {
+                    ch.attachment = Attachment::On {
+                        platform: plafond,
+                        face: Face::Bottom,
+                        offset: entree,
+                    };
+                    // ⚠️ **La pose change ICI, dans la MÊME image que
+                    // l'attache.** Sans cette ligne, l'attachement dirait
+                    // déjà « plafond » alors que la pose resterait
+                    // `grabWall` — exactement le défaut que l'invariant de
+                    // simulation de la Tâche 7 est censé détecter, et qui a
+                    // déjà mordu une fois sur la transition sol → mur
+                    // (`Rejoindre`, plus haut dans cette fonction).
+                    ch.set_pose(POSE_CLIMB_CEILING, maintenant);
+
+                    let longueur = world
+                        .get(plafond)
+                        .map(|p| p.rect.face_length(Face::Bottom))
+                        .unwrap_or(0.0);
+                    phase = PhaseGrimpe::Plafond {
+                        cible: rng.range(0.0, longueur),
+                    };
+                    ai.etat = EtatIntention::Grimpe { phase, jusqu_a };
+                    return Issue::EnCours;
+                }
+            }
+
+            // Redescendre. Le sens dépend de la face occupée : sur un mur,
+            // « redescendre » vise le bas — la même phase `Paroi`, avec une
+            // cible plus GRANDE que l'offset courant. Au plafond il n'y a
+            // pas de bas : redescendre n'a pas de sens, donc il reprend
+            // simplement sa traversée vers un nouveau point par la phase
+            // `Plafond`. Sans cette distinction, un personnage qui choisit
+            // de « redescendre » depuis le plafond retomberait dans `Paroi`,
+            // qui pose `climbWall` et déplace verticalement — la mauvaise
+            // pose et le mauvais axe pour quelqu'un de suspendu.
+            phase = if face == Face::Bottom {
+                PhaseGrimpe::Plafond {
+                    cible: rng.range(0.0, plat.rect.face_length(face)),
+                }
+            } else {
+                PhaseGrimpe::Paroi {
+                    cible: plat.rect.face_length(face),
+                }
             };
         }
     }
@@ -842,6 +1002,31 @@ fn sol_au_pied_du_mur(world: &World, mur: PlatformId) -> Option<(PlatformId, f32
     None
 }
 
+/// Le plafond de l'écran de ce mur, et l'offset où y entrer.
+///
+/// L'offset d'entrée est l'abscisse du mur ramenée dans les bornes du
+/// plafond : on arrive au plafond juste au-dessus de l'endroit où l'on
+/// tenait la paroi. Même motif que `sol_au_pied_du_mur`, avec `Face::Bottom`
+/// à la place de `Face::Top`.
+fn plafond_au_sommet(
+    world: &World,
+    mur: PlatformId,
+    plat_mur: &crate::world::Platform,
+    face_mur: Face,
+) -> Option<(PlatformId, f32)> {
+    let x = plat_mur.rect.point_on(face_mur, 0.0).x;
+
+    for plat in world.platforms() {
+        if !plat.id.meme_ecran(mur) || !plat.has_face(Face::Bottom) {
+            continue;
+        }
+        let offset = (x - plat.rect.left()).clamp(0.0, plat.rect.face_length(Face::Bottom));
+        return Some((plat.id, offset));
+    }
+
+    None
+}
+
 /// La position écran actuelle, quand elle existe.
 ///
 /// Enveloppe `attach::world_position` avec un curseur factice : le personnage
@@ -895,12 +1080,14 @@ fn avancer(ch: &mut Character, world: &World, pas: f32) {
     // Y a-t-il un sol voisin qui prolonge celui-ci de ce côté ? C'est ce qui
     // fait qu'« il circule sur tous les écrans » (étape 1) — et à l'étape 4,
     // ce sera aussi ce qui le fait passer d'une barre de titre à la suivante.
-    if let Some((voisine, offset_entree)) =
-        face_voisine(world, platform, plat.rect.top(), vers_la_droite)
-    {
+    // `face` et non `Face::Top` codé en dur : `avancer` ne sert aujourd'hui
+    // qu'à `Flaner`, qui ne connaît que le sol, mais `face_voisine` a été
+    // généralisée pour le plafond (Tâche 6) — autant que son unique appelant
+    // demande la MÊME face que celle occupée, plutôt que de supposer `Top`.
+    if let Some((voisine, offset_entree)) = face_voisine(world, platform, face, vers_la_droite) {
         ch.attachment = Attachment::On {
             platform: voisine,
-            face: Face::Top,
+            face,
             offset: offset_entree,
         };
         return;
@@ -921,18 +1108,24 @@ fn avancer(ch: &mut Character, world: &World, pas: f32) {
     };
 }
 
-/// Cherche un sol adjacent à celui de `depuis`, du côté demandé et à peu près
-/// à la même hauteur.
+/// Cherche une plateforme adjacente à celle de `depuis`, exposant la MÊME
+/// face, du côté demandé et à peu près à la même hauteur.
 ///
 /// Vit ici et non dans `world.rs` parce que c'est une **décision de
 /// navigation**, pas une propriété du monde : « ce sol en prolonge-t-il un
 /// autre ? » n'a de sens que pour quelqu'un qui marche dessus.
 ///
+/// Généralisée aux faces `Bottom` à l'étape 4a (Tâche 6) : le plafond d'un
+/// écran prolonge celui du voisin exactement comme le sol prolonge le sol.
+/// **Un seul chemin de code pour les deux** — en écrire un second finirait
+/// par diverger, et c'est pourquoi la fonction prend désormais `face` en
+/// paramètre plutôt que de coder `Face::Top` en dur.
+///
 /// Rend la plateforme voisine et l'offset auquel y entrer.
 fn face_voisine(
     world: &World,
     depuis: PlatformId,
-    hauteur: f32,
+    face: Face,
     vers_la_droite: bool,
 ) -> Option<(PlatformId, f32)> {
     /// Tolérance sur la jonction. Deux écrans côte à côte se touchent
@@ -942,15 +1135,20 @@ fn face_voisine(
     const TOLERANCE: f32 = 8.0;
 
     let source = world.get(depuis)?;
+    // La ligne de référence : le haut du rectangle pour un sol, le bas pour
+    // un plafond. `point_on(face, 0.0).y` la donne dans les deux cas — c'est
+    // la MÊME fonction que celle qui place le personnage, donc pas de risque
+    // de calculer la hauteur autrement ici et là.
+    let hauteur = source.rect.point_on(face, 0.0).y;
 
     for plat in world.platforms() {
-        if plat.id == depuis || !plat.has_face(Face::Top) {
+        if plat.id == depuis || !plat.has_face(face) {
             continue;
         }
 
         // À peu près la même hauteur : on ne veut pas qu'il enjambe le vide
-        // vers un sol 400 px plus bas.
-        if (plat.rect.top() - hauteur).abs() > TOLERANCE {
+        // vers un sol (ou un plafond) 400 px plus bas.
+        if (plat.rect.point_on(face, 0.0).y - hauteur).abs() > TOLERANCE {
             continue;
         }
 
@@ -961,7 +1159,7 @@ fn face_voisine(
             }
         } else if (source.rect.left() - plat.rect.right()).abs() <= TOLERANCE {
             // On y entre par son bord droit.
-            return Some((plat.id, plat.rect.face_length(Face::Top)));
+            return Some((plat.id, plat.rect.face_length(face)));
         }
     }
 
@@ -1256,6 +1454,13 @@ mod tests {
     // les ignorerait — c'est la couverture partielle (spec §8.6) — et
     // `grimper_pose_les_bonnes_animations` échouerait pour une raison qui
     // n'aurait rien à voir avec l'escalade.
+    //
+    // `grabCeiling` et `climbCeiling` (frames 17, 18, arbitraires) sont
+    // celles du plafond (Tâche 6). Le test
+    // `un_pack_sans_pose_de_plafond_grimpe_quand_meme` retire ces deux poses
+    // d'une COPIE de ce manifeste (`manifeste_sans`) plutôt que d'en écrire
+    // un second JSON : c'est exactement la couverture partielle qu'il
+    // vérifie.
     fn manifeste() -> Manifest {
         let json = r#"{
             "id": "t", "name": "T", "frameSize": [128,128], "scale": 1,
@@ -1272,7 +1477,9 @@ mod tests {
                 "sleep":     { "frames": [12] },
                 "wake":      { "frames": [13, 14], "frameMs": 100 },
                 "grabWall":  { "frames": [15] },
-                "climbWall": { "frames": [15, 16], "frameMs": 150, "loop": true }
+                "climbWall": { "frames": [15, 16], "frameMs": 150, "loop": true },
+                "grabCeiling":  { "frames": [17] },
+                "climbCeiling": { "frames": [17, 18], "frameMs": 150, "loop": true }
             }
         }"#;
         serde_json::from_str(json).unwrap()
@@ -2455,5 +2662,163 @@ mod tests {
 
         assert!(laches > 10, "il ne se lâche jamais ({laches} sur 200)");
         assert!(descentes > 10, "il ne redescend jamais ({descentes} sur 200)");
+    }
+
+    // ── Le plafond (Tâche 6, étape 4a) ──────────────────────────────────
+
+    /// Le manifeste local (`manifeste()`), privé de certaines poses.
+    ///
+    /// Sert à éprouver la couverture partielle (spec §8.6) sans dépendre du
+    /// disque : `desire.rs` a sa propre `manifeste_avec`, qui liste les poses
+    /// à AJOUTER — ici on part du manifeste complet des tests d'escalade
+    /// (avec `grabWall`/`climbWall` déjà déclarées) et on RETIRE celles
+    /// données, ce qui est plus court pour un test qui ne veut retirer que
+    /// les deux poses de plafond.
+    ///
+    /// `poses` est un champ public de `Manifest` (une `BTreeMap`) : pas
+    /// besoin de repasser par le JSON pour le modifier.
+    fn manifeste_sans(poses: &[&str]) -> Manifest {
+        let mut m = manifeste();
+        for p in poses {
+            m.poses.remove(*p);
+        }
+        m
+    }
+
+    #[test]
+    fn arrive_en_haut_du_mur_il_peut_basculer_au_plafond() {
+        let m = monde_mure();
+        let mur = m
+            .platforms()
+            .iter()
+            .find(|p| p.has_face(Face::Right))
+            .expect("mur gauche");
+
+        // Posé en haut du mur, accroche expirée : la prochaine image tire la
+        // sortie, et le plafond doit en faire partie.
+        let mut rng = XorShift32::seeded(999);
+        let reglages = reglages();
+
+        let mut vus_au_plafond = 0;
+        for _ in 0..200 {
+            let mut ch = perso_sur_le_sol(&m);
+            ch.attachment = Attachment::On {
+                platform: mur.id,
+                face: Face::Right,
+                offset: 0.0, // tout en haut
+            };
+            // ⚠️ `jusqu_a` NE PEUT PAS valoir `Duration::ZERO` ici : depuis la
+            // Tâche 5, `ZERO` signifie « durée pas encore tirée » (init.
+            // paresseuse du bras `Accroche`), jamais « déjà expirée ». Avec
+            // `ZERO`, cette toute première image se contenterait de tirer la
+            // durée d'accroche et rendrait `EnCours` sans jamais tenter la
+            // sortie — le personnage ne basculerait alors JAMAIS, et ce test
+            // mesurerait un faux négatif complet plutôt qu'une vraie absence
+            // de bascule. Un `jusqu_a` non nul et déjà dépassé (1 ms, contre
+            // un `maintenant` d'une seconde) est la façon correcte d'écrire
+            // « l'accroche est terminée » — le même correctif que celui déjà
+            // appliqué au test `en_fin_d_accroche_il_lache_parfois…` plus
+            // haut dans ce fichier.
+            ch.intention = Some(ActiveIntention {
+                kind: Intention::Grimper,
+                depuis: Duration::ZERO,
+                etat: EtatIntention::Grimpe {
+                    phase: PhaseGrimpe::Accroche,
+                    jusqu_a: Duration::from_millis(1),
+                },
+            });
+
+            poursuivre(
+                &mut ch,
+                &m,
+                &entrees_neutres(),
+                &reglages,
+                Duration::from_secs(1),
+                DT,
+                &mut rng,
+            );
+
+            if matches!(ch.attachment, Attachment::On { face: Face::Bottom, .. }) {
+                vus_au_plafond += 1;
+            }
+        }
+
+        assert!(
+            vus_au_plafond > 10,
+            "il ne passe jamais au plafond ({vus_au_plafond} sur 200)"
+        );
+    }
+
+    #[test]
+    fn au_plafond_il_traverse_avec_la_bonne_pose() {
+        let m = monde_mure();
+        let plafond = m
+            .platforms()
+            .iter()
+            .find(|p| p.has_face(Face::Bottom))
+            .expect("plafond");
+
+        let mut ch = perso_sur_le_sol(&m);
+        ch.attachment = Attachment::On {
+            platform: plafond.id,
+            face: Face::Bottom,
+            offset: 200.0,
+        };
+        ch.intention = Some(ActiveIntention {
+            kind: Intention::Grimper,
+            depuis: Duration::ZERO,
+            etat: EtatIntention::Grimpe {
+                phase: PhaseGrimpe::Plafond { cible: 800.0 },
+                // Sans effet ici : la phase `Plafond` ne LIT `jusqu_a` que
+                // pour la reporter à l'identique, elle ne teste jamais son
+                // expiration (contrairement à `Accroche`). `ZERO` reste
+                // correct — « pas encore tirée » n'a simplement aucune
+                // incidence tant qu'on n'a pas atteint la cible.
+                jusqu_a: Duration::ZERO,
+            },
+        });
+
+        let mut rng = XorShift32::seeded(5);
+        derouler(&mut ch, &m, &mut rng, 10.0, |c| c.pose == POSE_CLIMB_CEILING);
+        assert_eq!(ch.pose, POSE_CLIMB_CEILING);
+
+        match ch.attachment {
+            Attachment::On {
+                face: Face::Bottom,
+                offset,
+                ..
+            } => {
+                assert!(offset > 200.0, "il doit avoir avancé vers sa cible");
+            }
+            autre => panic!("il devrait être au plafond, il est {autre:?}"),
+        }
+    }
+
+    #[test]
+    fn le_plafond_d_un_ecran_prolonge_celui_du_voisin() {
+        // La généralisation de `face_voisine` aux faces `Bottom` : au bout du
+        // plafond de A, il passe sur celui de B, comme il le fait déjà au sol.
+        let m = World::from_screens(&FakeProbe::deux_ecrans().screens());
+        let plafond_a = m
+            .platforms()
+            .iter()
+            .find(|p| p.has_face(Face::Bottom) && p.rect.left() == 0.0)
+            .expect("plafond de gauche");
+
+        let voisin = face_voisine(&m, plafond_a.id, Face::Bottom, true);
+        assert!(voisin.is_some(), "le plafond de droite doit être trouvé");
+        let (id, offset) = voisin.unwrap();
+        assert_ne!(id, plafond_a.id);
+        assert_eq!(offset, 0.0, "on y entre par son bord gauche");
+    }
+
+    #[test]
+    fn un_pack_sans_pose_de_plafond_grimpe_quand_meme() {
+        // Couverture partielle (spec §8.6) : `climbCeiling` n'est PAS dans
+        // les poses requises de `Grimper`. Un pack qui ne l'a pas doit
+        // pouvoir grimper au mur, et simplement ne jamais passer au plafond.
+        let table = crate::behavior::desire::TableEnvies::defaut();
+        let sans_plafond = manifeste_sans(&[POSE_CLIMB_CEILING, POSE_GRAB_CEILING]);
+        assert!(table.jouable(&sans_plafond, Intention::Grimper));
     }
 }

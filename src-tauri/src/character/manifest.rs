@@ -99,6 +99,18 @@ pub const POSE_GRAB_WALL: &str = "grabWall";
 /// L'escalade d'une paroi — `ClimbWall`, frames 14, 12, 13.
 pub const POSE_CLIMB_WALL: &str = "climbWall";
 
+/// La pose de suspension au plafond — `GrabCeiling`, frame **23**, ancre
+/// `64,48` (`docs/specs/2026-09-09-frames-shimeji.md`).
+///
+/// **Volontairement absente des `poses_requises` de `Grimper`** (voir
+/// `behavior::desire`) : un pack sans images de plafond doit pouvoir
+/// grimper un mur quand même, et simplement s'arrêter en haut sans jamais
+/// basculer (couverture partielle, spec §8.6).
+pub const POSE_GRAB_CEILING: &str = "grabCeiling";
+
+/// Le déplacement au plafond — `ClimbCeiling`, frames 23, 24, 25.
+pub const POSE_CLIMB_CEILING: &str = "climbCeiling";
+
 
 /// Les poses de balancement, **tête à gauche**, du plus léger au plus ample.
 ///
