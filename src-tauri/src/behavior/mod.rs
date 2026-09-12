@@ -1439,6 +1439,87 @@ mod tests {
         }
     }
 
+    /// **Doublé avec `expire_au_plafond_il_tombe_au_lieu_de_marcher_dessus`
+    /// (`intention.rs`), et c'est délibéré — pas un copier-coller inutile.**
+    ///
+    /// Le point d'étranglement unique de `poursuivre` — « toute intention
+    /// qui se termine sur une face non-`Top` fait lâcher » — est un SEUL
+    /// code, partagé entre mur et plafond (`lacher_si_accroche` ne distingue
+    /// pas les deux faces). Mais ce partage a déjà menti deux fois sur cette
+    /// branche : à la Tâche 7 puis à la relecture finale de l'étape 4a, un
+    /// chemin qu'on croyait couvert par « c'est la même règle » ne l'était
+    /// pas. Après la réécriture des deux tests du menu contextuel de
+    /// l'escalade (qui ont changé la réponse de la phase `Choisir` sur une
+    /// face verticale), il ne restait plus AUCUN test qui fasse expirer une
+    /// escalade par le DÉLAI D'ABANDON sur un MUR — le seul test qui
+    /// touchait encore un mur passait par `Choisir`, précisément le chemin
+    /// que la réécriture a retiré. Ce test comble ce trou plutôt que de
+    /// faire confiance au partage de code une troisième fois.
+    #[test]
+    fn expire_sur_un_mur_il_tombe_vraiment_sur_plusieurs_images() {
+        let m = monde();
+        let mut ch = perso(&m);
+        let mur = mur_gauche(&m);
+        let table = desire::TableEnvies::defaut();
+        let reglages = crate::config::Reglages::depuis(&crate::config::Config::default());
+        let mut rng = XorShift32::seeded(41);
+
+        ch.attachment = Attachment::On {
+            platform: mur.id,
+            face: Face::Right,
+            offset: 400.0,
+        };
+        // Phase `Paroi`, PAS `Choisir` : c'est le chemin qui reste après la
+        // réécriture des deux tests de la relecture — l'escalade est
+        // légitimement EN COURS (en train de monter, cible loin de
+        // l'offset), et c'est le délai d'abandon SEUL qui doit la faire
+        // échouer, pas une garde de face.
+        //
+        // `depuis: ZERO`, horloge démarrée après le délai d'abandon de
+        // l'escalade (120 s à vitesse ×1, voir `DELAI_ABANDON_GRIMPE`) :
+        // elle est donc déjà périmée à la première image, sans dérouler
+        // 120 s de montée pour y arriver — même recette que le test du
+        // plafond.
+        ch.intention = Some(intention::ActiveIntention {
+            kind: intention::Intention::Grimper,
+            depuis: Duration::ZERO,
+            etat: intention::EtatIntention::Grimpe {
+                phase: intention::PhaseGrimpe::Paroi { cible: 0.0 },
+                jusqu_a: Duration::ZERO,
+            },
+        });
+
+        // Plusieurs images, comme les autres tests de chute de ce module :
+        // la toute première après l'expiration a une vitesse nulle,
+        // indiscernable d'un raccrochage immédiat. Il faut voir la vitesse
+        // croître sous la gravité pour être sûr qu'il tombe vraiment.
+        for i in 0..30 {
+            pas(
+                &mut ch,
+                &m,
+                &entrees(true, 1.0),
+                &table,
+                &reglages,
+                Duration::from_secs(121) + Duration::from_secs_f32(i as f32 * DT),
+                DT,
+                &mut rng,
+            );
+        }
+
+        match ch.attachment {
+            Attachment::Falling { vel, .. } => {
+                assert!(
+                    vel.y > 50.0,
+                    "il devrait être tombé du mur à l'expiration du délai d'abandon, vy = {}",
+                    vel.y
+                );
+            }
+            autre => panic!(
+                "une escalade expirée sur un mur doit le faire tomber, il est {autre:?}"
+            ),
+        }
+    }
+
     /// « Redescendre » le ramène jusqu'au sol, en reprenant la phase `Paroi`
     /// existante — pas une seconde implémentation de la descente.
     #[test]
