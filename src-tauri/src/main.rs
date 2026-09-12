@@ -29,6 +29,7 @@
 mod actions;
 mod autostart;
 mod behavior;
+mod catalogue;
 mod character;
 mod clock;
 mod config;

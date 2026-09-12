@@ -44,6 +44,7 @@ features = [
     "Win32_System_SystemInformation",   # GetLocalTime, GetTickCount
     "Win32_System_Power",               # GetSystemPowerStatus
     "Win32_System_RemoteDesktop",       # WTSQuerySessionInformationW — verrouillage
+    "Win32_Networking_WinHttp",         # WinHttpOpen… — le téléchargement du catalogue
 ]
 
 # En release, on veut un exe autonome et petit.
