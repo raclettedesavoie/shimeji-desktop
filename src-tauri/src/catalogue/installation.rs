@@ -88,12 +88,29 @@ pub const POSES_VITALES: &[&str] = &["stand", "walk"];
 /// depuis Shimeji-ee, et un XML inattendu rend simplement une table vide —
 /// ce qui déclenche le repli documenté, pas une erreur.
 pub fn ancres_de_actions_xml(xml: &str) -> BTreeMap<u32, [f32; 2]> {
+    // Les deux schémas de Shimeji coexistent sur le CDN, et un même pack
+    // n'en emploie qu'un seul. On passe donc les deux : celui qui n'est pas
+    // employé ne trouve simplement rien, et `extend` laisse l'autre gagner.
+    //
+    // `画像` = Image, `基準座標` = ImageAnchor — les noms d'origine du Shimeji
+    // japonais, que la version « ee » a traduits sans reconvertir les packs.
+    let mut ancres = ancres_avec(xml, "Image=\"", "ImageAnchor=\"");
+    ancres.extend(ancres_avec(xml, "画像=\"", "基準座標=\""));
+    ancres
+}
+
+/// La lecture proprement dite, pour UN jeu de noms d'attributs.
+///
+/// Sortie de `ancres_de_actions_xml` pour être jouée deux fois plutôt que
+/// dupliquée. Les deux paramètres portent le `="` final : c'est ce qui évite
+/// que `Image="` morde sur `ImageAnchor="`.
+fn ancres_avec(xml: &str, attr_image: &str, attr_ancre: &str) -> BTreeMap<u32, [f32; 2]> {
     let mut ancres = BTreeMap::new();
 
-    // On découpe sur `Image="` : chaque morceau contient donc le chemin de
-    // l'image, puis ses attributs, jusqu'au prochain `Image="`. `skip(1)` —
+    // On découpe sur l'attribut d'image : chaque morceau contient donc le
+    // chemin de l'image, puis ses attributs, jusqu'au prochain. `skip(1)` —
     // le texte AVANT la première occurrence n'est pas une pose.
-    for morceau in xml.split("Image=\"").skip(1) {
+    for morceau in xml.split(attr_image).skip(1) {
         // ── Le numéro de la frame ───────────────────────────────────────
         let Some(fin_chemin) = morceau.find('"') else {
             continue;
@@ -113,10 +130,13 @@ pub fn ancres_de_actions_xml(xml: &str) -> BTreeMap<u32, [f32; 2]> {
         // ── L'ancre, cherchée dans le MÊME morceau ──────────────────────
         // Donc avant le prochain `Image="`, ce qui garantit qu'on ne prend
         // pas l'ancre de la pose suivante.
-        let Some(pos_ancre) = morceau.find("ImageAnchor=\"") else {
+        let Some(pos_ancre) = morceau.find(attr_ancre) else {
             continue;
         };
-        let apres = &morceau[pos_ancre + 13..];
+        // `len()` et non une constante : en UTF-8 `基準座標="` pèse 13 octets
+        // pour 5 caractères. Un décalage écrit en dur couperait au milieu
+        // d'un caractère et ferait paniquer le découpage de chaîne.
+        let apres = &morceau[pos_ancre + attr_ancre.len()..];
         let Some(fin) = apres.find('"') else {
             continue;
         };
@@ -462,6 +482,40 @@ mod tests {
         // l'appelant se replie sur la convention de Shimeji-ee.
         assert!(ancres_de_actions_xml("").is_empty());
         assert!(ancres_de_actions_xml("<html>erreur 500</html>").is_empty());
+    }
+
+    /// Le MÊME parseur doit lire le schéma **japonais** de Shimeji-ee.
+    ///
+    /// Découvert en installant pour de vrai, ce que les tests ne pouvaient
+    /// pas voir : ils servaient un faux réseau, donc un XML que nous avions
+    /// écrit nous-mêmes. Les deux schémas coexistent réellement sur le CDN —
+    /// `one-piece-luffy-01` est en japonais (`基準座標`, 0 occurrence de
+    /// `ImageAnchor`), `pierrot-54acb5` en anglais (132 occurrences).
+    ///
+    /// `画像` = Image, `基準座標` = ImageAnchor. Ce sont les noms d'origine du
+    /// Shimeji japonais ; la version « ee » a traduit le schéma, sans que les
+    /// packs existants soient reconvertis.
+    ///
+    /// L'extrait est copié tel quel de
+    /// `sprites.shimejis.xyz/directory/one-piece-luffy-01/actions.xml`,
+    /// BOM UTF-8 compris — le CDN le sert avec, et il précède la déclaration
+    /// XML. Il ne doit pas empêcher la lecture de la première pose.
+    #[test]
+    fn les_ancres_se_lisent_aussi_dans_le_schema_japonais() {
+        let xml = "\u{feff}<?xml version=\"1.0\" encoding=\"UTF-8\" ?>
+        <マスコット xmlns=\"http://www.group-finity.com/Mascot\">
+          <ポーズ 画像=\"/shime1.png\" 基準座標=\"64,128\" 移動速度=\"0,0\" 長さ=\"250\" />
+          <ポーズ 画像=\"/shime23.png\" 基準座標=\"64,48\" 移動速度=\"0,0\" 長さ=\"6\" />
+        </マスコット>";
+
+        let a = ancres_de_actions_xml(xml);
+        assert_eq!(a.get(&1), Some(&[64.0, 128.0]));
+        assert_eq!(
+            a.get(&23),
+            Some(&[64.0, 48.0]),
+            "l'ancre du plafond n'est PAS celle du sol — c'est tout l'enjeu"
+        );
+        assert_eq!(a.len(), 2);
     }
 
     /// On ne déclare QUE les poses dont TOUTES les frames existent.

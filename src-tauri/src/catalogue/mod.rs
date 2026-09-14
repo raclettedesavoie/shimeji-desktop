@@ -128,7 +128,12 @@ pub fn installer_avec<R: Reseau>(
     // Une panne ici n'est PAS fatale : l'absence d'`actions.xml` a un repli
     // documenté (la convention Shimeji-ee), contrairement à l'absence de
     // frames. D'où le `_` qui avale aussi bien le 404 que l'erreur.
-    let ancres = match reseau.get(&format!("{CDN}/{slug}/conf/actions.xml")) {
+    //
+    // ⚠️ `<slug>/actions.xml`, et NON `<slug>/conf/actions.xml` comme
+    // l'annonçaient la spec et le plan : le CDN rend 404 sur le second,
+    // vérifié sur quatre slugs. Le repli étant silencieux, l'erreur ne se
+    // voyait pas — tous les packs s'installaient avec l'ancre de convention.
+    let ancres = match reseau.get(&format!("{CDN}/{slug}/actions.xml")) {
         Ok(Some(o)) => {
             let texte = String::from_utf8_lossy(&o);
             ancres_de_actions_xml(&texte)
@@ -200,7 +205,7 @@ mod tests {
             ));
         }
         r.push((
-            format!("{CDN}/{slug}/conf/actions.xml"),
+            format!("{CDN}/{slug}/actions.xml"),
             Some(br#"<Mascot><Pose Image="/shime1.png" ImageAnchor="64,128"/></Mascot>"#.to_vec()),
         ));
         ReseauFake::new(r)

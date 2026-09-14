@@ -53,7 +53,16 @@ Elles s'appliquent à **toutes** les tâches, sans être répétées dans chacun
   de la spec §4.
 - **Un seul `on_menu_event` dans tout le programme**, installé par `tray.rs`.
 - URL du CDN : `https://sprites.shimejis.xyz/directory/<slug>/img/shime<n>.png`
-  et `https://sprites.shimejis.xyz/directory/<slug>/conf/actions.xml`.
+  et `https://sprites.shimejis.xyz/directory/<slug>/actions.xml`.
+
+  > ⚠️ **Corrigé le 2026-09-14, à la première installation réelle.** Ce plan
+  > annonçait `<slug>/conf/actions.xml` — le CDN y rend **404**, vérifié sur
+  > quatre slugs. L'erreur était invisible : les tests servent un faux réseau,
+  > et le repli sur l'ancre de convention est silencieux, si bien que les packs
+  > s'installaient tous avec la même ancre. Et **deux schémas coexistent** :
+  > `one-piece-luffy-01` est en balises japonaises (`画像`, `基準座標`),
+  > `pierrot-54acb5` en anglais (`Image`, `ImageAnchor`). Le parseur lit les
+  > deux depuis `installation.rs::ancres_avec`.
 - `cargo test` doit rester **vert à chaque commit**.
 
 ---
