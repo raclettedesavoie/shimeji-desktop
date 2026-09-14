@@ -889,9 +889,21 @@ fn jete_vers_le_haut_il_s_accroche_au_plafond() {
     // l'orientation suit la vitesse HORIZONTALE (comme au sol), et non
     // une notion de « regarder la surface » qui n'a pas de sens au
     // plafond.
+    //
+    // ⚠️ **La pente compte, et ce test l'avait ignorée.** `contact_plafond`
+    // n'accroche qu'au-dessus de `PENTE_MIN_PLAFOND` (= 2, soit ~63°) —
+    // seuil MESURÉ, dont la table de relevés est dans `physics.rs`. Avec
+    // l'ancien `(300, -600)`, la pente au moment où il franchit la ligne
+    // valait **1,82** : il passait donc au travers, exactement comme prévu
+    // par la règle. Ce n'était pas un bug du code mais un test écrit avant
+    // la règle, et jamais rejoué depuis.
+    //
+    // `(150, -600)` place la pente à ~4, franchement au-dessus du seuil et
+    // du côté « il s'accroche » de la table — sans rien changer à ce que le
+    // test vérifie, puisque la composante horizontale reste positive.
     ch.attachment = Attachment::Falling {
         pos: Point::new(300.0, 30.0),
-        vel: crate::geom::Vec2::new(300.0, -600.0),
+        vel: crate::geom::Vec2::new(150.0, -600.0),
     };
 
     let mut accroche = false;
