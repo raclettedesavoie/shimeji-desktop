@@ -133,9 +133,14 @@ cargo run                # l'application : un personnage sur le sol
 cargo run -- --sim 30    # 30 min de comportement sans écran (spec §10.3)
 cargo run -- --sim 1440  # 24 h : la preuve d'ensemble de l'étape 2, voir plus bas
 cargo run -- --demarrage etat|on|off   # le démarrage avec Windows, scriptable
+cargo run -- --installer <slug>        # installe un pack du catalogue dans %APPDATA%
 ```
 
-**Six variables d'environnement de diagnostic.** Les trois premières ont chacune servi
+> Les personnages se cherchent dans **deux** dossiers : la bibliothèque
+> `%APPDATA%\shimeji-desktop\characters\`, puis le `characters/` du dépôt —
+> qui ne contient plus que `blob`. Voir « Les packs livrés » plus bas.
+
+**Sept variables d'environnement de diagnostic.** Les trois premières ont chacune servi
 à démentir une hypothèse fausse — voir « Mesurer le CPU » plus bas ; les trois dernières
 remplacent un clic dans le tray ou rendent observable un calcul qui, sinon, ne se verrait
 qu'à l'œil et sur plusieurs minutes :
@@ -580,19 +585,55 @@ y compris celles qui débloquent les comportements difficiles :
 
 Développer contre `blob` **découple « le moteur marche » de « j'ai les bons dessins »**.
 
-### Les packs installés, et leur statut
+### Les packs livrés — `blob`, et lui seul
 
-### Ajouter un pack depuis shimejis.xyz
+Le dépôt ne versionne plus que `blob`, le mascotte de référence du moteur. Les
+cinq packs qui y vivaient (`luffy`, `naruto-kakashi`, `one-piece-zoro-01`,
+`pierrot-54acb5`, `group-finity-blank-guy`) en sont sortis le 2026-09-14 :
+3,2 Mo de sprites sous droits, tous réinstallables en un clic. Rien n'est
+perdu — c'est **déplacé du dépôt vers la bibliothèque**.
 
-C'est un **téléchargement, pas une extraction**. L'extension Chrome ne contient aucun
-sprite : elle les tire d'un CDN qui sert les frames individuelles, déjà en 128×128 et
-déjà numérotées — soit exactement l'arborescence qu'attend `characters/`.
+| Dossier | Rôle | Qui y écrit |
+|---|---|---|
+| `characters/` du dépôt | `blob` seul, le personnage de référence | nous, à la main |
+| `%APPDATA%\shimeji-desktop\characters\` | **la bibliothèque** — tout ce que le catalogue installe | le code, jamais l'humain |
 
+La **bibliothèque gagne** sur le dossier livré en cas d'homonyme : un pack que
+l'utilisateur a installé doit l'emporter, sinon on obtient un « je l'ai
+installé et il ne se passe rien » indébogable.
+
+### Ajouter un pack — le catalogue, plus jamais à la main
+
+**Depuis l'application** : clic droit sur le personnage ou sur l'icône du
+tray → « Catalogue de personnages… ». Deux écrans, parce que **deux gestes** :
+« Catalogue » installe, « Ma bibliothèque » choisit qui s'affiche. Le
+changement est immédiat, sans redémarrage.
+
+**En ligne de commande**, l'équivalent scriptable :
+
+```powershell
+cargo run -- --installer one-piece-luffy-01
 ```
-https://sprites.shimejis.xyz/directory/<slug>/img/shime1.png … shime46.png
-```
 
-Le slug se trouve dans le HTML de `https://shimejis.xyz/directory`.
+L'installation télécharge les frames du CDN, lit les vraies ancres dans
+l'`actions.xml` du pack, mesure la hitbox sur les pixels opaques et écrit le
+`mascot.json`. Le dossier ne prend son nom définitif qu'une fois tout réussi :
+une installation interrompue ne laisse jamais un pack à moitié installé.
+
+> ⚠️ **Deux pièges du CDN, payés une fois chacun** (2026-09-14) :
+> l'`actions.xml` est à `<slug>/actions.xml` et **non** `<slug>/conf/…` (404),
+> et **deux schémas coexistent** — `one-piece-luffy-01` est en balises
+> japonaises (`画像`, `基準座標`), `pierrot-54acb5` en anglais (`Image`,
+> `ImageAnchor`). Les deux se lisent. Aucun test ne les voyait : ils servent un
+> faux réseau, et le repli sur l'ancre de convention est silencieux.
+
+L'index des 2353 packs est pré-engendré dans `ui/catalogue.json`. Le
+rafraîchir est un geste de **maintenance**, joué à la main :
+
+```powershell
+.	ools
+ecuperer-packs.ps1 -Index
+```
 
 > ✅ **La hitbox ne se règle plus à l'œil — elle se mesure** (2026-09-12).
 > `docs/outils/mesurer-hitbox.ps1 -Pack <nom> -Ecrire` relève, pour chaque
@@ -605,7 +646,10 @@ Le slug se trouve dans le HTML de `https://shimejis.xyz/directory`.
 > numérotation des poses est un standard de fait et se transpose telle quelle ; les
 > **proportions du dessin, non**. Luffy est un chibi dont le chapeau touche le bord haut
 > de la boîte : le `y = 20` de la hitbox de `blob` l'aurait amputé. La mesure qui a
-> tranché est consignée dans le champ `_hitbox` de `characters/luffy/mascot.json`.
+> tranché avait été consignée dans le `mascot.json` de `luffy` — pack désormais
+> installé et non plus versionné. Le catalogue applique cette mesure **tout
+> seul**, pour chaque pack qu'il installe : c'est précisément ce qui rend la
+> règle inutile à retenir.
 >
 > C'est la même leçon qu'à l'étape 1a, où les quatre réglages faits à l'œil étaient faux.
 
@@ -655,9 +699,24 @@ avant d'écrire une ligne de physique, pas après.
 la souris, se lance et atterrit ; il grimpe les murs et le plafond de chaque écran, de
 lui-même ou parce qu'on l'a jeté contre un bord, et redescend ou se laisse tomber ; un
 tray l'affiche, le cache, le recharge, le fait démarrer avec Windows et le quitte ; un
-`config.json` règle son caractère sans recompiler. **225 tests**, exe release de
-**2,7 Mo**, **12 % d'un cœur** en marche et **0,8 %** caché (mesuré à l'étape 4a,
-sous la référence de 0,9 % — voir « Mesurer le CPU »).
+`config.json` règle son caractère sans recompiler. **264 tests**, **12 % d'un cœur**
+en marche et **0,8 %** caché (mesuré à l'étape 4a, sous la référence de 0,9 % —
+voir « Mesurer le CPU »).
+
+**Et depuis le 2026-09-14, on choisit son personnage depuis l'application.** Un
+catalogue de **2353 packs** se parcourt par franchise, s'installe en un clic
+dans `%APPDATA%`, et le personnage change **à chaud**, sans redémarrage. Le
+dépôt ne versionne plus que `blob` : 3,2 Mo de sprites sous droits en sont
+sortis, tous réinstallables. Le design est dans
+`docs/specs/2026-09-11-catalogue-de-personnages-design.md`, le plan
+d'implémentation en 12 tâches dans
+`docs/plans/2026-09-11-catalogue-de-personnages.md`.
+
+> ⚠️ **La branche `catalogue-de-personnages` part de `etape-2-il-reagit`.**
+> L'étape 4a y a été fusionnée le 2026-09-14 ; **4b a été fusionnée puis
+> revertée**, à la demande de l'auteur. Le commit de merge reste dans
+> l'historique : une refusion de 4b demandera donc de reverter le revert, git
+> la considérant déjà intégrée.
 
 | Où | Contenu |
 |---|---|
@@ -676,6 +735,8 @@ sous la référence de 0,9 % — voir « Mesurer le CPU »).
 | `docs/specs/2026-09-09-mesure-cpu.md` | **le dossier CPU complet** : les quatre hypothèses démenties par la mesure — à lire avant de toucher au chemin 60 Hz |
 | `docs/conception/2026-09-08-journal-decisions.md` | **pourquoi** chaque décision, et ce qu'elle a écarté — à lire avant d'en défaire une |
 | `docs/conception/2026-09-08-discussion.md` | la discussion de conception intégrale, verbatim |
+| `docs/specs/2026-09-11-catalogue-de-personnages-design.md` | **le design du catalogue** : les deux gestes, la bibliothèque, l'installation sans un pixel recadré |
+| `docs/plans/2026-09-11-catalogue-de-personnages.md` | le plan du catalogue, **soldé** — 12 tâches, et les deux pièges du CDN corrigés en cours de route |
 | `docs/spike-etape-0/` | le spike **archivé et gelé** + la sonde Win32 rejouable — ne pas le faire évoluer vers l'application |
 | `characters/blob/img/` | les 46 frames du personnage de test |
 
