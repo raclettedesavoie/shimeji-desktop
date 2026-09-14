@@ -10,7 +10,7 @@
 //! brancher les fenêtres plus tard (étape 4) sans réécrire une ligne.
 
 use crate::geom::{Point, Rect};
-use crate::probe::ScreenInfo;
+use crate::probe::{ScreenInfo, WindowInfo};
 
 // Réexport sous son vrai nom : les appelants écrivent `use crate::world::Face`
 // sans avoir à savoir que le type vit dans `geom` pour éviter un cycle de
@@ -145,10 +145,42 @@ pub struct Platform {
     pub id: PlatformId,
     pub rect: Rect,
     pub kind: PlatformKind,
-    /// 0 = au-dessus de tout. Sert à l'occlusion de l'étape 4 ; à l'étape 1,
-    /// tous les sols sont au même rang.
+    /// 0 = au-dessus de tout. C'est le rang d'énumération de `EnumWindows`
+    /// pour une fenêtre, et 0 pour un écran — un écran est derrière tout.
     pub z: u32,
     pub faces: Vec<Face>,
+
+    /// Les portions **réellement praticables** de la face, en distances au
+    /// bord (la même coordonnée que l'`offset` d'un `Attachment`).
+    ///
+    /// # C'est ici que vit la décision n° 2
+    ///
+    /// Un bord est un segment ; on lui retire les fenêtres de z-order
+    /// supérieur, et il ne reste que des morceaux. Le personnage devient
+    /// alors **physiquement incapable** de se tenir sur du vide, plutôt
+    /// qu'on ait à détecter puis corriger le cas.
+    ///
+    /// ```text
+    /// barre de titre    ├────────────────────────────┤
+    /// fenêtre au-dessus          ▓▓▓▓▓▓▓▓▓▓▓
+    ///                                  ↓
+    /// libre             ├────────┤           ├───────┤
+    /// ```
+    ///
+    /// # Pourquoi une liste ici, et non plusieurs plateformes
+    ///
+    /// Parce que l'identité doit rester stable (décision n° 1). Faire une
+    /// plateforme par morceau obligerait à numéroter les morceaux, et ils se
+    /// renumérotent dès qu'une fenêtre au-dessus bouge : « la plateforme où
+    /// je suis » changerait d'identité et le personnage tomberait sans
+    /// raison, par intermittence. Ici l'identité ne bouge pas ; c'est
+    /// l'étendue praticable qui varie, et il tombe exactement quand
+    /// l'endroit **qu'il occupe** se fait recouvrir.
+    ///
+    /// Une plateforme entièrement libre porte un seul intervalle couvrant
+    /// toute la face — jamais une liste vide, qui voudrait dire « rien n'est
+    /// praticable ».
+    pub libre: Vec<(f32, f32)>,
 }
 
 impl Platform {
@@ -156,6 +188,222 @@ impl Platform {
     /// rapide qu'un ensemble, et plus lisible.
     pub fn has_face(&self, face: Face) -> bool {
         self.faces.contains(&face)
+    }
+
+    /// Une plateforme à **une seule face, entièrement praticable**.
+    ///
+    /// Les huit plateformes (quatre par écran, quatre par fenêtre) se
+    /// construisent toutes ainsi, et l'occlusion vient ensuite restreindre
+    /// `libre`. Un constructeur plutôt que le champ recopié huit fois : le
+    /// jour où `libre` changera de forme, il y aura un seul endroit à
+    /// corriger — et surtout, on ne peut pas oublier de le remplir.
+    ///
+    /// `face_length` donne la longueur de la face concernée : la largeur du
+    /// rectangle pour `Top`/`Bottom`, sa hauteur pour `Left`/`Right`. C'est
+    /// la MÊME fonction qui borne les offsets ailleurs, donc les deux ne
+    /// peuvent pas se désaccorder.
+    pub fn entiere(id: PlatformId, rect: Rect, kind: PlatformKind, z: u32, face: Face) -> Platform {
+        Platform {
+            id,
+            rect,
+            kind,
+            z,
+            faces: vec![face],
+            libre: vec![(0.0, rect.face_length(face))],
+        }
+    }
+
+    /// Cet endroit de la face est-il praticable, ou recouvert ?
+    ///
+    /// `offset` est la distance au bord de la face, exactement celle que
+    /// stocke un `Attachment::On` — c'est ce qui permet de poser la question
+    /// sans rien convertir.
+    ///
+    /// Bornes **inclusives** : un personnage pile au bout d'un segment libre
+    /// y tient encore. Les exclure le ferait tomber en arrivant exactement
+    /// sur le bord, ce qui est le cas le plus fréquent quand il marche vers
+    /// une zone recouverte — il tomberait un pixel trop tôt, à chaque fois.
+    pub fn est_libre(&self, offset: f32) -> bool {
+        self.libre
+            .iter()
+            .any(|(debut, fin)| offset >= *debut && offset <= *fin)
+    }
+}
+
+/// La plus petite portion de bord sur laquelle il vaille la peine de se
+/// tenir, en pixels.
+///
+/// En dessous, le personnage déborderait largement du morceau et aurait
+/// l'air posé dans le vide — ce que la décision n° 2 cherche justement à
+/// rendre impossible. La valeur est de l'ordre de la moitié d'une frame
+/// Shimeji (128 px) : assez pour qu'on le voie tenir, assez petit pour que
+/// les rebords étroits restent utilisables.
+const LONGUEUR_MINIMALE_SEGMENT: f32 = 64.0;
+
+/// Retire d'un segment `[0, longueur]` tous les intervalles `occultants`, et
+/// rend ce qui reste.
+///
+/// **C'est toute la décision n° 2, et c'est de l'arithmétique 1D** — pas de
+/// la géométrie. C'est précisément ce qui la rend bon marché et testable
+/// sans le moindre écran.
+///
+/// Les intervalles trop courts pour qu'on s'y tienne sont écartés
+/// (`LONGUEUR_MINIMALE_SEGMENT`), ce qui évite de semer le monde de miettes
+/// de plateformes entre deux fenêtres presque jointives.
+///
+/// # L'algorithme, et pourquoi celui-là
+///
+/// On trie les occultants par début, puis on balaye une fois en gardant le
+/// point le plus à droite déjà couvert. C'est la méthode classique de fusion
+/// d'intervalles, en `O(n log n)` dominé par le tri — avec une poignée de
+/// fenêtres, le tri coûte moins que son propre commentaire.
+///
+/// L'alternative naïve — soustraire les occultants un par un d'une liste de
+/// morceaux — est plus courte à écrire et **fausse dès que deux occultants
+/// se chevauchent**, ce qui est le cas normal sur un bureau encombré.
+fn soustraire_intervalles(longueur: f32, occultants: &[(f32, f32)]) -> Vec<(f32, f32)> {
+    // Rien ne recouvre : toute la face est praticable. Le cas de loin le plus
+    // fréquent, et il évite une allocation de tri.
+    if occultants.is_empty() {
+        return vec![(0.0, longueur)];
+    }
+
+    // On borne les occultants à la face et on jette ceux qui n'y touchent
+    // pas : la suite du balayage suppose des intervalles à l'intérieur.
+    let mut bornes: Vec<(f32, f32)> = occultants
+        .iter()
+        .map(|(a, b)| (a.max(0.0), b.min(longueur)))
+        .filter(|(a, b)| b > a)
+        .collect();
+
+    // `partial_cmp` et non `cmp` : `f32` n'est que `PartialOrd`, à cause de
+    // `NaN`. `unwrap_or(Equal)` traite un éventuel `NaN` comme « à égalité »
+    // plutôt que de paniquer — un rectangle dégénéré ne doit pas faire
+    // tomber l'application.
+    bornes.sort_by(|x, y| x.0.partial_cmp(&y.0).unwrap_or(std::cmp::Ordering::Equal));
+
+    let mut libres = Vec::new();
+
+    // `curseur` = le point à partir duquel la face est encore libre.
+    let mut curseur = 0.0f32;
+
+    for (debut, fin) in bornes {
+        // Le trou entre la fin du dernier occultant et le début de celui-ci.
+        // `debut > curseur` et non `>=` : deux occultants jointifs ne laissent
+        // pas de trou de largeur nulle.
+        if debut > curseur {
+            let morceau = (curseur, debut);
+            if morceau.1 - morceau.0 >= LONGUEUR_MINIMALE_SEGMENT {
+                libres.push(morceau);
+            }
+        }
+
+        // `max` et non une affectation : un occultant entièrement contenu
+        // dans un précédent ne doit pas faire RECULER le curseur, ce qui
+        // rouvrirait une portion déjà couverte.
+        curseur = curseur.max(fin);
+    }
+
+    // La queue, après le dernier occultant.
+    if longueur - curseur >= LONGUEUR_MINIMALE_SEGMENT {
+        libres.push((curseur, longueur));
+    }
+
+    libres
+}
+
+
+/// Les quatre plateformes qu'une fenêtre expose, et la face praticable de
+/// chacune.
+///
+/// ⚠️ **L'association rôle → face est INVERSÉE par rapport à un écran**, sur
+/// les murs, et c'est la chose la plus facile à lire de travers de ce
+/// fichier. La raison est purement géométrique : sur un écran, le personnage
+/// est **dedans**, donc le mur gauche lui présente sa face `Right` ; sur une
+/// fenêtre, il est **dehors**, donc le bord gauche lui présente sa face
+/// `Left`.
+///
+/// Les deux faces horizontales, elles, ne s'inversent pas : on marche sur le
+/// dessus (`Top`, la barre de titre) et on se suspend sous le dessous
+/// (`Bottom`), comme pour le sol et le plafond d'un écran.
+const ROLES_DE_FENETRE: &[(Role, Face)] = &[
+    (Role::Sol, Face::Top),
+    (Role::Plafond, Face::Bottom),
+    (Role::MurGauche, Face::Left),
+    (Role::MurDroit, Face::Right),
+];
+
+/// Le rectangle fin d'une des quatre plateformes d'une fenêtre.
+///
+/// Chaque rectangle est placé pour que `point_on` de sa face tombe **sur le
+/// bord visuel** de la fenêtre : c'est la seule propriété qui compte, et
+/// c'est elle qui fait que le personnage a l'air posé dessus et non dedans.
+fn rect_de_face(f: Rect, role: Role) -> Rect {
+    match role {
+        // `top()` du rectangle = haut de la fenêtre : on marche dessus.
+        Role::Sol => Rect::new(f.left(), f.top(), f.w, EPAISSEUR_PLATEFORME),
+
+        // `bottom()` du rectangle = bas de la fenêtre : on s'y suspend.
+        Role::Plafond => Rect::new(
+            f.left(),
+            f.bottom() - EPAISSEUR_PLATEFORME,
+            f.w,
+            EPAISSEUR_PLATEFORME,
+        ),
+
+        // `left()` du rectangle = bord gauche de la fenêtre.
+        Role::MurGauche => Rect::new(f.left(), f.top(), EPAISSEUR_PLATEFORME, f.h),
+
+        // `right()` du rectangle = bord droit de la fenêtre.
+        Role::MurDroit => Rect::new(
+            f.right() - EPAISSEUR_PLATEFORME,
+            f.top(),
+            EPAISSEUR_PLATEFORME,
+            f.h,
+        ),
+    }
+}
+
+/// L'ombre que la fenêtre `devant` porte sur une face de la fenêtre `f`, en
+/// distances au bord de cette face.
+///
+/// Rend `None` si `devant` ne touche pas la ligne de la face — le cas le plus
+/// fréquent, et c'est pour ça que la fonction rend une `Option` plutôt qu'un
+/// intervalle vide : `filter_map` écarte alors le cas sans allouer.
+///
+/// **Une face est une LIGNE**, pas une bande : on teste donc si `devant`
+/// contient cette ligne (une coordonnée), puis on projette son étendue sur
+/// l'autre axe. C'est tout ce que « soustraction d'intervalles 1D » veut
+/// dire, et c'est ce qui rend la décision n° 2 si bon marché.
+fn ombre_sur(f: Rect, role: Role, devant: Rect) -> Option<(f32, f32)> {
+    match role {
+        // ── Les deux faces horizontales ─────────────────────────────────
+        // La ligne est à une hauteur `y` ; `devant` la coupe s'il l'encadre
+        // verticalement. On projette alors son étendue horizontale.
+        Role::Sol | Role::Plafond => {
+            let y = if role == Role::Sol { f.top() } else { f.bottom() };
+            if devant.top() > y || devant.bottom() < y {
+                return None;
+            }
+            Some((devant.left() - f.left(), devant.right() - f.left()))
+        }
+
+        // ── Les deux faces verticales ───────────────────────────────────
+        // Symétrique : la ligne est à une abscisse `x`, et on projette
+        // l'étendue verticale. L'offset d'une face `Left`/`Right` compte
+        // vers le BAS depuis le haut du rectangle (convention de
+        // `Rect::point_on`), d'où le `- f.top()`.
+        Role::MurGauche | Role::MurDroit => {
+            let x = if role == Role::MurGauche {
+                f.left()
+            } else {
+                f.right()
+            };
+            if devant.left() > x || devant.right() < x {
+                return None;
+            }
+            Some((devant.top() - f.top(), devant.bottom() - f.top()))
+        }
     }
 }
 
@@ -214,13 +462,13 @@ impl World {
             // ── Le sol ──────────────────────────────────────────────────
             // Son bord SUPÉRIEUR est à hauteur du bas de la zone de travail :
             // c'est la ligne sur laquelle on marche.
-            platforms.push(Platform {
-                id: PlatformId::ecran(s.id, Role::Sol),
-                rect: Rect::new(z.left(), z.bottom(), z.w, EPAISSEUR_PLATEFORME),
-                kind: PlatformKind::Screen,
-                z: 0,
-                faces: vec![Face::Top],
-            });
+            platforms.push(Platform::entiere(
+                PlatformId::ecran(s.id, Role::Sol),
+                Rect::new(z.left(), z.bottom(), z.w, EPAISSEUR_PLATEFORME),
+                PlatformKind::Screen,
+                0,
+                Face::Top,
+            ));
 
             // ── Le plafond ──────────────────────────────────────────────
             // Posé JUSTE AU-DESSUS de la zone de travail, et c'est sa face
@@ -229,18 +477,18 @@ impl World {
             // exactement sur `z.top()`.
             //
             // Jamais supprimé, lui : il n'y a rien au-dessus du bureau.
-            platforms.push(Platform {
-                id: PlatformId::ecran(s.id, Role::Plafond),
-                rect: Rect::new(
+            platforms.push(Platform::entiere(
+                PlatformId::ecran(s.id, Role::Plafond),
+                Rect::new(
                     z.left(),
                     z.top() - EPAISSEUR_PLATEFORME,
                     z.w,
                     EPAISSEUR_PLATEFORME,
                 ),
-                kind: PlatformKind::Screen,
-                z: 0,
-                faces: vec![Face::Bottom],
-            });
+                PlatformKind::Screen,
+                0,
+                Face::Bottom,
+            ));
 
             // ── Les deux murs, si personne ne les touche ────────────────
             //
@@ -249,32 +497,102 @@ impl World {
             // même logique que le sol, dont la face `Top` regarde vers le
             // haut, donc vers l'intérieur (design §2.1).
             if !ecran_adjacent(screens, s, false) {
-                platforms.push(Platform {
-                    id: PlatformId::ecran(s.id, Role::MurGauche),
-                    rect: Rect::new(
+                platforms.push(Platform::entiere(
+                    PlatformId::ecran(s.id, Role::MurGauche),
+                    Rect::new(
                         z.left() - EPAISSEUR_PLATEFORME,
                         z.top(),
                         EPAISSEUR_PLATEFORME,
                         z.h,
                     ),
-                    kind: PlatformKind::Screen,
-                    z: 0,
-                    faces: vec![Face::Right],
-                });
+                    PlatformKind::Screen,
+                    0,
+                    Face::Right,
+                ));
             }
 
             if !ecran_adjacent(screens, s, true) {
-                platforms.push(Platform {
-                    id: PlatformId::ecran(s.id, Role::MurDroit),
-                    rect: Rect::new(z.right(), z.top(), EPAISSEUR_PLATEFORME, z.h),
-                    kind: PlatformKind::Screen,
-                    z: 0,
-                    faces: vec![Face::Left],
-                });
+                platforms.push(Platform::entiere(
+                    PlatformId::ecran(s.id, Role::MurDroit),
+                    Rect::new(z.right(), z.top(), EPAISSEUR_PLATEFORME, z.h),
+                    PlatformKind::Screen,
+                    0,
+                    Face::Left,
+                ));
             }
         }
 
         World { platforms }
+    }
+
+
+    /// Le monde complet : les écrans **et les fenêtres** (design §5.1,
+    /// étape 4b).
+    ///
+    /// `fenetres` arrive déjà filtrée par la sonde (design §5.3) et rangée
+    /// **du premier plan vers l'arrière** — c'est ce qui rend l'occlusion
+    /// possible sans interroger quoi que ce soit de plus.
+    ///
+    /// # ⚠️ L'occlusion ne s'applique qu'entre FENÊTRES — précision de
+    /// périmètre
+    ///
+    /// La décision n° 2 dit « un bord recouvert n'est pas exposé ». Appliquée
+    /// littéralement aux plateformes d'**écran**, elle supprimerait le sol du
+    /// bureau dès qu'une fenêtre le recouvre — c'est-à-dire presque toujours,
+    /// et complètement dès qu'une fenêtre est maximisée. Le personnage
+    /// n'aurait alors nulle part où marcher sur un bureau ordinaire, ce qui
+    /// n'est évidemment pas ce que la décision cherchait.
+    ///
+    /// Ce que la décision cherchait, c'est qu'il ne s'assoie pas sur une
+    /// barre de titre **cachée derrière une autre fenêtre** — un bord qu'on
+    /// ne voit pas. Le sol de l'écran, lui, n'est jamais « caché » en ce
+    /// sens : c'est le bas du bureau, et un personnage qui y marche se lit
+    /// comme un personnage au bas de l'écran, exactement comme dans
+    /// Shimeji-ee.
+    ///
+    /// Les quatre plateformes de chaque écran restent donc entières.
+    pub fn from_screens_and_windows(screens: &[ScreenInfo], fenetres: &[WindowInfo]) -> World {
+        let mut monde = World::from_screens(screens);
+
+        for (rang, f) in fenetres.iter().enumerate() {
+            // Les fenêtres **devant celle-ci** sont les seules à pouvoir la
+            // masquer. La liste étant rangée du premier plan vers l'arrière,
+            // ce sont exactement celles qui précèdent — d'où le `&[..rang]`,
+            // qui est toute la gestion du z-order de ce fichier.
+            let devant = &fenetres[..rang];
+
+            for (role, face) in ROLES_DE_FENETRE {
+                let rect = rect_de_face(f.rect, *role);
+
+                // Les intervalles que les fenêtres de devant retirent à cette
+                // face, en distances au bord de la face.
+                let occultants: Vec<(f32, f32)> = devant
+                    .iter()
+                    .filter_map(|o| ombre_sur(f.rect, *role, o.rect))
+                    .collect();
+
+                let libre = soustraire_intervalles(rect.face_length(*face), &occultants);
+
+                // Entièrement recouverte : on ne l'expose pas du tout. Une
+                // plateforme sans un seul morceau praticable serait un piège —
+                // `nearest_floor` et les intentions la verraient comme une
+                // cible valable, et il s'y rendrait pour rien.
+                if libre.is_empty() {
+                    continue;
+                }
+
+                monde.platforms.push(Platform {
+                    id: PlatformId::fenetre(f.hwnd, *role),
+                    rect,
+                    kind: PlatformKind::Window,
+                    z: f.z,
+                    faces: vec![*face],
+                    libre,
+                });
+            }
+        }
+
+        monde
     }
 
     pub fn platforms(&self) -> &[Platform] {

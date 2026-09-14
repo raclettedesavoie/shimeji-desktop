@@ -106,14 +106,23 @@ pub fn hors_bornes(att: &Attachment, world: &World) -> bool {
                 return true;
             };
 
-            // La face doit exister ET l'offset y tenir. À l'étape 4, un bord
-            // recouvert disparaît de `faces` (décision n° 2) : ce test
-            // deviendra alors aussi celui de l'occlusion, sans changer.
+            // La face doit exister ET l'offset y tenir.
             if !plat.has_face(*face) {
                 return true;
             }
 
-            *offset < 0.0 || *offset > plat.rect.face_length(*face)
+            // ⚠️ **`est_libre` et non une comparaison aux bornes** — c'est
+            // ici que la décision n° 2 prend effet, et l'étape 4b n'a eu
+            // qu'une ligne à changer, comme l'annonçait le commentaire que
+            // celui-ci remplace.
+            //
+            // `est_libre` répond `false` aussi bien hors des bornes que sur
+            // une portion recouverte : les deux cas veulent dire « il n'y a
+            // rien sous mes pieds », et ils méritent la même chute. Un
+            // personnage assis sur une barre de titre qu'une autre fenêtre
+            // vient recouvrir tombe donc à l'image où il est recouvert —
+            // sans une ligne de détection dédiée.
+            !plat.est_libre(*offset)
         }
 
         Attachment::Falling { .. } | Attachment::Dragged => false,
