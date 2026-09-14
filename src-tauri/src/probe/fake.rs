@@ -1,10 +1,10 @@
-//! Sonde de test : des écrans, une souris et des fenêtres que le test décide.
+//! Sonde de test : des écrans et une souris que le test décide.
 //!
 //! Existe pour satisfaire la troisième contrainte de la spec §10.2. Les
 //! constructeurs de commodité reproduisent des topologies nommées, ce qui
 //! rend les attentes des tests lisibles sans commentaire.
 
-use super::{Batterie, MouseState, ScreenInfo, Signaux, SystemProbe, WindowInfo};
+use super::{Batterie, MouseState, ScreenInfo, Signaux, SystemProbe};
 use crate::geom::{Point, Rect};
 use std::cell::{Cell, RefCell};
 
@@ -19,17 +19,6 @@ pub struct FakeProbe {
     // de l'application active. `Cell::get` exige `Copy` ; `RefCell` prête à
     // la place, au prix d'un compteur d'emprunts vérifié à l'exécution.
     signaux: RefCell<Signaux>,
-
-    // Les fenêtres que ce faux système déclare. `RefCell` comme `signaux` :
-    // un `Vec` n'est pas `Copy`, et les tests doivent pouvoir le remplacer à
-    // travers une référence partagée (« et maintenant cette fenêtre se
-    // ferme »).
-    //
-    // **Vide par défaut**, et c'est délibéré : tous les tests écrits avant
-    // l'étape 4b décrivent un monde sans fenêtres, et doivent continuer de
-    // décrire exactement le même monde. Une fenêtre par défaut changerait
-    // silencieusement ce que des dizaines de tests mesurent.
-    fenetres: RefCell<Vec<WindowInfo>>,
 }
 
 // `allow(dead_code)` : ces éléments SONT utilisés — par les tests. Mais un
@@ -51,8 +40,6 @@ impl FakeProbe {
             // Le défaut est délibérément « rien de spécial » : aucun signal
             // ne mord, donc un test d'étape 1 qui ignore les signaux garde
             // exactement le comportement qu'il avait.
-            fenetres: RefCell::new(Vec::new()),
-
             signaux: RefCell::new(Signaux {
                 inactivite: std::time::Duration::ZERO,
                 appli_active: None,
@@ -137,26 +124,6 @@ impl FakeProbe {
         });
     }
 
-    /// Remplace la liste des fenêtres. `z` est le rang dans la liste — donc
-    /// l'ordre d'écriture du test EST le z-order, du premier plan vers
-    /// l'arrière, exactement comme `EnumWindows`.
-    ///
-    /// Prend des `(hwnd, Rect)` plutôt que des `WindowInfo` tout faits :
-    /// écrire le `z` à la main dans chaque test inviterait à se tromper, et
-    /// un z incohérent avec l'ordre donnerait une occlusion fausse sans
-    /// qu'aucune assertion ne le dise.
-    pub fn set_fenetres(&self, fenetres: &[(u64, Rect)]) {
-        *self.fenetres.borrow_mut() = fenetres
-            .iter()
-            .enumerate()
-            .map(|(i, (hwnd, rect))| WindowInfo {
-                hwnd: *hwnd,
-                rect: *rect,
-                z: i as u32,
-            })
-            .collect();
-    }
-
     pub fn set_signaux(&self, s: Signaux) {
         *self.signaux.borrow_mut() = s;
     }
@@ -176,22 +143,6 @@ impl SystemProbe for FakeProbe {
 
     fn mouse(&self) -> MouseState {
         self.mouse.get()
-    }
-
-    fn windows(&self) -> Vec<WindowInfo> {
-        self.fenetres.borrow().clone()
-    }
-
-    fn rect_de_fenetre(&self, hwnd: u64) -> Option<Rect> {
-        // La vraie sonde ré-interroge le système ; la fausse relit sa propre
-        // liste. Les deux répondent donc `None` pour une fenêtre fermée, ce
-        // qui est **la** propriété que les tests doivent pouvoir exercer :
-        // c'est elle qui déclenche « plateforme disparue → je tombe ».
-        self.fenetres
-            .borrow()
-            .iter()
-            .find(|f| f.hwnd == hwnd)
-            .map(|f| f.rect)
     }
 
     fn signaux(&self) -> Signaux {

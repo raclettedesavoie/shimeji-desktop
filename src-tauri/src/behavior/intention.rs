@@ -1138,7 +1138,7 @@ fn grimper(
 
 /// Le mur de l'écran du personnage le plus proche de lui.
 ///
-/// « De son écran » : c'est à cela que sert `PlatformId::meme_support`. Sans ce
+/// « De son écran » : c'est à cela que sert `PlatformId::meme_ecran`. Sans ce
 /// filtre, un personnage sur l'écran de gauche pourrait viser le mur droit de
 /// l'écran de droite, à 3 000 px — une marche de 60 s pour rien.
 ///
@@ -1154,7 +1154,7 @@ fn mur_le_plus_proche(world: &World, depuis: PlatformId, ch: &Character) -> Opti
     let mut meilleur: Option<(PlatformId, f32)> = None;
 
     for plat in world.platforms() {
-        if !plat.id.meme_support(depuis) {
+        if !plat.id.meme_ecran(depuis) {
             continue;
         }
         // Un mur, c'est-à-dire une plateforme dont l'unique face est
@@ -1185,7 +1185,7 @@ fn mur_le_plus_proche(world: &World, depuis: PlatformId, ch: &Character) -> Opti
 
 /// Le sol sur lequel reposer en bas d'un mur, et l'offset où y arriver.
 ///
-/// Le mur et le sol appartiennent au même écran, donc `meme_support` suffit —
+/// Le mur et le sol appartiennent au même écran, donc `meme_ecran` suffit —
 /// inutile de chercher géométriquement.
 fn sol_au_pied_du_mur(world: &World, mur: PlatformId) -> Option<(PlatformId, f32)> {
     let plat_mur = world.get(mur)?;
@@ -1193,7 +1193,7 @@ fn sol_au_pied_du_mur(world: &World, mur: PlatformId) -> Option<(PlatformId, f32
     let x = plat_mur.rect.point_on(face_mur, 0.0).x;
 
     for plat in world.platforms() {
-        if !plat.id.meme_support(mur) || !plat.has_face(Face::Top) {
+        if !plat.id.meme_ecran(mur) || !plat.has_face(Face::Top) {
             continue;
         }
         // `clamp` : on rabat dans les bornes du sol, le mur étant exactement
@@ -1220,7 +1220,7 @@ fn plafond_au_sommet(
     let x = plat_mur.rect.point_on(face_mur, 0.0).x;
 
     for plat in world.platforms() {
-        if !plat.id.meme_support(mur) || !plat.has_face(Face::Bottom) {
+        if !plat.id.meme_ecran(mur) || !plat.has_face(Face::Bottom) {
             continue;
         }
         let offset = (x - plat.rect.left()).clamp(0.0, plat.rect.face_length(Face::Bottom));
