@@ -1347,7 +1347,7 @@ fn une_escalade_complete_tient_dans_le_delai_d_abandon() {
     // ⚠️ **Le pire cas au sol est l'écran ENTIER (1920 px), pas sa
     // moitié** (correction de la vague de relecture finale) : sur deux
     // écrans côte à côte, chaque écran n'a qu'UN SEUL mur (design §2.3),
-    // et `mur_le_plus_proche` filtre par `meme_ecran` — donc rien ne
+    // et `mur_le_plus_proche` filtre par `meme_support` — donc rien ne
     // borne la distance à la moitié d'un écran. Une version antérieure
     // de ce test prenait 960 px et concluait à une marge de 30 % ; le
     // vrai pire cas, 1920 px, ne laisse que 15 %.

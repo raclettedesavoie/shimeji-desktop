@@ -10,7 +10,7 @@ use crate::character::manifest::POSE_STAND;
 use crate::geom::Rect;
 use crate::probe::fake::FakeProbe;
 use crate::probe::{ScreenInfo, SystemProbe};
-use crate::world::RoleEcran;
+use crate::world::Role;
 
 fn monde_un_ecran() -> World {
     World::from_screens(&FakeProbe::un_ecran().screens())
@@ -74,7 +74,7 @@ fn deplacer_la_plateforme_deplace_le_personnage_sans_code() {
         // d'une plateforme n'est plus l'id brut du moniteur mais un
         // encodage qui y ajoute le rôle (sol/mur/plafond) sur deux bits.
         // Écrire `PlatformId(42)` à la main ne désignerait plus le sol.
-        platform: PlatformId::ecran(42, RoleEcran::Sol),
+        platform: PlatformId::ecran(42, Role::Sol),
         face: Face::Top,
         offset: 300.0,
     };
@@ -106,7 +106,7 @@ fn redimensionner_la_plateforme_conserve_la_distance_au_bord() {
         // d'une plateforme n'est plus l'id brut du moniteur mais un
         // encodage qui y ajoute le rôle (sol/mur/plafond) sur deux bits.
         // Écrire `PlatformId(42)` à la main ne désignerait plus le sol.
-        platform: PlatformId::ecran(42, RoleEcran::Sol),
+        platform: PlatformId::ecran(42, Role::Sol),
         face: Face::Top,
         offset: 100.0,
     };

@@ -657,7 +657,25 @@ fn boucle(
     // import, l'`AppHandle` ne l'expose pas.
     use tauri::Manager;
 
-    let sonde = probe::win32::Win32Probe::new();
+    // `mut` : la sonde doit apprendre quelles fenêtres sont les NÔTRES, pour
+    // ne jamais les exposer comme plateformes (design §5.3). Sans ça, les
+    // personnages s'assiéraient les uns sur les autres — piège Windows n° 2.
+    let mut sonde = probe::win32::Win32Probe::new();
+
+    // ── Nos propres fenêtres, déclarées à la sonde ──────────────────────
+    //
+    // Fait ici et non dans `setup` : c'est la boucle qui possède la sonde.
+    // `hwnd()` peut échouer si la fenêtre a déjà disparu — on continue alors
+    // sans rien déclarer, ce qui est sans conséquence puisqu'il n'y aura
+    // aucune fenêtre de personnage à ignorer.
+    //
+    // À l'étape 3 (plusieurs personnages), ce sera une poignée de plus dans
+    // le même `Vec`.
+    if let Some(win) = handle.get_webview_window(&label) {
+        if let Ok(h) = win.hwnd() {
+            sonde.ignorer(vec![h.0 as u64]);
+        }
+    }
     let horloge = clock::SystemClock::new();
 
     // `SHIMEJI_ESCALADE=1` : force l'intention `Grimper` dès la première
@@ -728,6 +746,10 @@ fn boucle(
 
     // Diagnostic : `SHIMEJI_SIGNAUX=1`.
     let trace_signaux = std::env::var("SHIMEJI_SIGNAUX").is_ok();
+
+    // Diagnostic : `SHIMEJI_MONDE=1` — les plateformes de fenêtres et ce que
+    // l'occlusion leur laisse, à chaque recensement (étape 4b).
+    let trace_monde = std::env::var("SHIMEJI_MONDE").is_ok();
 
     // L'échelle du moniteur, séparée du réglage de la config : le
     // rechargement à chaud change le second sans redemander le premier.
@@ -873,7 +895,40 @@ fn boucle(
         if maintenant.saturating_sub(dernier_recensement) >= PERIODE_MONDE {
             let ecrans = sonde.screens();
             if !ecrans.is_empty() {
-                monde = world::World::from_screens(&ecrans);
+                // **Étape 4b** : les fenêtres rejoignent les écrans. La
+                // physique et le comportement ne verront aucune différence —
+                // ils ne manipulent que des `Platform` (design §5.1), et
+                // c'est ce découplage qui permet d'ajouter les fenêtres ici
+                // sans toucher une ligne d'`intention.rs` ni de `reflex.rs`.
+                monde = world::World::from_screens_and_windows(&ecrans, &sonde.windows());
+
+                // Diagnostic `SHIMEJI_MONDE=1` : ce que l'occlusion a
+                // réellement laissé praticable, une fois par recensement.
+                //
+                // C'est le pendant, côté monde, du recensement imprimé par la
+                // sonde au démarrage : celui-là dit quelles fenêtres ont
+                // passé les filtres, celui-ci dit quels BORDS il en reste
+                // après soustraction. Les deux ensemble rendent la décision
+                // n° 2 observable sans regarder le personnage — sans quoi
+                // « il ne s'assoit jamais sur cette fenêtre » ne se
+                // distinguerait pas de « cette fenêtre est filtrée ».
+                if trace_monde {
+                    let fen: Vec<_> = monde
+                        .platforms()
+                        .iter()
+                        .filter(|p| p.id.est_fenetre())
+                        .collect();
+                    println!("monde : {} plateformes, dont {} de fenêtres", monde.platforms().len(), fen.len());
+                    for p in fen {
+                        println!(
+                            "  hwnd={:#x} {:?} z={} libre={:?}",
+                            p.id.poignee(),
+                            p.id.role(),
+                            p.z,
+                            p.libre
+                        );
+                    }
+                }
                 // Gardée à part : le rechargement à chaud doit pouvoir
                 // recombiner l'échelle du moniteur avec la NOUVELLE échelle
                 // de la config, sans redemander les écrans.
@@ -942,6 +997,31 @@ fn boucle(
         // La spec §3.3 propose ~30 Hz pour `GetCursorPos`. On le lit à 60 Hz :
         // l'appel est effectivement quasi gratuit, et à 30 Hz le personnage
         // traînerait visiblement derrière le curseur pendant un glisser.
+        // ── 60 Hz : la SEULE plateforme occupée (design §5.5) ───────────
+        //
+        // Un appel système par image, contre la quarantaine d'un recensement.
+        // C'est ce qui fait qu'un personnage assis sur une barre de titre
+        // qu'on balade voyage avec elle sans saccade — *le* geste qui fait
+        // sourire avec un Shimeji, et il se perdrait entièrement à 8 Hz.
+        //
+        // `if let` imbriqués plutôt qu'une fonction : trois lignes de
+        // condition, et les sortir d'ici obligerait à faire circuler `monde`
+        // en mutable à travers une signature de plus.
+        if let character::attach::Attachment::On { platform, .. } = ch.attachment {
+            if platform.est_fenetre() {
+                match sonde.rect_de_fenetre(platform.poignee()) {
+                    Some(r) => monde.suivre_fenetre(platform.poignee(), r),
+
+                    // Fermée, minimisée, ou masquée depuis la dernière image :
+                    // on la retire, et le réflexe 1 le fait tomber à l'image
+                    // suivante. Aucun code de chute ici — c'est la décision
+                    // n° 1 qui paie (« elle se ferme → un seul test, il
+                    // tombe »).
+                    None => monde.retirer_fenetre(platform.poignee()),
+                }
+            }
+        }
+
         let m = sonde.mouse();
 
         // Le curseur est-il dans la hitbox de la POSE COURANTE — et non dans

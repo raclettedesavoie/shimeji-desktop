@@ -149,6 +149,7 @@ qu'à l'œil et sur plusieurs minutes :
 | `SHIMEJI_QUITTER_APRES=<s>` | appelle `exit(0)` — la ligne de « Quitter » — après *s* secondes |
 | `SHIMEJI_SIGNAUX=1` | imprime, deux fois par seconde, les cinq signaux et le biais qu'ils produisent — étape 2 |
 | `SHIMEJI_ESCALADE=1` | force l'intention `Grimper` dès la première image, et trace (phase, face, offset, pose) à chaque changement — étape 4a, voir plus bas « mesurer l'ancre » |
+| `SHIMEJI_MONDE=1` | à chaque recensement, les plateformes **de fenêtres** et ce que l'occlusion leur laisse de praticable — étape 4b |
 | `SHIMEJI_MENU=1` | signale quand Windows **refuse le premier plan** à l'ouverture du menu contextuel — la cause du menu qui reste collé à l'écran, voir `render::prendre_le_premier_plan` |
 
 **Et un fichier témoin** : créer `characters/recharger.txt` déclenche un rechargement à
@@ -202,11 +203,27 @@ $c = $p.CPU; Start-Sleep -Seconds 60; $p.Refresh()
 |---|---|
 | fenêtre seule, aucune boucle (`SHIMEJI_SANS_BOUCLE=1`) | **0 %** |
 | **caché** (`SHIMEJI_CACHE=1`) = tout notre calcul, zéro déplacement | **0,9 %** |
+| **caché, depuis l'étape 4b** (recensement des fenêtres branché) | **1,8 %** |
 | en marche | **12 %** |
 
 Donc : **0,9 % = tout ce que nous calculons**, les ~11 points restants = `SetWindowPos` sur
 une fenêtre en couche. Le coût est proportionnel au **nombre de déplacements**, et c'est le
 seul levier. **Optimiser notre code ne rapporterait rien.**
+
+> ⚠️ **L'étape 4b a doublé notre part, de 0,9 à 1,8 %** (mesure de 60 s, `release`,
+> `SHIMEJI_CACHE=1` — la seule configuration comparable). Le point entier revient au
+> **recensement des fenêtres à 8 Hz** : `EnumWindows` puis deux `DwmGetWindowAttribute`
+> par fenêtre retenue. Le suivi à 60 Hz n'y est pour rien — en mode caché le personnage
+> reste au sol, donc `est_fenetre()` est faux et aucun appel par image n'a lieu.
+>
+> **C'est la première étape dont le coût dépend de ce que fait l'UTILISATEUR** : il croît
+> avec le nombre de fenêtres ouvertes. Un bureau très chargé coûtera plus que cette
+> mesure. Accepté en l'état — 1,8 % reste sous le seuil du perceptible, et très loin des
+> 11 points de `SetWindowPos` — mais à re-mesurer si l'étape 5 ajoute des appels au même
+> rythme.
+>
+> Les filtres sont déjà rangés du moins cher au plus cher (bit de style avant appel au
+> compositeur) : c'est la seule optimisation évidente, et elle est faite.
 
 **Trois choses à ne PAS faire**, chacune démentie par la mesure :
 
@@ -485,6 +502,17 @@ comme plateforme** : un bord est un segment, on lui retire les fenêtres de z-or
 supérieur (soustraction d'intervalles 1D). Il ne peut alors physiquement pas s'asseoir
 sur du vide.
 
+> ⚠️ **Précision de périmètre, tranchée à l'étape 4b et verrouillée par un test** :
+> l'occlusion ne s'applique **qu'entre fenêtres**. Appliquée aux plateformes d'écran, elle
+> supprimerait le sol du bureau sous la première fenêtre maximisée — le personnage
+> n'aurait plus nulle part où marcher, ce que cette décision ne cherchait pas. Ce qu'elle
+> cherchait, c'est qu'il ne s'assoie pas sur une barre de titre **cachée derrière une
+> autre fenêtre**.
+>
+> Et les **segments n'entrent pas dans `PlatformId`** : ils se renumérotent dès qu'une
+> fenêtre au-dessus bouge, donc l'identité changerait et il tomberait sans raison, par
+> intermittence (décision n° 1). Ils vivent dans `Platform::libre`, qui varie.
+
 ### 3. Les signaux biaisent, ils ne commandent pas
 
 Si « inactif 2 min » **déclenchait** le sommeil, on aurait un afficheur d'état système
@@ -620,8 +648,8 @@ Chaque étape est agréable en elle-même, et aucune ne dépend d'un dessin manq
 | ✅ 1 | **Il vit sur le sol** | marche, court, s'arrête, demi-tour, tous les écrans ; attrapable et il tombe ; tray, démarrage auto |
 | ✅ 2 | **Il réagit** | s'endort quand on part, se réveille au retour, mange à midi |
 | ⏸️ 3 | **Un deuxième personnage** | **mise de côté, à la demande de l'auteur** — ils coexisteraient et se remarqueraient |
-| 4 | **Il grimpe** | ✅ **4a** : bords et plafond de l'**écran** — reste **les fenêtres** (barres de titre, chute quand la fenêtre se ferme) ← *la prochaine* |
-| 5 | **Il suit** | se déplace vers l'application au premier plan |
+| ✅ 4 | **Il grimpe** | **4a** : bords et plafond de l'**écran** ; **4b** : barres de titre, bords et dessous des **fenêtres**, occlusion, chute quand la fenêtre se ferme |
+| 5 | **Il suit** | se déplace vers l'application au premier plan ← *la prochaine* |
 
 **L'étape 0 est un spike jetable et non négociable.** Le seul point faible de Tauri face
 à Electron est justement l'overlay transparent : il faut le prouver sur cette machine
@@ -649,14 +677,22 @@ avant d'écrire une ligne de physique, pas après.
 
 ## État actuel
 
-**L'étape 4a est terminée — il grimpe les bords et le plafond de l'écran.** Un personnage
-`blob` marche, court, s'arrête, fait demi-tour, circule sur les deux écrans, s'attrape à
-la souris, se lance et atterrit ; il grimpe les murs et le plafond de chaque écran, de
-lui-même ou parce qu'on l'a jeté contre un bord, et redescend ou se laisse tomber ; un
-tray l'affiche, le cache, le recharge, le fait démarrer avec Windows et le quitte ; un
-`config.json` règle son caractère sans recompiler. **225 tests**, exe release de
-**2,7 Mo**, **12 % d'un cœur** en marche et **0,8 %** caché (mesuré à l'étape 4a,
-sous la référence de 0,9 % — voir « Mesurer le CPU »).
+**L'étape 4 est terminée — il vit sur les fenêtres.** Un personnage `blob` marche, court,
+s'arrête, fait demi-tour, circule sur les deux écrans, s'attrape à la souris, se lance et
+atterrit ; il grimpe les murs et le plafond de chaque écran **et les bords des fenêtres**,
+s'assoit sur les barres de titre, se suspend sous les fenêtres, **voyage avec la fenêtre
+qu'on déplace** et tombe quand elle se ferme, rétrécit ou se fait recouvrir ; un tray et
+un menu au clic droit l'affichent, le cachent, le rechargent et le quittent ; un
+`config.json` règle son caractère sans recompiler. **257 tests**, exe release de
+**2,7 Mo**, **12 % d'un cœur** en marche et **1,8 %** caché (voir « Mesurer le CPU » : le
+recensement des fenêtres a doublé notre part).
+
+Ce que l'étape 4b a demandé, et ce qu'elle **n'a pas** demandé : `windows()` et
+`rect_de_fenetre()` sur la sonde, les quatre plateformes par fenêtre et la soustraction
+d'intervalles 1D dans `world.rs`, le branchement des trois horloges dans `main.rs`. Ni
+`intention.rs`, ni `reflex.rs`, ni `geom.rs`, ni `Attachment` n'ont bougé d'une ligne —
+c'est le découplage « la physique ne sait jamais d'où vient une plateforme » (design §5.1)
+qui se paie, quatre étapes après avoir été décidé.
 
 | Où | Contenu |
 |---|---|
@@ -710,16 +746,26 @@ réglages « faits à l'œil » qui se sont tous révélés faux — est dans
 ### La prochaine action
 
 **L'étape 3 (un deuxième personnage) est mise de côté, à la demande de l'auteur.** La
-suite est l'**étape 4 complète** — les plateformes de **fenêtres** (barres de titre,
-chute quand la fenêtre se ferme, soustraction d'intervalles 1D pour les bords recouverts,
-spec §2.2 et décision n° 2) — puis l'**étape 5** (il suit l'application au premier plan).
+suite est l'**étape 5** : il se déplace vers l'application au premier plan.
 
-L'étape 4a a posé les plateformes d'**écran** et toute la physique verticale
-(`contact()`, l'intention `Grimper`, le monde vertical) ; l'étape 4 restante n'ajoute
-**que** le recensement des fenêtres et leur filtrage (fenêtres fantômes, occlusion) —
-`geom.rs`, `Attachment` et le comportement d'escalade ne devraient pas avoir à changer.
+Le signal `appli_active` existe déjà (étape 2) et le monde expose maintenant les fenêtres
+(étape 4b) : l'étape 5 n'a donc **ni sonde ni plateforme à ajouter**. Il lui manque une
+chose — relier le `HWND` au premier plan à la `PlatformId` correspondante, ce que
+`PlatformId::fenetre` rend immédiat — puis une intention `AllerA(surface)`, la seule
+variante annoncée par la spec §7.1 qui n'existe pas encore.
 
-> ⚠️ **Reste ouvert depuis l'étape 4a : mesurer l'ancre de `grabWall`/`climbWall`.**
+> ⚠️ **Deux choses à re-mesurer à l'étape 5, pas à supposer.** Le CPU si elle ajoute des
+> appels système au rythme du recensement (l'étape 4b a déjà doublé notre part), et
+> `--sim` si elle touche au tirage d'envies.
+
+> ⚠️ **Deux vérifications ouvertes, toutes deux à l'œil — les seules du projet qui ne se
+> scriptent pas.** La seconde vient de l'étape 4b : **le personnage est-il bien posé sur
+> les barres de titre ?** Le rectangle vient de `DWMWA_EXTENDED_FRAME_BOUNDS`, donc le
+> piège des 7 px de bordure invisible est évité par construction — mais ça n'a été
+> *vérifié* que par les tests, jamais regardé. `SHIMEJI_MONDE=1` dit quels bords existent ;
+> il reste à voir s'il s'y assoit joliment.
+>
+> **Et depuis l'étape 4a : mesurer l'ancre de `grabWall`/`climbWall`.**
 > C'est la seule vérification du projet qui ne se scripte pas — il faut **regarder** le
 > personnage accroché à un mur. Marche à suivre : `cargo build` puis `cargo run` avec
 > `SHIMEJI_ESCALADE=1`. Si le rendu ne convient pas, l'ancre se corrige dans

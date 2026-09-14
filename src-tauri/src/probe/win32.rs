@@ -1,11 +1,21 @@
 //! L'implémentation réelle de `SystemProbe`, par la crate `windows`.
 //!
 //! Responsabilité unique : traduire des appels Win32 en types du projet —
-//! la topologie des écrans, la souris, et depuis l'étape 2 les cinq signaux
-//! lents (inactivité, appli active, heure, batterie, verrouillage), soit huit
-//! appels système en tout. **Aucune logique** ici — pas de filtrage, pas de
-//! décision. Tout ce qui ressemble à une règle appartient à `world.rs`,
-//! `signals.rs` ou au comportement, où c'est testable avec `FakeProbe`.
+//! la topologie des écrans, la souris, depuis l'étape 2 les cinq signaux
+//! lents (inactivité, appli active, heure, batterie, verrouillage), et depuis
+//! l'étape 4b le recensement des fenêtres praticables.
+//!
+//! **Aucune logique** ici — pas de décision de comportement. Tout ce qui
+//! ressemble à une règle appartient à `world.rs`, `signals.rs` ou au
+//! comportement, où c'est testable avec `FakeProbe`.
+//!
+//! > ⚠️ **La seule exception est le filtrage des fenêtres (design §5.3)**, et
+//! > elle est assumée : « visible ? masquée par DWM ? fenêtre outil ?
+//! > minimisée ? » sont des **questions Win32**, pas des règles de jeu.
+//! > `world.rs` n'a aucun moyen de les poser, et surtout aucune raison de
+//! > savoir que `DWMWA_CLOAKED` existe. Ce qui reste dans `world.rs`, c'est
+//! > tout ce qui se teste sans Windows : les faces, l'occlusion, les
+//! > identités.
 //!
 //! Signatures vérifiées dans les sources de windows 0.61.3 :
 //!   EnumDisplayMonitors  Win32/Graphics/Gdi/mod.rs:559
@@ -17,7 +27,7 @@
 //! Les cinq appels de l'étape 2 (signaux) sont documentés à leur emplacement,
 //! plus bas dans ce fichier.
 
-use super::{MouseState, ScreenInfo, SystemProbe};
+use super::{MouseState, ScreenInfo, SystemProbe, WindowInfo};
 use crate::geom::{Point, Rect};
 
 // `BOOL` ne vit PAS dans `Win32::Foundation` : c'est un type de
@@ -26,13 +36,19 @@ use crate::geom::{Point, Rect};
 // donne un `unresolved import` qui ne dit pas où regarder.
 // `BOOL(pub i32)`, avec une méthode `.as_bool()`.
 use windows::core::BOOL;
-use windows::Win32::Foundation::{LPARAM, POINT, RECT};
+use windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT};
+use windows::Win32::Graphics::Dwm::{
+    DwmGetWindowAttribute, DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS,
+};
 use windows::Win32::Graphics::Gdi::{
     EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO,
 };
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON, VK_RBUTTON};
-use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+use windows::Win32::UI::WindowsAndMessaging::{
+    EnumWindows, GetCursorPos, GetWindowLongPtrW, IsIconic, IsWindowVisible, GWL_EXSTYLE,
+    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+};
 
 /// Déclare le processus **conscient du DPI par moniteur (v2)**.
 ///
@@ -68,11 +84,36 @@ pub fn activer_conscience_dpi() {
     }
 }
 
-pub struct Win32Probe;
+pub struct Win32Probe {
+    /// Les `HWND` de NOS fenêtres de personnages, à ne jamais exposer comme
+    /// plateformes (design §5.3, piège Windows n° 2).
+    ///
+    /// Un `Vec` porté par la sonde plutôt qu'une variable globale : la spec
+    /// §10.2 interdit les globales, et une sonde qui ne connaîtrait pas ses
+    /// propres fenêtres serait intestable — `FakeProbe` n'aurait aucun moyen
+    /// de reproduire le cas « il s'assoit sur son voisin ».
+    ///
+    /// Vide tant que `main` ne les a pas déclarées, ce qui est le cas pendant
+    /// le diagnostic de démarrage. Sans conséquence : à ce moment-là aucune
+    /// fenêtre de personnage n'existe encore.
+    nos_fenetres: Vec<u64>,
+}
 
 impl Win32Probe {
     pub fn new() -> Self {
-        Win32Probe
+        Win32Probe {
+            nos_fenetres: Vec::new(),
+        }
+    }
+
+    /// Déclare les fenêtres de personnages, pour que le recensement les
+    /// ignore.
+    ///
+    /// Appelée par la boucle 60 Hz au démarrage, une fois la fenêtre créée.
+    /// À l'étape 3 (plusieurs personnages), ce sera une poignée de plus dans
+    /// le même `Vec` — aucun autre changement.
+    pub fn ignorer(&mut self, hwnds: Vec<u64>) {
+        self.nos_fenetres = hwnds;
     }
 }
 
@@ -354,6 +395,175 @@ fn session_verrouillee() -> bool {
     verrouillee
 }
 
+
+// ── Le recensement des fenêtres (design §5.3) ────────────────────────────
+
+/// La plus petite fenêtre encore praticable, en pixels.
+///
+/// En dessous, le personnage y tiendrait à peine et le monde se remplirait de
+/// miettes de plateformes. La valeur n'a rien de sacré — c'est à peu près la
+/// largeur d'une frame Shimeji (128 px) arrondie vers le bas.
+const TAILLE_MINIMALE: f32 = 120.0;
+
+/// Rappel d'`EnumWindows` : empile les poignées **dans l'ordre du z-order**.
+///
+/// `EnumWindows` énumère du premier plan vers l'arrière. On ne filtre rien
+/// ici, on ne fait qu'empiler : le rang dans ce `Vec` devient le `z` de la
+/// fenêtre, et **c'est ce qui rend l'occlusion gratuite** (décision n° 2) —
+/// aucune API de z-order à interroger.
+///
+/// ⚠️ Filtrer DANS le rappel serait une erreur subtile : le z-order est un
+/// rang **absolu**, et le calculer après filtrage donnerait des rangs
+/// resserrés. Ça ne changerait rien tant qu'on ne fait que comparer deux
+/// rangs… ce qui est précisément tout ce qu'on en fait. Mais la propriété
+/// « le z est le rang réel » est celle qu'on croit avoir en lisant le code,
+/// donc on la garde vraie.
+///
+/// `lparam` transporte un pointeur vers notre `Vec`, comme `collecte_moniteur`
+/// plus haut — même mécanisme, mêmes précautions.
+unsafe extern "system" fn collecte_fenetre(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    let poignees = unsafe { &mut *(lparam.0 as *mut Vec<HWND>) };
+    poignees.push(hwnd);
+
+    // `TRUE` = « continue l'énumération ». Rendre `FALSE` l'arrêterait net —
+    // l'erreur classique, qui ne donne qu'une seule fenêtre.
+    BOOL(1)
+}
+
+/// Une fenêtre est-elle **masquée par le compositeur** (`DWMWA_CLOAKED`) ?
+///
+/// ⚠️ **Le filtre le plus important, et le moins évident.** Windows 11 est
+/// plein de fenêtres qui se déclarent visibles (`IsWindowVisible` rend vrai)
+/// et que l'on ne voit pas : applications UWP suspendues, fenêtres fantômes
+/// de l'hôte d'applications. Sans ce test, le personnage s'assoit sur des
+/// rectangles qui n'existent pas à l'écran — et rien, absolument rien, ne
+/// permet de le diagnostiquer depuis le code de physique.
+///
+/// En cas d'échec de l'appel on répond `false` (« pas masquée ») : mieux vaut
+/// une fenêtre de trop qu'un bureau vide si l'API change.
+fn est_masquee(hwnd: HWND) -> bool {
+    let mut masquee: u32 = 0;
+
+    // `unsafe` : franchissement FFI. On confie à DWM un pointeur vers une
+    // variable de la pile et sa taille — la seule chose à ne pas se tromper
+    // est justement ce `size_of`.
+    let r = unsafe {
+        DwmGetWindowAttribute(
+            hwnd,
+            DWMWA_CLOAKED,
+            &mut masquee as *mut u32 as *mut std::ffi::c_void,
+            std::mem::size_of::<u32>() as u32,
+        )
+    };
+
+    r.is_ok() && masquee != 0
+}
+
+/// Les bornes **visuelles** d'une fenêtre, celles que l'œil voit.
+///
+/// ⚠️ **Pas `GetWindowRect`** — piège Windows n° 1. Une fenêtre Win10/11
+/// déclare ~7 px de bordure de redimensionnement invisible de chaque côté.
+/// Avec `GetWindowRect`, le personnage est assis 7 px au-dessus de la barre
+/// de titre, dans le vide : subtilement faux, et très visible sur du
+/// pixel-art. On demande donc les bornes au compositeur, qui sait ce qu'il a
+/// réellement dessiné.
+///
+/// Rend `None` si DWM refuse — fenêtre détruite entre l'énumération et cet
+/// appel, ce qui arrive normalement.
+fn bornes_visuelles(hwnd: HWND) -> Option<Rect> {
+    let mut r = RECT::default();
+
+    let ok = unsafe {
+        DwmGetWindowAttribute(
+            hwnd,
+            DWMWA_EXTENDED_FRAME_BOUNDS,
+            &mut r as *mut RECT as *mut std::ffi::c_void,
+            std::mem::size_of::<RECT>() as u32,
+        )
+    };
+
+    if ok.is_err() {
+        return None;
+    }
+
+    // Win32 rend (gauche, haut, droite, bas) ; `Rect` veut (x, y, largeur,
+    // hauteur). La soustraction est la seule conversion, et elle peut rendre
+    // des valeurs nulles ou négatives pour une fenêtre en cours de
+    // destruction — d'où le test de taille chez l'appelant.
+    Some(Rect::new(
+        r.left as f32,
+        r.top as f32,
+        (r.right - r.left) as f32,
+        (r.bottom - r.top) as f32,
+    ))
+}
+
+/// Cette fenêtre est-elle praticable ? **Les six filtres du design §5.3**,
+/// dans l'ordre du moins cher au plus cher.
+///
+/// L'ordre n'est pas cosmétique : `IsWindowVisible` est une lecture de bit,
+/// `est_masquee` est un appel au compositeur. Écarter d'abord les centaines
+/// de fenêtres invisibles épargne autant d'allers-retours vers DWM, huit fois
+/// par seconde.
+fn est_praticable(hwnd: HWND, nos_fenetres: &[u64]) -> Option<Rect> {
+    // ── 1. Nos PROPRES fenêtres ─────────────────────────────────────────
+    //
+    // Sans ce filtre, les personnages s'assoient les uns sur les autres et se
+    // poursuivent eux-mêmes (piège Windows n° 2).
+    //
+    // ⚠️ **Redondant avec le filtre « fenêtre outil » ci-dessous, et c'est
+    // VOULU** : l'étape 0 pose `WS_EX_TOOLWINDOW` sur nos fenêtres, donc
+    // elles seraient déjà écartées. Mais le jour où ce style sauterait, le
+    // symptôme serait « les personnages s'assoient les uns sur les autres » —
+    // et le lien avec un style étendu posé dans `render.rs` serait
+    // introuvable. Deux lignes contre ce diagnostic-là, c'est donné.
+    if nos_fenetres.contains(&(hwnd.0 as u64)) {
+        return None;
+    }
+
+    // ── 2. Visible, et non minimisée ────────────────────────────────────
+    // `unsafe` : les deux ne font que lire l'état de la fenêtre.
+    if !unsafe { IsWindowVisible(hwnd) }.as_bool() {
+        return None;
+    }
+    if unsafe { IsIconic(hwnd) }.as_bool() {
+        return None;
+    }
+
+    // ── 3. Fenêtres outils et non activables ────────────────────────────
+    //
+    // `WS_EX_TOOLWINDOW` : palettes, barres flottantes — on ne s'assoit pas
+    // dessus. `WS_EX_NOACTIVATE` : fenêtres qui ne prennent jamais le focus,
+    // typiquement des surfaces système.
+    //
+    // `.0 as isize` : `WINDOW_EX_STYLE` est un *newtype* autour d'un u32, il
+    // faut en extraire la valeur pour la combiner aux bits rendus par
+    // `GetWindowLongPtrW`. Même détail qu'à l'étape 0, voir `render.rs`.
+    let styles = unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) };
+    let indesirables = (WS_EX_TOOLWINDOW.0 | WS_EX_NOACTIVATE.0) as isize;
+    if styles & indesirables != 0 {
+        return None;
+    }
+
+    // ── 4. Masquée par le compositeur ───────────────────────────────────
+    if est_masquee(hwnd) {
+        return None;
+    }
+
+    // ── 5. Les bornes visuelles, et la taille minimale ──────────────────
+    //
+    // C'est ici que tombent le bureau (`Progman`), la barre des tâches et les
+    // fenêtres fantômes de taille nulle : on ne les nomme pas, on constate
+    // qu'elles ne sont pas praticables. Nommer des classes de fenêtres serait
+    // une liste à maintenir contre Windows, ce qu'on ne gagne jamais.
+    let rect = bornes_visuelles(hwnd)?;
+    if rect.w < TAILLE_MINIMALE || rect.h < TAILLE_MINIMALE {
+        return None;
+    }
+
+    Some(rect)
+}
+
 impl SystemProbe for Win32Probe {
     fn screens(&self) -> Vec<ScreenInfo> {
         let mut ecrans: Vec<ScreenInfo> = Vec::new();
@@ -411,6 +621,63 @@ impl SystemProbe for Win32Probe {
         }
     }
 
+    fn windows(&self) -> Vec<WindowInfo> {
+        // ── 1. Toutes les poignées, dans l'ordre du z-order ─────────────
+        //
+        // `with_capacity` : un bureau Windows 11 ordinaire déclare quelques
+        // centaines de fenêtres, dont l'immense majorité sera écartée. On
+        // évite ainsi une poignée de réallocations, huit fois par seconde.
+        let mut poignees: Vec<HWND> = Vec::with_capacity(256);
+
+        // SÉCURITÉ : `poignees` vit jusqu'à la fin de la fonction, et
+        // `EnumWindows` est synchrone — le rappel a donc fini de s'en servir
+        // quand l'appel rend la main. Aucun pointeur ne lui survit. Même
+        // raisonnement que pour `EnumDisplayMonitors` plus haut.
+        unsafe {
+            let _ = EnumWindows(
+                Some(collecte_fenetre),
+                LPARAM(&mut poignees as *mut Vec<HWND> as isize),
+            );
+        }
+
+        // ── 2. Le filtrage, en gardant le rang ABSOLU comme z ───────────
+        //
+        // `enumerate()` AVANT `filter_map` : le `z` doit être le rang dans
+        // l'énumération complète, pas dans la liste filtrée. Inverser les
+        // deux resserrerait les rangs — sans changer le résultat des
+        // comparaisons, mais en rendant faux le commentaire qui dit ce que
+        // `z` est.
+        poignees
+            .into_iter()
+            .enumerate()
+            .filter_map(|(rang, hwnd)| {
+                let rect = est_praticable(hwnd, &self.nos_fenetres)?;
+                Some(WindowInfo {
+                    hwnd: hwnd.0 as u64,
+                    rect,
+                    z: rang as u32,
+                })
+            })
+            .collect()
+    }
+
+    fn rect_de_fenetre(&self, hwnd: u64) -> Option<Rect> {
+        // On repasse par `est_praticable` en entier plutôt que par les seules
+        // bornes : une fenêtre qui vient d'être minimisée, ou masquée par le
+        // compositeur, doit cesser d'être une plateforme **tout de suite** —
+        // pas au prochain recensement, 125 ms plus tard. Le personnage tombe
+        // donc dans l'image où la fenêtre disparaît, ce qui est exactement ce
+        // que promet la décision n° 1.
+        //
+        // `hwnd as isize as *mut c_void` : `HWND` est un *newtype* autour
+        // d'un pointeur opaque. On ne le déréférence jamais — c'est Windows
+        // qui l'interprète — donc reconstruire la poignée depuis l'entier
+        // qu'on a stocké est sûr, au sens où aucune lecture mémoire n'en
+        // découle de notre côté.
+        let hwnd = HWND(hwnd as isize as *mut std::ffi::c_void);
+        est_praticable(hwnd, &self.nos_fenetres)
+    }
+
     fn signaux(&self) -> super::Signaux {
         super::Signaux {
             inactivite: inactivite(),
@@ -444,6 +711,27 @@ pub fn imprimer_diagnostic(sonde: &dyn SystemProbe) {
         "souris : ({}, {}) bouton gauche={} bouton droit={}",
         m.pos.x, m.pos.y, m.left_down, m.right_down
     );
+
+    // ── Le recensement des fenêtres (étape 4b) ──────────────────────────
+    //
+    // Imprimé au démarrage, une fois. C'est l'équivalent scriptable du
+    // « regarder si le personnage s'assoit au bon endroit » : on voit
+    // directement ce que les six filtres ont retenu, et les rectangles sont
+    // ceux que DWM déclare — donc comparables à l'œil avec les fenêtres à
+    // l'écran, sans avoir à lancer l'animation.
+    //
+    // Sans cette impression, un filtre trop gourmand (un bureau sans aucune
+    // plateforme) ou trop laxiste (des fenêtres fantômes) ne se
+    // diagnostiquerait qu'en regardant le personnage se comporter bizarrement
+    // — c'est-à-dire très mal.
+    let fenetres = sonde.windows();
+    println!("fenêtres praticables : {}", fenetres.len());
+    for f in &fenetres {
+        println!(
+            "  z={:<4} hwnd={:#x} x={} y={} l={} h={}",
+            f.z, f.hwnd, f.rect.x, f.rect.y, f.rect.w, f.rect.h
+        );
+    }
 }
 
 // Pas de `#[cfg(test)] mod tests` dans ce fichier, et c'est volontaire : il ne

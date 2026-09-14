@@ -105,11 +105,45 @@ pub struct Batterie {
     pub sur_secteur: bool,
 }
 
+/// Une fenêtre retenue par le filtrage, telle que le monde a besoin de la
+/// connaître (design §5.1, §5.3).
+///
+/// **Trois champs, et pas un de plus.** Ni titre, ni nom de processus, ni
+/// classe : le monde ne construit que des rectangles, et tout champ
+/// supplémentaire finirait par tenter quelqu'un d'écrire « si c'est VSCode
+/// alors… », ce qui trahirait « la physique ne sait jamais d'où vient une
+/// plateforme » (design §5.1).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WindowInfo {
+    /// Le `HWND`, qui donne son identité à la plateforme (design §5.2).
+    ///
+    /// C'est lui qui fait que « la plateforme sur laquelle je suis » survit
+    /// au déplacement ET au redimensionnement de la fenêtre — la condition
+    /// de la décision n° 1.
+    pub hwnd: u64,
+
+    /// Les bornes **VISUELLES**, pas celles de `GetWindowRect`.
+    ///
+    /// ⚠️ Piège Windows n° 1 : une fenêtre Win10/11 déclare ~7 px de bordure
+    /// de redimensionnement invisible de chaque côté. Utilisé tel quel, le
+    /// personnage est assis 7 px au-dessus de la barre de titre, **dans le
+    /// vide** — subtilement faux, et très visible sur du pixel-art.
+    /// `probe::win32` les obtient par `DwmGetWindowAttribute`.
+    pub rect: Rect,
+
+    /// Rang dans le z-order : **0 = au premier plan**.
+    ///
+    /// Gratuit : `EnumWindows` énumère du premier plan vers l'arrière, donc
+    /// le rang d'énumération *est* le z. Aucune API supplémentaire, et c'est
+    /// ce qui rend l'occlusion (décision n° 2) bon marché.
+    pub z: u32,
+}
+
 /// Ce que le programme sait du système.
 ///
 /// `&self` partout : interroger le système ne modifie rien côté programme.
 ///
-/// À l'étape 4 s'ajoutera `fn windows(&self) -> Vec<WindowInfo>`. Le monde,
+/// `windows()` a été ajoutée à l'étape 4b, exactement comme annoncé. Le monde,
 /// la physique et le comportement n'en sauront rien — ils ne manipulent que
 /// des `Platform` (spec §5.1). C'est ce découplage qui permet de livrer le
 /// sol maintenant et les fenêtres plus tard sans rien réécrire.
@@ -127,4 +161,42 @@ pub trait SystemProbe {
     /// ne bouge vite, et cinq appels système à 60 Hz seraient 300 appels par
     /// seconde pour des valeurs qui changent toutes les minutes.
     fn signaux(&self) -> Signaux;
+
+    /// Les fenêtres praticables, **déjà filtrées** (design §5.3), rangées du
+    /// premier plan vers l'arrière.
+    ///
+    /// Le filtrage est fait ici et non par l'appelant : il est entièrement
+    /// fait de questions Win32 (visible ? masquée ? outil ? minimisée ?) que
+    /// `world.rs` n'a aucun moyen de poser, et qu'il n'a surtout pas à
+    /// connaître.
+    ///
+    /// Appelée à **~8 Hz** et pas davantage (design §5.5) : une fenêtre qui
+    /// apparaît est vue en ~125 ms, ce qui est imperceptible, alors qu'un
+    /// recensement complet à 60 Hz coûterait ~2 400 appels système par
+    /// seconde.
+    ///
+    /// Peut être **vide**, et ce n'est pas une erreur : un bureau sans aucune
+    /// fenêtre praticable est un cas normal. Le monde n'expose alors que les
+    /// plateformes d'écran, comme avant l'étape 4b.
+    fn windows(&self) -> Vec<WindowInfo>;
+
+    /// Le rectangle visuel d'**une seule** fenêtre, ré-interrogé à 60 Hz.
+    ///
+    /// # Pourquoi cette méthode existe alors que `windows()` rend déjà tout
+    ///
+    /// Parce que sans elle l'étape rate son moment. Un personnage assis sur
+    /// une barre de titre que l'on **balade à la souris** est *le* geste qui
+    /// fait sourire avec un Shimeji ; recalculé à 8 Hz seulement, il
+    /// avancerait par sauts de 125 ms — saccadé, et raté.
+    ///
+    /// Le design §5.5 le prévoit explicitement : « interroger *une* fenêtre
+    /// est quasi gratuit → il colle parfaitement à la fenêtre qu'on
+    /// déplace ». C'est **un** appel système par image, contre la quarantaine
+    /// d'un recensement complet.
+    ///
+    /// Rend `None` si la fenêtre a disparu, n'est plus praticable, ou n'est
+    /// tout simplement pas une fenêtre. L'appelant en déduit que la
+    /// plateforme n'existe plus — et le réflexe « plateforme disparue → je
+    /// tombe » fait le reste, sans cas particulier.
+    fn rect_de_fenetre(&self, hwnd: u64) -> Option<Rect>;
 }

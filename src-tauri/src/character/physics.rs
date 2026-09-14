@@ -416,6 +416,15 @@ pub fn atterrissage(world: &World, avant: Point, apres: Point) -> Option<(Platfo
         }
 
         // Règle 2 : garder la face la plus haute, donc le plus petit `y`.
+        // ── Décision n° 2 : ne pas se poser sur une portion recouverte ──
+        //
+        // Sans ce test, l'occlusion ne servirait qu'à le faire TOMBER d'un
+        // bord recouvert — il pourrait encore s'y poser, et retomberait à
+        // l'image suivante. Un clignotement, pas une règle.
+        if !plat.est_libre(apres.x - plat.rect.left()) {
+            continue;
+        }
+        
         let remplace = match meilleur {
             None => true,
             Some((_, _, y)) => y_face < y,
@@ -551,6 +560,15 @@ fn contact_mur(world: &World, avant: Point, apres: Point) -> Option<(PlatformId,
             // le plus proche du point de départ. Le cas ne se présente
             // qu'avec des écrans qui se recouvrent, mais laisser le choix au
             // hasard de l'ordre du `Vec` serait un bug dormant.
+            // ── Décision n° 2 : ne pas se poser sur une portion recouverte ──
+            //
+            // Sans ce test, l'occlusion ne servirait qu'à le faire TOMBER d'un
+            // bord recouvert — il pourrait encore s'y poser, et retomberait à
+            // l'image suivante. Un clignotement, pas une règle.
+            if !plat.est_libre(offset) {
+                continue;
+            }
+            
             let remplace = match meilleur {
                 None => true,
                 Some((_, _, _, x)) => (x_face - avant.x).abs() < (x - avant.x).abs(),
@@ -678,6 +696,15 @@ fn contact_plafond(world: &World, avant: Point, apres: Point) -> Option<(Platfor
         // dont les plafonds se chevaucheraient, ce qui n'arrive pas
         // aujourd'hui, mais laisser le hasard de l'ordre du `Vec` trancher
         // serait un bug dormant.
+        // ── Décision n° 2 : ne pas se poser sur une portion recouverte ──
+        //
+        // Sans ce test, l'occlusion ne servirait qu'à le faire TOMBER d'un
+        // bord recouvert — il pourrait encore s'y poser, et retomberait à
+        // l'image suivante. Un clignotement, pas une règle.
+        if !plat.est_libre(offset) {
+            continue;
+        }
+        
         let remplace = match meilleur {
             None => true,
             Some((_, _, y)) => (y_face - avant.y).abs() < (y - avant.y).abs(),
