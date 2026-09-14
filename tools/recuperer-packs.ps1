@@ -62,6 +62,14 @@ param(
     # Affiche la liste et s'arrete. Sert a choisir avant de telecharger.
     [switch] $ListeSeule,
 
+    # Engendre ui/catalogue.json et s'arrete, sans rien telecharger d'autre
+    # que la page du repertoire. C'est un geste de MAINTENANCE, joue a la
+    # main pour rafraichir le catalogue, jamais un chemin d'execution : si le
+    # markup de shimejis.xyz change, c'est ce script qui casse, sur la
+    # machine du developpeur, avec un message — pas le catalogue chez
+    # l'utilisateur.
+    [switch] $Index,
+
     # Plafond, pour tester sur un echantillon.
     [int] $Limite = 0,
 
@@ -246,7 +254,12 @@ function Get-DimensionsPng($chemin) {
 # Le HTML est mis en cache 24 h : le retelecharger a chaque lancement serait
 # inutile, et le script doit pouvoir tourner plusieurs fois sans marteler le
 # site.
-function Get-Slugs {
+# Le HTML du repertoire, telecharge au plus une fois par 24 h.
+#
+# Sorti de Get-Slugs pour que le mode -Index s'en serve aussi : il a besoin
+# du markup entier, pas seulement des slugs, puisque les franchises sont des
+# titres de section.
+function Get-CatalogueHtml {
     $cache = Join-Path $env:TEMP "shimejis-directory.html"
     $frais = $false
     if (Test-Path $cache) {
@@ -262,12 +275,98 @@ function Get-Slugs {
         Write-Host "catalogue : cache local (moins de 24 h)"
     }
 
-    $html = [System.IO.File]::ReadAllText($cache)
+    return [System.IO.File]::ReadAllText($cache)
+}
+
+function Get-Slugs {
+    $html = Get-CatalogueHtml
     # Chaque personnage apparait dans une vignette pointant sur sa frame 1.
     $trouves = [regex]::Matches($html, 'directory/([a-z0-9-]+)/img/shime1\.png')
     $liste = New-Object System.Collections.Generic.HashSet[string]
     foreach ($m in $trouves) { [void]$liste.Add($m.Groups[1].Value) }
     return ($liste | Sort-Object)
+}
+
+# --- Le mode -Index : engendrer ui/catalogue.json -------------------------
+#
+# Le plan annoncait la franchise comme une « incertitude assumee », avec un
+# repli mettant tout le monde dans « Catalogue » ou « Communaute ». Verifie
+# le 2026-09-14 : les franchises SONT dans le markup, en titres de section
+# (<h2 class="_cardTitle_...">), chacun suivi de la grille de ses vignettes.
+# Le decoupage classe 2353 slugs sur 2353, sans un seul orphelin. Le repli
+# est donc abandonne au profit des vrais noms.
+function New-Index {
+    # HttpUtility n'est pas chargee par defaut en PowerShell 5.1 : sans ce
+    # Add-Type, l'appel echoue sur « type introuvable ».
+    Add-Type -AssemblyName System.Web
+
+    $html = Get-CatalogueHtml
+
+    # On decoupe sur les titres de carte. -split avec un groupe capturant
+    # rend une liste alternee : [0] = avant le 1er titre, puis (titre, corps)
+    # a l'infini. D'ou le pas de 2 a partir de l'indice 1.
+    $morceaux = [regex]::Split($html, '<h2[^>]*_cardTitle_[^>]*>(.*?)</h2>')
+
+    $packs = New-Object System.Collections.Generic.List[object]
+    $vus = New-Object System.Collections.Generic.HashSet[string]
+
+    for ($i = 1; $i -lt $morceaux.Count - 1; $i += 2) {
+        # Le titre peut contenir du balisage et des entites HTML
+        # (« Assassin&#x27;s Creed ») : on retire l'un et on decode l'autre.
+        $franchise = [System.Web.HttpUtility]::HtmlDecode(
+            ($morceaux[$i] -replace '<[^>]+>', '')
+        ).Trim()
+
+        foreach ($m in [regex]::Matches($morceaux[$i + 1],
+                        'directory/([a-z0-9_-]+)/img/shime1\.png')) {
+            $slug = $m.Groups[1].Value
+            # Un meme pack peut apparaitre dans deux sections : le premier
+            # titre rencontre gagne, et le doublon est ignore.
+            if (-not $vus.Add($slug)) { continue }
+
+            # Le suffixe hexadecimal de 6 caracteres marque un depot
+            # communautaire ; on le retire du nom affiche, jamais du slug.
+            if ($slug -match '^(.*)-([0-9a-f]{6})$') {
+                $base = $Matches[1]
+            } else {
+                $base = $slug
+            }
+            $nom = (Get-Culture).TextInfo.ToTitleCase(($base -replace '-', ' '))
+
+            $packs.Add([pscustomobject]@{
+                slug      = $slug
+                nom       = $nom
+                franchise = $franchise
+            })
+        }
+    }
+
+    Write-Host "$($packs.Count) packs, $((($packs | Select-Object -ExpandProperty franchise) | Sort-Object -Unique).Count) franchises"
+
+    # .ToArray() et NON @($packs) : en PowerShell 5.1, envelopper une
+    # List[object] dans @() a l'interieur d'un [pscustomobject]@{...} leve
+    # « Les types des arguments ne correspondent pas » — une
+    # ArgumentException opaque qui designe la ligne du cast, pas la valeur
+    # fautive. .ToArray() rend un Object[] franc, et le cast passe.
+    $doc = [pscustomobject]@{
+        genere_le = (Get-Date -Format 'yyyy-MM-dd')
+        source    = $CATALOGUE
+        packs     = $packs.ToArray()
+    }
+
+    # -Depth : sans lui, ConvertTo-Json aplatit les objets imbriques a partir
+    # du niveau 2 et ecrit « System.Object[] ».
+    $json = $doc | ConvertTo-Json -Depth 4
+
+    # SANS BOM, imperativement : serde_json le refuse avec le message
+    # trompeur « expected value at line 1 column 1 ». UTF8Encoding($false)
+    # est la seule facon fiable en PS 5.1 — Out-File -Encoding utf8 ecrit un
+    # BOM.
+    $sortie = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\ui\catalogue.json'))
+    [System.IO.File]::WriteAllText(
+        $sortie, $json, (New-Object System.Text.UTF8Encoding($false))
+    )
+    Write-Host "ecrit : $sortie"
 }
 
 # --- Les ancres declarees par le pack lui-meme ----------------------------
@@ -619,6 +718,13 @@ function Get-Pack($slug) {
 }
 
 # --- Le corps du script ---------------------------------------------------
+
+# -Index se traite EN TETE et sort : il ne telecharge aucun sprite, et ne
+# doit donc pas passer par la mecanique de selection des cibles.
+if ($Index) {
+    New-Index
+    exit 0
+}
 
 if ($Slug) {
     $cibles = $Slug

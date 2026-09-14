@@ -63,6 +63,13 @@ Elles s'appliquent à **toutes** les tâches, sans être répétées dans chacun
   > `one-piece-luffy-01` est en balises japonaises (`画像`, `基準座標`),
   > `pierrot-54acb5` en anglais (`Image`, `ImageAnchor`). Le parseur lit les
   > deux depuis `installation.rs::ancres_avec`.
+  >
+  > **La leçon, et elle pique** : `tools/recuperer-packs.ps1` avait déjà les
+  > deux faits justes — `Get-AncresDuPack` tape `$CDN/$slug/actions.xml` et
+  > construit les noms d'attributs japonais par points de code, commentaire
+  > à l'appui. La section 3 de la conception disait « porter sa logique
+  > exactement plutôt que la réinventer » ; c'est précisément là que le
+  > portage a dérivé. **Relire le script avant de porter, pas après.**
 - `cargo test` doit rester **vert à chaque commit**.
 
 ---
