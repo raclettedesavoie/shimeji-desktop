@@ -35,6 +35,14 @@ pub struct Rechargement {
     pub manifeste: Manifest,
     pub reglages: Reglages,
 
+    /// Le personnage rechargé.
+    ///
+    /// Transporté jusqu'au webview parce qu'il peut avoir CHANGÉ : la fenêtre
+    /// du catalogue en choisit un autre, et `pet.js` doit alors refaire sa
+    /// base d'URL. Sans ce nom, il réclamerait encore les images de l'ancien
+    /// — un personnage parfaitement animé avec le mauvais dessin.
+    pub personnage: String,
+
     /// La table d'envies, reconstruite depuis la config relue.
     pub table: crate::behavior::desire::TableEnvies,
 
@@ -78,6 +86,20 @@ pub fn nouvelle_demande() -> Demande {
 /// bibliothèque puis le dossier livré. Recevoir le chemin déjà résolu évite
 /// que cette fonction ait à connaître cette règle — et lui permet de charger
 /// un personnage de la bibliothèque comme un autre, sans le savoir.
+/// Le nom d'un personnage, c'est le nom de son dossier.
+///
+/// `file_name` rend une `Option` (un chemin peut finir par `..`) et un
+/// `OsStr` (Windows tolère des noms qui ne sont pas de l'UTF-8 valide) :
+/// d'où les deux conversions en cascade. Le repli sur `blob` n'est atteint
+/// que par un chemin absurde, et vaut mieux qu'un `unwrap`.
+fn nom_du_dossier(dossier: &Path) -> String {
+    dossier
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("blob")
+        .to_string()
+}
+
 pub fn preparer(demande: &Demande, dossier_perso: &Path) -> Result<u64, String> {
     // ── Les entrées-sorties D'ABORD, verrou non tenu ────────────────────
     // Si le manifeste est illisible on sort ici, **sans avoir rien touché** :
@@ -105,6 +127,7 @@ pub fn preparer(demande: &Demande, dossier_perso: &Path) -> Result<u64, String> 
     *boite = Some(Rechargement {
         manifeste,
         reglages,
+        personnage: nom_du_dossier(dossier_perso),
         table,
         echelle_config: config.echelle,
         config,

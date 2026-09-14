@@ -353,11 +353,18 @@ pub fn pousser(app: &AppHandle, label: &str, r: Rendu) -> Result<(), String> {
 ///
 /// Séparée de `pousser` parce qu'elle n'arrive que sur action de
 /// l'utilisateur, jamais dans la boucle.
-pub fn recharger(app: &AppHandle, label: &str, version: u64) -> Result<(), String> {
+pub fn recharger(
+    app: &AppHandle,
+    label: &str,
+    version: u64,
+    personnage: &str,
+) -> Result<(), String> {
     let Some(win) = app.get_webview_window(label) else {
         return Err(format!("fenêtre « {label} » absente"));
     };
-    win.eval(format!("window.recharger({version})"))
+    // Le second argument est le personnage courant : il peut avoir changé
+    // (fenêtre du catalogue), auquel cas `pet.js` refait sa base d'URL.
+    win.eval(format!("window.recharger({version}, \"{personnage}\")"))
         .map_err(|e| format!("eval : {e}"))
 }
 

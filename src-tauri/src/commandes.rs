@@ -115,21 +115,31 @@ pub fn bibliotheque() -> Vec<PackInstalle> {
 
 /// Affiche ce personnage — le SECOND geste (décision de cadrage n° 2).
 ///
-/// ⚠️ **Cette version n'écrit que la config : le changement ne prend effet
-/// qu'au redémarrage.** La tâche 9 remplace ce corps pour déclencher aussi
-/// le rechargement à chaud, une fois `Actions::changer_personnage` écrite.
-/// L'ordre est volontaire : on livre d'abord un geste qui marche, même
-/// imparfaitement, plutôt qu'une tâche qui ne se teste qu'à la fin.
+/// Le changement est **immédiat**, sans redémarrage : `changer_personnage`
+/// dépose un rechargement que la boucle 60 Hz ramasse à l'image suivante.
+///
+/// `State<…>` : Tauri injecte ici ce que `main.rs` a confié à `manage`. Le
+/// type demandé doit correspondre **exactement** à celui qui a été confié
+/// (`Arc<Actions>`), sinon la commande échoue à l'exécution et non à la
+/// compilation.
 #[tauri::command]
-pub fn choisir(nom: String) -> Result<(), String> {
-    // On refuse un personnage introuvable AVANT d'écrire la config : sinon
+pub fn choisir(
+    actions: tauri::State<'_, std::sync::Arc<crate::actions::Actions>>,
+    nom: String,
+) -> Result<(), String> {
+    // On refuse un personnage introuvable AVANT tout le reste : sinon
     // l'application ne redémarrerait plus, le chargement échouant sur un nom
     // qui ne résout pas.
-    let Some(_) = crate::config::dossier_du_personnage(&nom) else {
+    let Some(dossier) = crate::config::dossier_du_personnage(&nom) else {
         return Err(format!("personnage « {nom} » introuvable"));
     };
 
+    // L'ordre compte : on charge D'ABORD, on enregistre ENSUITE. Si le
+    // manifeste est illisible, rien n'a changé — ni à l'écran, ni dans la
+    // config, qui aurait sinon nommé un personnage qui ne charge pas.
+    actions.changer_personnage(&nom, dossier)?;
     crate::config::definir_personnage(&nom)?;
+
     println!("personnage choisi : {nom}");
     Ok(())
 }

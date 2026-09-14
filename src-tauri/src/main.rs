@@ -408,6 +408,12 @@ fn lancer_application() {
                 commande.clone(),
             );
 
+            // `manage` met la valeur à disposition des commandes, qui la
+            // reçoivent par un paramètre `State<…>`. C'est le mécanisme
+            // d'injection de Tauri — il évite une variable globale, et c'est
+            // ainsi que `commandes::choisir` atteint le personnage courant.
+            tauri::Manager::manage(app, actions.clone());
+
             if let Err(e) = tray::installer(
                 &app.handle().clone(),
                 // Le REGISTRE et non la config : les deux divergent dès que
@@ -1000,7 +1006,7 @@ fn boucle(
 
                     // Le webview doit oublier ses images, et la taille de la
                     // fenêtre peut avoir changé (`frameSize`, `scale`).
-                    let _ = render::recharger(&handle, &label, r.version);
+                    let _ = render::recharger(&handle, &label, r.version, &r.personnage);
                     derniere_taille = None;
                     dernier_rendu = None;
                     dernier_coin = None;

@@ -10,13 +10,18 @@ const pet = document.getElementById('pet');
 // Le personnage à afficher est passé dans le fragment de l'URL par Rust, à
 // la création de la fenêtre : #blob. Un fragment plutôt qu'un paramètre de
 // requête, pour ne pas interférer avec la résolution du fichier.
-const personnage = window.location.hash.slice(1) || 'blob';
+// `let` et non `const` : il CHANGE désormais, la fenêtre du catalogue
+// pouvant en choisir un autre sans redémarrage.
+let personnage = window.location.hash.slice(1) || 'blob';
 
 // Les images viennent d'un schéma URI servi par Rust : les PNG sont des
 // fichiers EXTERNES au binaire (spec §8.1), donc aucun chemin relatif ne
 // peut les atteindre. Sur Windows, Tauri sert les schémas custom sous
 // http://<scheme>.localhost.
-const BASE = `http://shime.localhost/${personnage}/`;
+// Recalculée à chaque changement de personnage. Sans ça, on demanderait
+// encore les images de l'ancien — un personnage parfaitement animé avec le
+// mauvais dessin, exactement le bug que `main.rs` redoutait.
+let BASE = `http://shime.localhost/${personnage}/`;
 
 // Version du contenu, changée à chaque rechargement à chaud.
 //
@@ -66,9 +71,15 @@ function poser(image, flip) {
 // Exposée pour que Rust puisse l'appeler par `eval`.
 window.poser = poser;
 
-// Appelée par Rust après un rechargement à chaud.
-window.recharger = (v) => {
+// Appelée par Rust après un rechargement à chaud. `nom` est le personnage
+// courant : il peut avoir changé (fenêtre du catalogue), auquel cas c'est
+// toute la base d'URL qu'il faut refaire.
+window.recharger = (v, nom) => {
   version = v;
+  if (nom && nom !== personnage) {
+    personnage = nom;
+    BASE = `http://shime.localhost/${personnage}/`;
+  }
   // On force le prochain `poser` à réécrire le `src`, même si l'image
   // demandée porte le même numéro qu'avant : c'est son CONTENU qui a pu
   // changer, pas son numéro.

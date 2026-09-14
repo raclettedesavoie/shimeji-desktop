@@ -112,9 +112,19 @@ pub struct CasesTray {
 pub struct Actions {
     pub visibilite: Visibilite,
     pub demande: Demande,
-    pub dossier: PathBuf,
-    pub personnage: String,
     pub commande: BoiteCommande,
+
+    /// Le personnage courant et son dossier.
+    ///
+    /// `Mutex` parce qu'ils **changent maintenant en cours d'exécution** : la
+    /// fenêtre du catalogue peut en choisir un autre. Ils étaient constants
+    /// tant qu'un seul personnage était fixé au démarrage.
+    ///
+    /// Les deux ensemble dans UN verrou et non deux : ils doivent changer
+    /// d'un coup, sinon un rechargement pourrait lire le nouveau nom avec
+    /// l'ancien dossier — et servir les images de l'un sous le manifeste de
+    /// l'autre.
+    perso: Mutex<(String, PathBuf)>,
 
     /// Renseignées par `tray::installer` **après** la construction du menu :
     /// les cases n'existent pas avant. `Mutex<Option<…>>` et non un champ
@@ -134,11 +144,39 @@ impl Actions {
         Arc::new(Actions {
             visibilite,
             demande,
-            dossier,
-            personnage,
             commande,
+            perso: Mutex::new((personnage, dossier)),
             cases: Mutex::new(None),
         })
+    }
+
+    /// Le dossier du personnage courant.
+    ///
+    /// `ok()` : un verrou empoisonné rend `None`, et l'appelant se contentera
+    /// de ne rien faire — bien mieux qu'un panic dans un gestionnaire de menu,
+    /// qui tuerait le thread d'interface.
+    pub fn dossier_courant(&self) -> Option<PathBuf> {
+        self.perso.lock().ok().map(|p| p.1.clone())
+    }
+
+    /// Change le personnage courant et demande son chargement.
+    ///
+    /// Rend la version du rechargement, que la boucle 60 Hz comparera à la
+    /// sienne pour savoir qu'il y a du nouveau.
+    pub fn changer_personnage(&self, nom: &str, dossier: PathBuf) -> Result<u64, String> {
+        // Les entrées-sorties D'ABORD, verrou non tenu : si le manifeste est
+        // illisible, on sort sans avoir rien touché et le personnage courant
+        // continue avec ce qu'il avait. Tenir le verrou pendant une lecture
+        // de fichier bloquerait en plus la boucle 60 Hz pour rien.
+        let version = crate::rechargement::preparer(&self.demande, &dossier)?;
+
+        match self.perso.lock() {
+            Ok(mut p) => {
+                *p = (nom.to_string(), dossier);
+                Ok(version)
+            }
+            Err(_) => Err("verrou du personnage empoisonné".to_string()),
+        }
     }
 
     pub fn enregistrer_cases(&self, cases: CasesTray) {
@@ -207,10 +245,15 @@ pub fn executer(actions: &Actions, app: &AppHandle, id: &str, cases_du_tray: &Ca
 
         // ── Les entrées communes aux deux menus ─────────────────────────
         ID_RECHARGER => {
-            // `actions.dossier` désigne désormais le dossier DU PERSONNAGE,
-            // déjà résolu au démarrage (bibliothèque puis dossier livré) :
-            // il n'y a plus de nom à joindre ici.
-            match crate::rechargement::preparer(&actions.demande, &actions.dossier) {
+            // Le dossier DU PERSONNAGE courant, déjà résolu (bibliothèque
+            // puis dossier livré) : il n'y a plus de nom à joindre ici. Il
+            // se lit désormais sous verrou, la fenêtre du catalogue pouvant
+            // l'avoir changé depuis le démarrage.
+            let Some(dossier) = actions.dossier_courant() else {
+                eprintln!("rechargement impossible : verrou du personnage empoisonné");
+                return;
+            };
+            match crate::rechargement::preparer(&actions.demande, &dossier) {
                 Ok(v) => println!("rechargement demandé (version {v})"),
                 // **Bruyant.** Un rechargement silencieusement raté est le
                 // pire des cas : on croit tester son nouveau timing et on
@@ -228,9 +271,9 @@ pub fn executer(actions: &Actions, app: &AppHandle, id: &str, cases_du_tray: &Ca
             // `explorer` plutôt qu'un plugin Tauri : c'est une ligne, ça
             // n'ajoute aucune dépendance, et l'échec (dossier absent) n'a pas
             // de conséquence.
-            let _ = std::process::Command::new("explorer")
-                .arg(&actions.dossier)
-                .spawn();
+            if let Some(dossier) = actions.dossier_courant() {
+                let _ = std::process::Command::new("explorer").arg(&dossier).spawn();
+            }
         }
 
         ID_QUITTER => {
