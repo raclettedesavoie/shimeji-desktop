@@ -11,6 +11,10 @@ dist/
 config.json
 settings.json
 
+# ... mais la config Claude Code du projet, elle, se versionne : c'est une décision
+# (quels plugins sont coupés ici, et pourquoi), pas un fichier généré.
+!.claude/settings.json
+
 # Windows
 Thumbs.db
 desktop.ini

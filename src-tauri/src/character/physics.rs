@@ -47,6 +47,30 @@ pub const GRAVITE: f32 = 1250.0;
 /// frottement, une chute de 1 000 px prenait 1,2 s au lieu de 2,3 s.
 pub const FROTTEMENT_CHUTE_Y: f32 = 2.5;
 
+/// Frottement de l'air **en montée**, en s⁻¹ — notre propre constante.
+///
+/// Shimeji-ee n'en a pas : `Fall.java` écrit `vy - vy·RESISTANCEY` quel que
+/// soit le signe de `vy`. En montée, `vy` étant négatif, ce terme devient
+/// POSITIF et **s'ajoute** à la pesanteur au lieu de s'y opposer — lancé vers
+/// le haut à notre plafond de 1 200 px/s, le personnage subissait
+/// `1250 + 2,5×1200 = 4 250 px/s²` et ne montait que ~235 px. À l'écran, le
+/// jet vertical paraissait mou là où le jet horizontal était juste
+/// (rapporté le 2026-09-12).
+///
+/// Freiner **six fois moins** en montée qu'en descente porte l'apex à
+/// ~450 px au lancer maximum. Les deux autres valeurs ont été mesurées puis
+/// écartées, et c'est pour ça qu'elles sont écrites ici :
+///
+/// | frottement en montée | apex au lancer max |
+/// |---|---|
+/// | `FROTTEMENT_CHUTE_Y` (Shimeji-ee) | ~235 px — trop mou |
+/// | **`0,40`** | **~450 px** |
+/// | `0,0` (aucun frottement) | ~576 px — trop haut, et il s'accrochait au plafond à tout bout de champ |
+///
+/// Le raccord à l'apex reste continu : de part et d'autre de `vy = 0`,
+/// l'accélération vaut `GRAVITE` à un terme près qui tend vers zéro.
+pub const FROTTEMENT_MONTEE_Y: f32 = 0.40;
+
 /// Frottement horizontal, en s⁻¹. `RESISTANCEX / TICK_INTERVAL`.
 ///
 /// L'élan horizontal d'un personnage lâché en marchant **décroît** donc.
@@ -80,6 +104,26 @@ pub const VITESSE_MARCHE: f32 = 50.0;
 /// le passage de l'une à l'autre lisible. Shimeji-ee a aussi un `Dash` à
 /// `-8,0` (200 px/s) qu'on n'utilise pas encore.
 pub const VITESSE_COURSE: f32 = 100.0;
+
+/// Vitesse d'escalade, en px/s.
+///
+/// **Relevée dans `conf/actions.xml`, pas réglée à l'œil.** L'action
+/// `ClimbWall` enchaîne huit poses de durées 16, 4, 4, 4, 16, 4, 4, 4 ticks,
+/// de vitesses 0, −1, −1, −1, 0, −2, −2, −2 px/tick. Déplacement :
+/// `3×4×1 + 3×4×2 = 36 px`. Durée : `56 × 40 ms = 2,24 s`. Soit **16,1 px/s**,
+/// c'est-à-dire **trois fois plus lent que la marche** (50 px/s).
+///
+/// C'est cette lenteur qui donne le « il se hisse » plutôt que « il glisse ».
+/// Ne pas l'accélérer pour rendre l'escalade « plus fluide » : on perdrait
+/// exactement ce qui la rend jolie. Un mur de 1032 px prend donc 64 s, ce qui
+/// est la raison du délai d'abandon à 120 s (design §4.4).
+pub const VITESSE_ESCALADE: f32 = 16.1;
+
+/// Bornes `[min, max]` de la durée d'accroche à une paroi, en secondes.
+///
+/// `HoldOntoWall` de `conf/actions.xml` : `Duration="${500+Math.random()*1000}"`,
+/// en millisecondes — donc de 0,5 s à 1,5 s.
+pub const DUREE_ACCROCHE: [f32; 2] = [0.5, 1.5];
 
 // ── Le balancier du personnage porté ──────────────────────────────────
 //
@@ -145,6 +189,14 @@ pub const BALANCIER_SEUILS: [f32; 3] = [10.0, 30.0, 50.0];
 /// chaque tick de 40 ms, comme `Location.set`.
 pub const LISSAGE_CURSEUR: f32 = 17.33;
 
+/// Pente minimale — `montée / |déplacement horizontal|` — pour que le
+/// plafond attrape un personnage en vol.
+///
+/// Sans unité : c'est un rapport de deux longueurs. 2 vaut ~63° au-dessus de
+/// l'horizontale. La mesure qui l'a choisi est dans `contact_plafond`, seul
+/// endroit qui s'en sert.
+pub const PENTE_MIN_PLAFOND: f32 = 2.0;
+
 /// Plafond de la vitesse de lancer, en px/s.
 ///
 /// Un coup de poignet violent peut produire plusieurs milliers de px/s, ce
@@ -208,13 +260,22 @@ pub fn borner_lancer(v: Vec2) -> Vec2 {
 /// Fonction pure : elle rend le nouvel état au lieu de modifier l'ancien.
 /// C'est ce qui la rend testable en boucle dans un test, comme ci-dessous.
 pub fn integrer_chute(pos: Point, vel: Vec2, dt: f32) -> (Point, Vec2) {
-    // Pesanteur **moins frottement**, exactement comme `Fall.java`. Le
-    // frottement est proportionnel à la vitesse : c'est lui qui plafonne
-    // naturellement la chute à ~500 px/s, sans plafond dur.
+    // Pesanteur **moins frottement**, comme `Fall.java` — mais le frottement
+    // n'est pas le même selon qu'il monte ou qu'il descend, et c'est notre
+    // seule divergence ici : voir `FROTTEMENT_MONTEE_Y`, qui porte la mesure
+    // et les deux valeurs écartées.
     //
+    // En descente, c'est le frottement qui plafonne naturellement la chute à
+    // ~500 px/s, sans plafond dur.
+    let frottement = if vel.y > 0.0 {
+        FROTTEMENT_CHUTE_Y * vel.y
+    } else {
+        FROTTEMENT_MONTEE_Y * vel.y
+    };
+
     // `min` et non `clamp` : seule la chute est plafonnée. Une vitesse
     // ascendante (personnage lâché vers le haut) n'a pas de raison de l'être.
-    let vy = (vel.y + (GRAVITE - FROTTEMENT_CHUTE_Y * vel.y) * dt).min(VITESSE_CHUTE_MAX);
+    let vy = (vel.y + (GRAVITE - frottement) * dt).min(VITESSE_CHUTE_MAX);
 
     // L'élan horizontal décroît aussi (`RESISTANCEX = 0,05`). Sans ça, un
     // personnage lâché en courant garderait sa vitesse jusqu'au sol et la
@@ -367,6 +428,268 @@ pub fn atterrissage(world: &World, avant: Point, apres: Point) -> Option<(Platfo
     meilleur.map(|(id, offset, _)| (id, offset))
 }
 
+/// Ce que le personnage a heurté pendant ce pas de chute — sol, mur **ou**
+/// plafond.
+///
+/// Généralise `atterrissage` aux faces verticales et à la face `Bottom`
+/// (design §3.2). Rend la `Face` en plus de la plateforme, parce que
+/// l'appelant en a besoin pour choisir la pose et l'orientation : on ne se
+/// pose pas sur un mur comme on se pose sur un sol, ni sur un plafond comme
+/// sur un mur.
+///
+/// **Les deux premières règles viennent de `Fall.java`, pas d'une
+/// intuition ; la troisième s'en écarte délibérément :**
+///   1. le sol d'abord — sa boucle fait `break OUTER` sur le sol avant de
+///      tester le mur ;
+///   2. puis les murs — `hasNext()` teste `floor.isOn(pos) || wall.isOn(pos)`,
+///      donc un mur arrête une chute exactement comme un sol, et **sans
+///      aucun seuil de vitesse** ;
+///   3. **le plafond attrape aussi, désormais.**
+///
+/// > ⚠️ **Divergence assumée de `Fall.java`, décidée après un essai à
+/// > l'écran (2026-09-12).** La version d'origine de ce document disait
+/// > « le plafond n'attrape rien », posée par lecture stricte de
+/// > `Fall.java::hasNext()` — qui ne teste effectivement que le sol et le
+/// > mur, le plafond n'y figurant dans aucune condition. Ce choix a été
+/// > **essayé en jeu**, et l'auteur a préféré l'inverse : un personnage
+/// > lancé vers le haut doit s'accrocher au plafond, comme il s'accroche à
+/// > un mur, plutôt que de passer devant et retomber. On assume donc de
+/// > diverger de Shimeji-ee sur ce point précis — le raisonnement
+/// > d'origine reste vrai pour la source, il ne s'applique simplement plus
+/// > ici.
+pub fn contact(world: &World, avant: Point, apres: Point) -> Option<(PlatformId, Face, f32)> {
+    // Règle 1. `if let Some(…)` et non un `?` : si le sol n'attrape rien, on
+    // veut continuer vers les murs, pas sortir.
+    if let Some((id, offset)) = atterrissage(world, avant, apres) {
+        return Some((id, Face::Top, offset));
+    }
+
+    // Règle 2, puis règle 3 : `if let … return` plutôt que `?`, pour la même
+    // raison — si les murs n'attrapent rien, on continue vers le plafond au
+    // lieu de sortir de la fonction.
+    if let Some(m) = contact_mur(world, avant, apres) {
+        return Some(m);
+    }
+
+    contact_plafond(world, avant, apres)
+}
+
+/// Règle 2 : a-t-on traversé la ligne verticale d'un mur, dans le bon sens ?
+///
+/// Séparée de `contact` pour que la priorité au sol se lise en une ligne
+/// plutôt que d'être enfouie dans une boucle.
+fn contact_mur(world: &World, avant: Point, apres: Point) -> Option<(PlatformId, Face, f32)> {
+    // (id, face, offset, x de la face) — le `x` ne sert qu'à départager.
+    let mut meilleur: Option<(PlatformId, Face, f32, f32)> = None;
+
+    for plat in world.platforms() {
+        // Les deux faces verticales, dans un tableau : écrire deux fois le
+        // même corps de boucle finirait par diverger.
+        for face in [Face::Left, Face::Right] {
+            if !plat.has_face(face) {
+                continue;
+            }
+
+            // `point_on(face, 0.0).x` plutôt que `rect.left()` / `rect.right()`
+            // écrits à la main : c'est la MÊME fonction qui placera le
+            // personnage, donc les deux ne peuvent pas se désaccorder.
+            let x_face = plat.rect.point_on(face, 0.0).x;
+
+            // Le bon sens, et c'est le cœur du test. Une face `Left` regarde
+            // vers la gauche : on la heurte en allant vers la DROITE. Une
+            // face `Right` regarde vers la droite : on la heurte en allant
+            // vers la gauche.
+            //
+            // ⚠️ **Correction de bug, et l'asymétrie strict/large n'est PAS
+            // une coquetterie.** Le côté DÉPART (`avant`) est maintenant
+            // testé en **strict** (`<` / `>`), alors que le côté ARRIVÉE
+            // (`apres`) reste large (`>=` / `<=`). « Franchir » veut dire
+            // qu'on était strictement d'un côté avant, et qu'on est passé de
+            // l'autre — quelqu'un déjà pile SUR le plan du mur ne franchit
+            // rien, il y est déjà.
+            //
+            // Avec l'ancienne version, large des deux côtés, un personnage
+            // qui vient de LÂCHER un mur repart avec `pos.x == x_face`
+            // exactement (voir `intention::grimper`, phase `Accroche` :
+            // `Falling { pos: plat.rect.point_on(face, offset), .. }`) et une
+            // vitesse horizontale nulle. Son `x` ne bouge donc plus d'une
+            // image à l'autre pendant que la gravité le fait descendre :
+            // `avant.x == apres.x == x_face` satisfaisait quand même
+            // `avant.x >= x_face && apres.x <= x_face`, donc il se
+            // raccrochait IMMÉDIATEMENT, indéfiniment — impossible de se
+            // décoller d'un mur, à la fin d'une escalade (Tâche 4) comme
+            // après un lancer (Tâche 5). Rendre le côté départ strict
+            // élimine exactement ce cas : `avant.x` pile sur `x_face` ne
+            // vérifie plus `avant.x > x_face` (ni `<`), donc `franchie` est
+            // `false` et il continue de tomber.
+            let franchie = match face {
+                Face::Left => avant.x < x_face && apres.x >= x_face,
+                Face::Right => avant.x > x_face && apres.x <= x_face,
+                // Les faces horizontales ne passent jamais par ici : le
+                // tableau ci-dessus n'en contient pas. `false` est le repli
+                // muet correct.
+                Face::Top | Face::Bottom => false,
+            };
+            if !franchie {
+                continue;
+            }
+
+            // Est-on à la hauteur du mur ? Même approximation volontaire que
+            // dans `atterrissage` : on teste avec le point d'ARRIVÉE plutôt
+            // que le croisement exact. À 15 px par image au maximum, l'écart
+            // est invisible, et la navigation a le droit d'être imparfaite
+            // (décision n° 4).
+            if apres.y < plat.rect.top() || apres.y > plat.rect.bottom() {
+                continue;
+            }
+
+            // L'offset d'une face verticale compte vers le BAS depuis le haut
+            // du rectangle — c'est la convention de `Rect::point_on`.
+            let offset = apres.y - plat.rect.top();
+
+            // Départage : garder le mur rencontré le PLUS TÔT, c'est-à-dire
+            // le plus proche du point de départ. Le cas ne se présente
+            // qu'avec des écrans qui se recouvrent, mais laisser le choix au
+            // hasard de l'ordre du `Vec` serait un bug dormant.
+            let remplace = match meilleur {
+                None => true,
+                Some((_, _, _, x)) => (x_face - avant.x).abs() < (x - avant.x).abs(),
+            };
+            if remplace {
+                meilleur = Some((plat.id, face, offset, x_face));
+            }
+        }
+    }
+
+    meilleur.map(|(id, face, offset, _)| (id, face, offset))
+}
+
+/// Règle 3 : a-t-on traversé la ligne horizontale d'un plafond, **en
+/// montant** ?
+///
+/// Symétrique de `atterrissage` (le sol), mais dans l'autre sens vertical, et
+/// symétrique de `contact_mur` pour l'asymétrie strict/large ci-dessous.
+/// Séparée de `contact` pour la même raison que `contact_mur` : la priorité
+/// sol → murs → plafond se lit en trois lignes plutôt que d'être enfouie
+/// dans une seule boucle géante.
+fn contact_plafond(world: &World, avant: Point, apres: Point) -> Option<(PlatformId, Face, f32)> {
+    // On ne s'accroche qu'en MONTANT — symétrique de la règle 1 de
+    // `atterrissage`, qui n'accepte que la descente. `<` et non `<=` : un
+    // `y` inchangé (aucun mouvement vertical) ne doit pas franchir quoi que
+    // ce soit.
+    if apres.y >= avant.y {
+        return None;
+    }
+
+    // **Et il faut arriver bien plus verticalement qu'horizontalement.**
+    //
+    // Ajoutée le 2026-09-14 après une mesure, déclenchée par une observation à
+    // l'écran : depuis que le personnage monte plus haut (voir
+    // `FROTTEMENT_MONTEE_Y`), une diagonale franche atteignait le plafond et
+    // s'y collait net, si bien qu'elle portait **deux fois moins loin**
+    // qu'avant — 204 px au lieu de 453 px pour un jet à 60° lâché en haut
+    // d'écran. Un personnage qui file de côté ne « s'agrippe » pas au
+    // plafond : il le frôle. Seul celui qui monte vraiment vers lui s'accroche.
+    //
+    // Le critère se lit dans le PAS lui-même — inutile de faire circuler la
+    // vitesse jusqu'ici : `apres - avant` vaut déjà `vitesse × dt`, et le `dt`
+    // se simplifie des deux côtés de la comparaison. La fonction reste donc
+    // purement géométrique, comme `atterrissage` et `contact_mur`.
+    //
+    // **Le seuil de 2 est mesuré, pas choisi à l'œil.** Pente relevée à
+    // l'instant où le personnage franchit la ligne du plafond, pour un lancer
+    // à la vitesse maximale :
+    //
+    // | lâché à | angle du jet | pente au plafond | voulu |
+    // |---|---|---|---|
+    // | y = 150 | 45° | 0,78 | il passe |
+    // | y = 300 | 60° | 1,03 | il passe |
+    // | y = 150 | 60° | 1,56 | il passe |
+    // | y = 300 | 75° | 2,99 | **il s'accroche** |
+    // | y = 150 | 75° | 3,54 | **il s'accroche** |
+    //
+    // 2 tombe dans le trou entre 1,56 et 2,99, à bonne distance des deux —
+    // un seuil à 1 aurait gardé les deux diagonales à 60°.
+    //
+    // Écrit en produit (`monte < 2 × |dx|`) et non en quotient : un jet
+    // parfaitement vertical a `dx = 0`, et la division rendrait `inf`.
+    let monte = avant.y - apres.y;
+    if monte < PENTE_MIN_PLAFOND * (apres.x - avant.x).abs() {
+        return None;
+    }
+
+    // ⚠️ Cette règle nous RAPPROCHE de `Fall.java`, qui ne teste jamais le
+    // plafond (ni dans `hasNext()`, ni dans la boucle de `tick()`) : elle
+    // restreint notre divergence du 2026-09-12 au seul cas qui l'avait
+    // motivée — le lancer vers le haut.
+
+    // (id, offset, y de la face) — pas besoin de départager plusieurs
+    // plafonds ici : contrairement aux murs, deux plafonds ne peuvent pas se
+    // recouvrir verticalement à la même position (ce sont des lignes
+    // horizontales à des hauteurs différentes, et `face_voisine` les
+    // fusionne déjà en un seul du point de vue du déplacement). On garde
+    // quand même la structure `Option` par cohérence avec `contact_mur`.
+    let mut meilleur: Option<(PlatformId, f32, f32)> = None;
+
+    for plat in world.platforms() {
+        if !plat.has_face(Face::Bottom) {
+            continue;
+        }
+
+        // `point_on(Face::Bottom, 0.0).y` plutôt que d'écrire `rect.bottom()`
+        // à la main : même raison que dans `contact_mur`, c'est la fonction
+        // qui placera aussi le personnage.
+        let y_face = plat.rect.point_on(Face::Bottom, 0.0).y;
+
+        // ⚠️ **Même asymétrie strict/large que `contact_mur`, et pour
+        // exactement la même raison.** Le côté DÉPART (`avant`) est testé en
+        // STRICT (`>`), le côté ARRIVÉE (`apres`) reste large (`<=`). Sans
+        // ça, un personnage qui vient tout juste de se LÂCHER du plafond
+        // repart avec `pos.y == y_face` exactement (voir la phase `Accroche`
+        // de `intention::grimper`, qui utilise `plat.rect.point_on(face,
+        // offset)`) et une vitesse verticale nulle à l'instant du lâcher :
+        // son `y` ne bougerait donc pas d'une image à l'autre pendant que
+        // l'élan horizontal se dissipe, et `avant.y >= y_face && apres.y <=
+        // y_face` serait satisfait indéfiniment — il se raccrocherait
+        // IMMÉDIATEMENT, à chaque image, sans jamais pouvoir quitter le
+        // plafond. Rendre le côté départ strict élimine ce cas : `avant.y`
+        // pile sur `y_face` ne vérifie plus `avant.y > y_face`, donc
+        // `franchie` est `false` et il continue de tomber.
+        let franchie = avant.y > y_face && apres.y <= y_face;
+        if !franchie {
+            continue;
+        }
+
+        // Est-on sous le plafond, horizontalement ? Même approximation
+        // volontaire que dans `atterrissage` et `contact_mur` : on teste
+        // avec le point d'ARRIVÉE plutôt que le croisement exact (décision
+        // n° 4, navigation imparfaite autorisée).
+        if apres.x < plat.rect.left() || apres.x > plat.rect.right() {
+            continue;
+        }
+
+        // L'offset d'une face `Bottom` compte vers la DROITE depuis le bord
+        // gauche du rectangle, exactement comme au sol — c'est la
+        // convention de `Rect::point_on`.
+        let offset = apres.x - plat.rect.left();
+
+        // Départage, par cohérence avec `contact_mur` — garder le plafond
+        // rencontré le plus tôt. Le cas ne se présente qu'avec des écrans
+        // dont les plafonds se chevaucheraient, ce qui n'arrive pas
+        // aujourd'hui, mais laisser le hasard de l'ordre du `Vec` trancher
+        // serait un bug dormant.
+        let remplace = match meilleur {
+            None => true,
+            Some((_, _, y)) => (y_face - avant.y).abs() < (y - avant.y).abs(),
+        };
+        if remplace {
+            meilleur = Some((plat.id, offset, y_face));
+        }
+    }
+
+    meilleur.map(|(id, offset, _)| (id, Face::Bottom, offset))
+}
+
 /// Le personnage est-il tombé sous le bas du bureau virtuel ?
 ///
 /// C'est le déclencheur du **garde-fou** de la spec §6.3 : passé cette
@@ -388,311 +711,8 @@ pub fn sous_le_bureau(world: &World, pos: Point) -> bool {
     pos.y > b.bottom() + MARGE
 }
 
+// Les tests de ce module vivent dans `physics_tests.rs`
+// (sortis d ici le 2026-09-14 : ils faisaient 488 des 1138 lignes).
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::geom::Rect;
-    use crate::probe::fake::FakeProbe;
-    use crate::probe::{ScreenInfo, SystemProbe};
-
-    fn monde_deux_ecrans() -> World {
-        World::from_screens(&FakeProbe::deux_ecrans().screens())
-    }
-
-    /// Un pas d'intégration à 60 Hz.
-    const DT: f32 = 1.0 / 60.0;
-
-    #[test]
-    fn la_chute_accelere_vers_le_bas() {
-        let (pos, vel) = integrer_chute(Point::new(100.0, 0.0), Vec2::zero(), DT);
-        // y croît vers le bas : la vitesse et la position augmentent toutes
-        // deux.
-        assert!(vel.y > 0.0);
-        assert!(pos.y > 0.0);
-        // Aucune accélération horizontale : la gravité est verticale.
-        assert_eq!(vel.x, 0.0);
-        assert_eq!(pos.x, 100.0);
-    }
-
-    #[test]
-    fn l_elan_horizontal_decroit_sans_s_annuler() {
-        // Un personnage lâché en marchant garde son élan, mais **amorti** :
-        // `Fall.java` retire `RESISTANCEX = 0,05` de la vitesse à chaque
-        // tick. La première version du projet ne l'amortissait pas du tout,
-        // ce qui donnait des trajectoires trop plates.
-        let (pos, vel) = integrer_chute(Point::new(100.0, 0.0), Vec2::new(80.0, 0.0), DT);
-
-        assert!(vel.x < 80.0, "l'élan doit décroître");
-        assert!(vel.x > 70.0, "mais pas s'effondrer en une image");
-        assert!(pos.x > 100.0, "il avance quand même");
-    }
-
-    #[test]
-    fn l_elan_horizontal_finit_par_s_eteindre() {
-        // Sur plusieurs secondes, le frottement doit l'avoir presque annulé.
-        let mut pos = Point::new(0.0, 0.0);
-        let mut vel = Vec2::new(200.0, 0.0);
-        for _ in 0..(60 * 4) {
-            let (p, v) = integrer_chute(pos, vel, DT);
-            pos = p;
-            vel = v;
-        }
-        assert!(vel.x.abs() < 5.0, "élan résiduel {} px/s", vel.x);
-    }
-
-    #[test]
-    fn la_chute_est_deterministe_en_hauteur_et_en_duree() {
-        // Le test que la spec §10.1 demande : « intégration déterministe,
-        // hauteur et durée connues ».
-        //
-        // **Avec frottement, ce n'est plus ½·g·t².** La solution de
-        // `dV/dt = G − k·V` depuis l'immobilité donne, en une seconde :
-        //
-        //     y(t) = (G/k)·(t − (1 − e^{−k·t})/k)
-        //          = 500 · (1 − 0,918/2,5) ≈ 316 px
-        //
-        // Sans frottement on aurait 625 px : la chute est donc **deux fois
-        // plus lente**, et c'est exactement ce que Shimeji-ee fait.
-        let mut pos = Point::new(0.0, 0.0);
-        let mut vel = Vec2::zero();
-
-        for _ in 0..60 {
-            let (p, v) = integrer_chute(pos, vel, DT);
-            pos = p;
-            vel = v;
-        }
-
-        let vitesse_limite = GRAVITE / FROTTEMENT_CHUTE_Y;
-        let theorique =
-            vitesse_limite * (1.0 - (1.0 - (-FROTTEMENT_CHUTE_Y).exp()) / FROTTEMENT_CHUTE_Y);
-
-        assert!(
-            (pos.y - theorique).abs() < theorique * 0.03,
-            "chute de {} px en 1 s, théorie {} px",
-            pos.y,
-            theorique
-        );
-
-        // Et le point qui compte pour l'œil : c'est bien plus lent que sans
-        // frottement.
-        assert!(
-            pos.y < 0.5 * GRAVITE * 0.7,
-            "la chute devrait être nettement plus lente que ½·g·t²"
-        );
-    }
-
-    #[test]
-    fn la_chute_atteint_sa_vitesse_limite_par_frottement() {
-        // **C'est le frottement qui plafonne, pas le plafond dur.** La
-        // vitesse limite est `GRAVITE / FROTTEMENT_CHUTE_Y` = 500 px/s, ce
-        // qui correspond aux 20 px/tick de Shimeji-ee.
-        //
-        // Le plafond dur `VITESSE_CHUTE_MAX` n'est donc jamais atteint en
-        // chute libre : il ne sert que de garde-fou si un lâcher venait avec
-        // une vitesse initiale énorme.
-        let mut vel = Vec2::new(0.0, 0.0);
-        let mut pos = Point::new(0.0, 0.0);
-        for _ in 0..600 {
-            let (p, v) = integrer_chute(pos, vel, DT);
-            pos = p;
-            vel = v;
-        }
-
-        let limite = GRAVITE / FROTTEMENT_CHUTE_Y;
-        assert!(
-            (vel.y - limite).abs() < 1.0,
-            "vitesse limite {} px/s, attendu {}",
-            vel.y,
-            limite
-        );
-        assert!(vel.y < VITESSE_CHUTE_MAX, "le plafond dur ne doit pas mordre");
-    }
-
-    #[test]
-    fn le_plafond_dur_borne_une_vitesse_initiale_absurde() {
-        // Le garde-fou existe pour ça, et pour rien d'autre.
-        let (_, vel) = integrer_chute(Point::new(0.0, 0.0), Vec2::new(0.0, 50_000.0), DT);
-        assert_eq!(vel.y, VITESSE_CHUTE_MAX);
-    }
-
-    #[test]
-    fn atterrit_en_traversant_le_sol() {
-        let monde = monde_deux_ecrans();
-        // Le sol du premier écran est à y = 1032.
-        let avant = Point::new(300.0, 1020.0);
-        let apres = Point::new(300.0, 1040.0);
-
-        let (id, offset) = atterrissage(&monde, avant, apres).expect("doit atterrir");
-        assert_eq!(monde.get(id).unwrap().rect.top(), 1032.0);
-        assert_eq!(offset, 300.0);
-    }
-
-    #[test]
-    fn n_atterrit_pas_en_montant() {
-        // Un personnage qui monte (lâché vers le haut, ou plus tard un saut)
-        // ne doit pas s'accrocher au sol qu'il traverse par-dessous.
-        let monde = monde_deux_ecrans();
-        let avant = Point::new(300.0, 1040.0);
-        let apres = Point::new(300.0, 1020.0);
-        assert_eq!(atterrissage(&monde, avant, apres), None);
-    }
-
-    #[test]
-    fn n_atterrit_pas_a_cote_de_la_plateforme() {
-        // Entre les deux écrans il n'y a rien à x = 5000 : il continue de
-        // tomber, et le garde-fou le récupérera.
-        let monde = monde_deux_ecrans();
-        let avant = Point::new(5000.0, 1020.0);
-        let apres = Point::new(5000.0, 1040.0);
-        assert_eq!(atterrissage(&monde, avant, apres), None);
-    }
-
-    #[test]
-    fn atterrit_sur_le_sol_du_bon_ecran() {
-        let monde = monde_deux_ecrans();
-        let (id, offset) = atterrissage(
-            &monde,
-            Point::new(2500.0, 1020.0),
-            Point::new(2500.0, 1040.0),
-        )
-        .expect("doit atterrir");
-
-        let plat = monde.get(id).unwrap();
-        assert_eq!(plat.rect.left(), 1920.0);
-        // L'offset est relatif au bord GAUCHE de cette plateforme.
-        assert_eq!(offset, 580.0);
-    }
-
-    #[test]
-    fn atterrit_sur_la_plateforme_la_plus_haute_traversee() {
-        // Deux faces traversées dans le même pas : il doit s'arrêter sur la
-        // PREMIÈRE rencontrée en descendant, donc la plus haute (plus petit
-        // y). À l'étape 4, ce sera le cas d'une barre de titre au-dessus du
-        // sol — la règle est écrite maintenant pour ne pas avoir à y revenir.
-        let monde = World::from_screens(&[
-            ScreenInfo {
-                id: 1,
-                work_area: Rect::new(0.0, 0.0, 1920.0, 1032.0),
-                scale: 1.0,
-            },
-            ScreenInfo {
-                id: 2,
-                // Un écran fictif dont la zone de travail finit plus haut :
-                // son sol est donc à y = 600.
-                work_area: Rect::new(0.0, 0.0, 1920.0, 600.0),
-                scale: 1.0,
-            },
-        ]);
-
-        let (id, _) = atterrissage(&monde, Point::new(300.0, 500.0), Point::new(300.0, 1100.0))
-            .expect("doit atterrir");
-
-        assert_eq!(monde.get(id).unwrap().rect.top(), 600.0);
-    }
-
-    #[test]
-    fn atterrit_pile_sur_la_ligne_du_sol() {
-        // Cas limite : `apres.y` vaut exactement la hauteur du sol. Il doit
-        // atterrir, pas passer à travers.
-        let monde = monde_deux_ecrans();
-        assert!(atterrissage(
-            &monde,
-            Point::new(300.0, 1000.0),
-            Point::new(300.0, 1032.0)
-        )
-        .is_some());
-    }
-
-    #[test]
-    fn la_bande_neutre_du_balancier_est_symetrique() {
-        // **Le test qui garde la correction du bug d'ordre de Shimeji-ee.**
-        // Un retard négatif minuscule doit donner le repos, pas un
-        // balancement — sinon le personnage termine chaque portage dans une
-        // pose penchée, puisque c'est là que le ressort se pose.
-        assert_eq!(niveau_balancier(-0.001), (Cote::Aucun, 0));
-        assert_eq!(niveau_balancier(0.0), (Cote::Aucun, 0));
-        assert_eq!(niveau_balancier(9.9), (Cote::Aucun, 0));
-        assert_eq!(niveau_balancier(-9.9), (Cote::Aucun, 0));
-    }
-
-    #[test]
-    fn les_niveaux_du_balancier_suivent_les_seuils_de_shimeji_ee() {
-        // Retard négatif = pied à gauche = curseur parti à droite.
-        assert_eq!(niveau_balancier(-15.0), (Cote::PiedAGauche, 1));
-        assert_eq!(niveau_balancier(-35.0), (Cote::PiedAGauche, 2));
-        assert_eq!(niveau_balancier(-80.0), (Cote::PiedAGauche, 3));
-
-        assert_eq!(niveau_balancier(15.0), (Cote::PiedADroite, 1));
-        assert_eq!(niveau_balancier(35.0), (Cote::PiedADroite, 2));
-        assert_eq!(niveau_balancier(80.0), (Cote::PiedADroite, 3));
-    }
-
-    #[test]
-    fn le_balancier_rattrape_le_curseur_et_s_y_arrete() {
-        // Curseur fixe : le ressort doit converger, et ne pas osciller
-        // éternellement.
-        let (mut x, mut v) = (0.0f32, 0.0f32);
-        for _ in 0..(60 * 3) {
-            let (nx, nv) = integrer_balancier(x, v, 500.0, DT);
-            x = nx;
-            v = nv;
-        }
-        assert!((x - 500.0).abs() < 1.0, "pied à {x}, curseur à 500");
-        assert!(v.abs() < 5.0, "il devrait s'être arrêté, v = {v}");
-    }
-
-    #[test]
-    fn le_retard_du_balancier_est_proportionnel_a_la_vitesse() {
-        // C'est ce qui donne « plus c'est rapide, plus il est balancé ».
-        // En régime permanent, retard = vitesse / (RAIDEUR/AMORTISSEMENT)
-        // = vitesse / 10.
-        let retard_a = |vitesse: f32| {
-            let (mut x, mut v) = (0.0f32, 0.0f32);
-            let mut curseur = 0.0f32;
-            for _ in 0..(60 * 3) {
-                curseur += vitesse * DT;
-                let (nx, nv) = integrer_balancier(x, v, curseur, DT);
-                x = nx;
-                v = nv;
-            }
-            x - curseur
-        };
-
-        let lent = retard_a(100.0).abs();
-        let vif = retard_a(500.0).abs();
-
-        assert!(lent < vif, "retard lent {lent}, vif {vif}");
-
-        // Le régime permanent théorique vaut `AMORTISSEMENT/RAIDEUR × v`,
-        // soit `v/10` — 50 px à 500 px/s. Le mesuré est plus petit d'un pas
-        // de curseur (`v × dt` = 8,3 px à 60 Hz), parce que la comparaison
-        // se fait APRÈS avoir avancé le curseur — et c'est exactement l'ordre
-        // dans lequel `avancer_balancier` opère.
-        //
-        // Conséquence assumée : à vitesse égale, le balancement est ~17 %
-        // moins ample que celui de Shimeji-ee. Si cela paraissait mou à
-        // l'usage, la correction propre serait de baisser les seuils de
-        // `BALANCIER_SEUILS`, pas de tripoter le ressort.
-        let theorique = 500.0 / 10.0 - 500.0 * DT;
-        assert!(
-            (vif - theorique).abs() < 3.0,
-            "retard à 500 px/s = {vif}, attendu ~{theorique}"
-        );
-    }
-
-    #[test]
-    fn sous_le_bureau_detecte_la_sortie_par_le_bas() {
-        let monde = monde_deux_ecrans();
-        assert!(!sous_le_bureau(&monde, Point::new(300.0, 500.0)));
-        assert!(sous_le_bureau(&monde, Point::new(300.0, 5000.0)));
-    }
-
-    #[test]
-    fn sous_le_bureau_est_faux_dans_un_monde_vide() {
-        // Pas de plateforme, donc pas de bas du bureau : on ne peut pas être
-        // « sous » quelque chose qui n'existe pas. Surtout, ça ne doit pas
-        // paniquer.
-        let monde = World::from_screens(&[]);
-        assert!(!sous_le_bureau(&monde, Point::new(0.0, 99_999.0)));
-    }
-}
+#[path = "physics_tests.rs"]
+mod tests;

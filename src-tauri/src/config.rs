@@ -32,6 +32,14 @@ pub struct Envies {
     /// jeu serait un réglage de plus sans effet observable, puisque rien ne
     /// les distingue pour l'utilisateur.
     pub jouer: f32,
+
+    /// Le poids de l'envie de grimper (étape 4a).
+    ///
+    /// Le même que `se_reposer` : l'escalade est longue (jusqu'à 64 s pour un
+    /// mur entier, contre quelques secondes pour un repos), donc un poids
+    /// égal se traduit déjà, à l'œil, par beaucoup de temps passé sur les
+    /// murs. Le monter le ferait vivre en hauteur.
+    pub grimper: f32,
 }
 
 impl Default for Envies {
@@ -41,6 +49,7 @@ impl Default for Envies {
             flaner: 5.0,
             se_reposer: 1.0,
             jouer: 1.0,
+            grimper: 1.0,
         }
     }
 }
@@ -85,6 +94,42 @@ impl Default for Allures {
             duree_marche: [1.5, 5.0],
             duree_course: [0.6, 1.8],
             chance_demi_tour: 0.25,
+        }
+    }
+}
+
+/// Ce qui décide s'il est casse-cou ou prudent sur un mur (décision n° 5).
+///
+/// Séparée d'`Allures` parce qu'elle ne décrit pas la même chose : `Allures`
+/// règle la flânerie au sol, celle-ci règle la sortie d'une accroche. Les
+/// fondre donnerait une structure dont la moitié des champs ne s'applique
+/// jamais au cas courant.
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Escalade {
+    /// Poids du tirage de sortie, en fin d'accroche : se lâcher et tomber.
+    pub poids_lacher: f32,
+
+    /// Poids du tirage de sortie : redescendre tranquillement.
+    ///
+    /// Deux fois le poids de `poids_lacher` par défaut : un personnage qui se
+    /// lâcherait une fois sur deux passerait son temps en l'air, et la chute
+    /// perdrait sa valeur de surprise.
+    pub poids_redescendre: f32,
+
+    /// Bornes `[min, max]` de la durée d'une accroche, en secondes.
+    pub duree_accroche: [f32; 2],
+}
+
+impl Default for Escalade {
+    fn default() -> Self {
+        Escalade {
+            poids_lacher: 1.0,
+            poids_redescendre: 2.0,
+            // Relevée dans `conf/actions.xml`, comme toutes les durées
+            // d'animation du projet : la valeur vit dans `physics.rs`, et la
+            // config ne fait que la reprendre comme valeur PAR DÉFAUT.
+            duree_accroche: crate::character::physics::DUREE_ACCROCHE,
         }
     }
 }
@@ -217,6 +262,9 @@ pub struct Config {
     pub envies: Envies,
     pub allures: Allures,
 
+    /// Les réglages de l'escalade (étape 4a).
+    pub escalade: Escalade,
+
     pub signaux: SignauxReglages,
 
     /// Les modificateurs par application, `"Code.exe"` → ses poids.
@@ -242,6 +290,7 @@ impl Default for Config {
             demarrage_automatique: false,
             envies: Envies::default(),
             allures: Allures::default(),
+            escalade: Escalade::default(),
             signaux: SignauxReglages::default(),
             // Vide par défaut : aucun modificateur d'application n'est
             // imposé. Le fichier d'exemple en montre deux, commentés par
@@ -265,7 +314,15 @@ impl Default for Config {
 pub struct Reglages {
     pub vitesse_marche: f32,
     pub vitesse_course: f32,
+
+    /// Vitesse d'escalade, déjà multipliée par le facteur de vitesse de
+    /// l'utilisateur — exactement comme la marche et la course. Sans ce
+    /// facteur, régler `vitesse` accélérerait la marche et laisserait
+    /// l'escalade à son rythme, ce qui serait incohérent à l'œil.
+    pub vitesse_escalade: f32,
+
     pub allures: Allures,
+    pub escalade: Escalade,
 
     /// À partir de quel biais de repos il s'affale au lieu de rester assis
     /// (Tâche 4, `behavior::intention::se_reposer`).
@@ -283,7 +340,7 @@ const FACTEUR_VITESSE_MAX: f32 = 10.0;
 
 impl Reglages {
     pub fn depuis(config: &Config) -> Reglages {
-        use crate::character::physics::{VITESSE_COURSE, VITESSE_MARCHE};
+        use crate::character::physics::{VITESSE_COURSE, VITESSE_ESCALADE, VITESSE_MARCHE};
 
         let facteur = config
             .vitesse
@@ -292,7 +349,9 @@ impl Reglages {
         Reglages {
             vitesse_marche: VITESSE_MARCHE * facteur,
             vitesse_course: VITESSE_COURSE * facteur,
+            vitesse_escalade: VITESSE_ESCALADE * facteur,
             allures: config.allures,
+            escalade: config.escalade,
             seuil_sommeil: config.signaux.seuil_sommeil,
         }
     }
@@ -482,219 +541,8 @@ pub fn charger_depuis(chemin: &Path) -> Config {
     }
 }
 
+// Les tests de ce module vivent dans `config_tests.rs`
+// (sortis d ici le 2026-09-14 : ils faisaient 171 des 652 lignes).
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// La bibliothèque gagne sur le dossier livré.
-    ///
-    /// C'est le seul ordre défendable : un pack installé par l'utilisateur
-    /// qui porte le nom d'un pack livré doit gagner, sinon on obtient un
-    /// « je l'ai installé et il ne se passe rien » indébogable.
-    ///
-    /// ⚠️ On teste la fonction **paramétrée** et jamais la publique : celle-ci
-    /// lit `%APPDATA%` par `env::var`, qui est global au PROCESSUS. Le
-    /// modifier ici le modifierait pour tous les tests tournant en
-    /// parallèle — le genre d'échec qui n'arrive qu'une fois sur dix et
-    /// coûte une soirée.
-    #[test]
-    fn la_bibliotheque_gagne_sur_le_dossier_livre() {
-        let base = std::env::temp_dir().join("shimeji-test-resolution");
-        let biblio = base.join("biblio");
-        let livre = base.join("livre");
-
-        // `let _ =` : l'erreur « existe déjà » est sans intérêt, un test
-        // relancé retrouvant les dossiers du précédent.
-        let _ = std::fs::create_dir_all(biblio.join("blob"));
-        let _ = std::fs::create_dir_all(livre.join("blob"));
-        let _ = std::fs::create_dir_all(livre.join("seulement-livre"));
-
-        assert_eq!(
-            personnage_dans(Some(&biblio), &livre, "blob"),
-            Some(biblio.join("blob")),
-            "la bibliothèque doit gagner"
-        );
-        assert_eq!(
-            personnage_dans(Some(&biblio), &livre, "seulement-livre"),
-            Some(livre.join("seulement-livre")),
-            "à défaut, le dossier livré"
-        );
-        assert_eq!(
-            personnage_dans(Some(&biblio), &livre, "inexistant"),
-            None,
-            "introuvable partout → None"
-        );
-        assert_eq!(
-            personnage_dans(None, &livre, "blob"),
-            Some(livre.join("blob")),
-            "sans bibliothèque, le dossier livré suffit"
-        );
-    }
-
-    static COMPTEUR: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-
-    /// Écrit un `config.json` dans un dossier temporaire et rend son chemin.
-    fn fichier_de_test(contenu: &str) -> PathBuf {
-        let base = std::env::temp_dir().join(format!(
-            "shimeji-cfg-{}-{}",
-            std::process::id(),
-            COMPTEUR.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(&base).unwrap();
-        let f = base.join("config.json");
-        std::fs::write(&f, contenu).unwrap();
-        f
-    }
-
-    #[test]
-    fn un_fichier_absent_donne_les_defauts() {
-        // **Le test le plus important de cette tâche** (spec §9.3).
-        let c = charger_depuis(Path::new("Z:/aucun/chemin/config.json"));
-        assert_eq!(c, Config::default());
-        assert!(
-            !c.personnages.is_empty(),
-            "il doit rester un personnage par défaut"
-        );
-    }
-
-    #[test]
-    fn un_fichier_vide_donne_les_defauts() {
-        // Un objet JSON vide est valide, et doit donner exactement les mêmes
-        // valeurs qu'un fichier absent.
-        let f = fichier_de_test("{}");
-        assert_eq!(charger_depuis(&f), Config::default());
-    }
-
-    #[test]
-    fn un_fichier_partiel_ne_change_que_ce_qu_il_declare() {
-        // C'est ce qui permet à l'utilisateur de n'écrire qu'une ligne.
-        let f = fichier_de_test(r#"{ "vitesse": 0.5 }"#);
-        let c = charger_depuis(&f);
-
-        assert_eq!(c.vitesse, 0.5);
-        // Tout le reste est intact.
-        assert_eq!(c.echelle, Config::default().echelle);
-        assert_eq!(c.envies, Config::default().envies);
-        assert_eq!(c.allures, Config::default().allures);
-    }
-
-    #[test]
-    fn un_json_malforme_donne_les_defauts_sans_paniquer() {
-        // Une virgule en trop ne doit pas empêcher le personnage de vivre.
-        let f = fichier_de_test("{ ceci n'est pas du JSON");
-        assert_eq!(charger_depuis(&f), Config::default());
-    }
-
-    #[test]
-    fn un_fichier_avec_bom_est_lu_normalement() {
-        // **Le cas par défaut sur Windows.** Le Bloc-notes et
-        // `Set-Content -Encoding utf8` de PowerShell 5.1 écrivent tous deux
-        // un BOM, et `serde_json` le refuse avec un message qui ne dit pas
-        // ce qui se passe.
-        //
-        // Trouvé en LANÇANT l'application, pas par relecture : le fichier
-        // était valide et pourtant rejeté.
-        let avec_bom = format!("{}{}", '\u{feff}', r#"{ "vitesse": 0.3 }"#);
-        let f = fichier_de_test(&avec_bom);
-        assert_eq!(charger_depuis(&f).vitesse, 0.3);
-    }
-
-    #[test]
-    fn une_inactivite_negative_ne_fait_pas_paniquer() {
-        // **Le test de la vague de correction finale, point 3.**
-        // `{"inactiviteSecondes": -1}` est du JSON parfaitement valide :
-        // `serde_json` le désérialise sans erreur, mais
-        // `Duration::from_secs_f32(-1.0)` PANIQUE. Sans le bornage, ce
-        // fichier passerait `un_json_malforme_donne_les_defauts_sans_paniquer`
-        // haut la main (il n'est pas malformé) et ferait quand même figer
-        // le personnage au premier battement de la boucle à 2 Hz.
-        let f = fichier_de_test(r#"{ "signaux": { "inactiviteSecondes": -1 } }"#);
-        let c = charger_depuis(&f);
-
-        assert!(
-            c.signaux.inactivite_secondes >= 0.0,
-            "la valeur négative n'a pas été bornée : {}",
-            c.signaux.inactivite_secondes
-        );
-        // La preuve directe : l'appel qui panique dans `signals.rs` ne
-        // panique plus sur la valeur bornée.
-        let _ = std::time::Duration::from_secs_f32(c.signaux.inactivite_secondes);
-    }
-
-    #[test]
-    fn un_champ_inconnu_est_ignore() {
-        // Un `config.json` écrit pour une version future, ou une faute de
-        // frappe : on prend ce qu'on comprend, on ignore le reste.
-        let f = fichier_de_test(r#"{ "vitesse": 2.0, "choseInventee": 42 }"#);
-        assert_eq!(charger_depuis(&f).vitesse, 2.0);
-    }
-
-    #[test]
-    fn les_envies_partielles_gardent_les_autres_poids() {
-        // Les défauts sont imbriqués : déclarer un seul poids ne doit pas
-        // remettre les autres à zéro — ce qui rendrait le personnage
-        // catatonique.
-        let f = fichier_de_test(r#"{ "envies": { "seReposer": 4.0 } }"#);
-        let c = charger_depuis(&f);
-
-        assert_eq!(c.envies.se_reposer, 4.0);
-        assert_eq!(c.envies.flaner, Config::default().envies.flaner);
-    }
-
-    #[test]
-    fn les_allures_partielles_gardent_les_autres_reglages() {
-        let f = fichier_de_test(r#"{ "allures": { "chanceDemiTour": 0.9 } }"#);
-        let c = charger_depuis(&f);
-
-        assert_eq!(c.allures.chance_demi_tour, 0.9);
-        assert_eq!(c.allures.poids_marche, Allures::default().poids_marche);
-        assert_eq!(c.allures.duree_course, Allures::default().duree_course);
-    }
-
-    #[test]
-    fn les_reglages_appliquent_le_facteur_de_vitesse() {
-        let c = Config {
-            vitesse: 2.0,
-            ..Config::default()
-        };
-        let r = Reglages::depuis(&c);
-
-        assert_eq!(r.vitesse_marche, crate::character::physics::VITESSE_MARCHE * 2.0);
-        assert_eq!(r.vitesse_course, crate::character::physics::VITESSE_COURSE * 2.0);
-    }
-
-    #[test]
-    fn un_facteur_de_vitesse_absurde_est_borne() {
-        // Un 0 figerait le personnage, un 10000 le rendrait invisible. Les
-        // valeurs viennent d'un fichier édité à la main : on borne.
-        let fige = Config {
-            vitesse: 0.0,
-            ..Config::default()
-        };
-        assert!(
-            Reglages::depuis(&fige).vitesse_marche > 0.0,
-            "il doit pouvoir bouger"
-        );
-
-        let fou = Config {
-            vitesse: 10_000.0,
-            ..Config::default()
-        };
-        assert!(
-            Reglages::depuis(&fou).vitesse_marche < 2000.0,
-            "il ne doit pas traverser l'écran en une image"
-        );
-    }
-
-    #[test]
-    fn resoudre_trouve_le_dossier_des_personnages_du_depot() {
-        // Le repli de développement : l'exe des tests est dans
-        // `target/debug/deps/`, donc on doit remonter jusqu'à la racine.
-        let d = dossier_personnages();
-        assert!(
-            d.join("blob").join("mascot.json").is_file(),
-            "characters/blob/mascot.json introuvable depuis {}",
-            d.display()
-        );
-    }
-}
+#[path = "config_tests.rs"]
+mod tests;

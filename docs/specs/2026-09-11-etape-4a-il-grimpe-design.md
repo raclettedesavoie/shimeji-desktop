@@ -158,23 +158,45 @@ Trois règles, **dans cet ordre** :
 2. **Puis les murs** : on a franchi la ligne `x` de la face pendant le pas **dans le bon
    sens** — vers la gauche pour une face `Right`, vers la droite pour une face `Left` —
    et le `y` d'arrivée tombe dans la hauteur du mur. L'offset est `apres.y − rect.top()`.
-3. **Le plafond n'attrape rien.** Lancé vers le haut, il passe devant et retombe.
+3. **Le plafond attrape aussi.** Lancé vers le haut, il s'accroche au plafond exactement
+   comme il s'accroche à un mur : on a franchi la ligne `y` de la face `Bottom` **en
+   montant**, et le `x` d'arrivée tombe dans la largeur du plafond. L'offset est
+   `apres.x − rect.left()`, vers la droite, comme au sol.
 
-**Ces trois règles sont relevées dans le source, pas inventées** (`Fall.java`) :
+**Les deux premières règles sont relevées dans le source, pas inventées** (`Fall.java`) :
 
 - `hasNext()` teste `getFloor().isOn(pos) || getWall().isOn(pos)` — donc un mur arrête
   une chute, exactement comme un sol, et **sans aucun seuil de vitesse** ;
-- le plafond n'y figure pas, d'où la règle 3 ;
 - la boucle de sous-pas fait `break OUTER` sur le sol **avant** de tester le mur, d'où la
   priorité de la règle 1. Sans elle, un lancer dans le coin de l'écran s'accrocherait au
   mur trois pixels au-dessus du sol au lieu d'atterrir.
 
+> **⚠️ La règle 3 diverge délibérément de `Fall.java`, et voici pourquoi il faut le
+> savoir.** La version d'origine de ce document disait l'inverse — « le plafond
+> n'attrape rien, lancé vers le haut il passe devant et retombe » — et c'était une
+> lecture fidèle de la source : `hasNext()` ne teste que `getFloor()` et `getWall()`,
+> jamais un plafond, qui n'existe d'ailleurs pas comme notion chez Shimeji-ee. Ce
+> comportement a été **implémenté, puis essayé à l'écran** (2026-09-12), et l'auteur a
+> préféré l'inverse : voir un personnage lancé vers le haut passer devant le plafond et
+> retomber paraissait faux, là où l'accroche — cohérente avec celle d'un mur — paraissait
+> juste. On assume donc de diverger de Shimeji-ee sur ce point précis. Le raisonnement
+> d'origine reste vrai pour décrire `Fall.java` ; il ne s'applique simplement plus à ce
+> projet. C'est le même geste que la correction du bug d'ordre du balancier (`CLAUDE.md`,
+> §« Ce qui ne s'explique pas en commentaire ») : on garde la trace de la décision
+> écartée plutôt que de réécrire l'histoire comme si le choix avait toujours été celui-ci.
+>
+> Techniquement, la règle 3 est le miroir de la règle 1 (le sol), pas des murs : on ne
+> s'accroche qu'**en montant** (symétrique de « on ne s'accroche au sol qu'en
+> descendant »), et l'offset compte vers la **droite** comme au sol — c'est la règle 2
+> (les murs, avec leur offset vers le bas) qui est l'exception structurelle parmi les
+> trois, pas le plafond.
+
 ### 3.3 Aucun nouveau réflexe
 
-Le Réflexe 3 (la chute) appelle `contact` au lieu d'`atterrissage`, et pose `land` ou
-`grabWall` selon la face rendue. **L'ordre des réflexes ne bouge pas** — et il ne doit
-pas : « porté » passe avant « plateforme disparue » pour la raison consignée dans
-`reflex.rs`.
+Le Réflexe 3 (la chute) appelle `contact` au lieu d'`atterrissage`, et pose `land`,
+`grabWall` ou `grabCeiling` selon la face rendue — `grabCeiling` depuis que la règle 3
+attrape (§3.2). **L'ordre des réflexes ne bouge pas** — et il ne doit pas : « porté »
+passe avant « plateforme disparue » pour la raison consignée dans `reflex.rs`.
 
 ### 3.4 L'orientation sur un mur : il regarde le mur
 

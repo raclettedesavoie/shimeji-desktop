@@ -1,0 +1,17 @@
+{
+  "_commentaire": [
+    "Projet personnel Rust/Tauri, Windows uniquement. Les plugins desactives ici le sont",
+    "au niveau PROJET seulement : ils restent actifs ailleurs (voir ~/.claude/settings.json).",
+    "Motif : les trois serveurs MCP qu'ils apportent (chrome-devtools, azure-devops x2)",
+    "echouent systematiquement ici avec CONNECT_TIMEOUT apres 30 s chacun, et n'ont aucun",
+    "usage sur ce projet. Cout : 90 s d'attente au demarrage, plus leurs schemas d'outils",
+    "dans le contexte de chaque session ET de chaque sous-agent."
+  ],
+  "enabledPlugins": {
+    "chrome-devtools-mcp@claude-plugins-official": false,
+    "chrome-devtools-mcp@chrome-devtools-plugins": false,
+    "apollo@apollossc": false,
+    "dev-flow@apollo-marketplaice": false,
+    "frontend-design@claude-plugins-official": false
+  }
+}

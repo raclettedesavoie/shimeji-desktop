@@ -9,7 +9,8 @@
   "envies": {
     "flaner": 5,
     "seReposer": 1,
-    "jouer": 1
+    "jouer": 1,
+    "grimper": 1
   },
 
   "allures": {
@@ -20,6 +21,13 @@
     "dureeMarche": [1.5, 5.0],
     "dureeCourse": [0.6, 1.8],
     "chanceDemiTour": 0.25
+  },
+
+  "_note": "Le poids d'envie porte sur le CHOIX, pas sur la durée. Une escalade dure cinq à dix fois plus longtemps qu'une flânerie : à poids égal avec flaner, grimper occupe donc une part du temps bien plus grande que sa part des tirages. Avec les valeurs par défaut, le personnage passe environ 30% de sa journée sur un mur ou au plafond.",
+  "escalade": {
+    "poidsLacher": 1,
+    "poidsRedescendre": 2,
+    "dureeAccroche": [0.5, 1.5]
   },
 
   "signaux": {

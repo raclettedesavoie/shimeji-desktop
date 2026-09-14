@@ -303,7 +303,14 @@ fn lancer_application() {
             }
 
             // ── Le personnage, posé au milieu du premier sol ────────────
-            let sol = &monde.platforms()[0];
+            // `let … else` : sans écran, il n'y a nulle part où poser le
+            // personnage. On sort du bloc de placement plutôt que de paniquer
+            // — un monde vide est un cas normal (session distante en cours
+            // d'établissement), voir `World::from_screens`. Le bloc englobant
+            // rend déjà `Ok(())` juste au-dessus pour ce même cas.
+            let Some(sol) = monde.premier_sol() else {
+                return Ok(());
+            };
             let offset = sol.rect.face_length(world::Face::Top) / 2.0;
             let depart = sol.rect.point_on(world::Face::Top, offset);
 
@@ -642,7 +649,7 @@ fn boucle(
     // revient jusqu'ici. La boucle n'a PAS besoin d'`Actions` : construire le
     // menu ne déclenche rien, et le clic part dans la boucle d'événements de
     // Tauri jusqu'à l'unique gestionnaire installé par `tray.rs`.
-    commande: actions::Commande,
+    commande: actions::BoiteCommande,
 ) {
     use behavior::Entrees;
     use std::time::{Duration, Instant};
@@ -652,6 +659,33 @@ fn boucle(
 
     let sonde = probe::win32::Win32Probe::new();
     let horloge = clock::SystemClock::new();
+
+    // `SHIMEJI_ESCALADE=1` : force l'intention `Grimper` dès la première
+    // image, au lieu d'attendre qu'elle sorte du tirage pondéré (elle partage
+    // aujourd'hui le poids de `se_reposer`, donc l'attendre à l'œil peut
+    // prendre plusieurs minutes).
+    //
+    // Ajoutée à la Tâche 7 pour une raison précise : mesurer l'ancre de
+    // `grabWall`/`climbWall` demande de REGARDER le personnage accroché à un
+    // mur, et ça, aucun script ne peut le faire à la place d'un humain — la
+    // seule exception du projet à « tout ce qui demanderait un clic reçoit un
+    // équivalent scriptable » (voir CLAUDE.md). Mais le TRAJET jusqu'à ce
+    // moment-là, lui, se scripte très bien : cette variable évite à l'auteur
+    // d'ouvrir le menu contextuel et de choisir « Grimper » à la main, et la
+    // trace ci-dessous (à chaque changement de phase) lui dit quand regarder
+    // l'écran sans avoir à fixer le personnage pendant plusieurs minutes.
+    let trace_escalade = std::env::var("SHIMEJI_ESCALADE").is_ok();
+    if trace_escalade {
+        ch.intention = Some(behavior::intention::ActiveIntention::nouvelle(
+            behavior::intention::Intention::Grimper,
+            horloge.elapsed(),
+        ));
+        println!("SHIMEJI_ESCALADE : intention Grimper forcée au démarrage");
+    }
+    // Le dernier triplet (phase, face, pose) imprimé : on ne retrace qu'au
+    // CHANGEMENT, sinon la console serait inondée à 60 Hz pour une
+    // information qui ne bouge qu'à la transition.
+    let mut derniere_trace_grimpe: Option<(String, String, String)> = None;
 
     // Graine issue de l'horloge système : deux lancements ne doivent pas
     // donner la même histoire. C'est le seul endroit du programme où
@@ -727,9 +761,9 @@ fn boucle(
     // Le bouton droit était-il enfoncé à l'image précédente ?
     //
     // C'est ce qui transforme un état — « le bouton est enfoncé », vrai
-    // pendant les ~15 images que dure un clic humain — en un **front
-    // montant**, qui n'arrive qu'une fois. Sans lui, maintenir le bouton
-    // rouvrirait le menu en boucle dès sa fermeture.
+    // pendant les ~15 images que dure un clic humain — en un **front**, qui
+    // n'arrive qu'une fois. Sans lui, maintenir le bouton rouvrirait le menu
+    // en boucle dès sa fermeture.
     let mut bouton_droit_precedent = false;
 
     loop {
@@ -961,14 +995,25 @@ fn boucle(
 
         // ── Clic droit sur le personnage : le menu contextuel ───────────
         //
-        // Front montant ET curseur dans la hitbox : un clic droit sur le
-        // bureau à côté de lui ne doit rien ouvrir. Le test de hitbox est le
-        // MÊME que celui qui absorbe les clics gauches, donc la zone
-        // cliquable est exactement celle qu'on voit.
-        let front_montant_droit = m.right_down && !bouton_droit_precedent;
+        // Front **descendant** (le bouton vient d'être RELÂCHÉ) ET curseur
+        // dans la hitbox : un clic droit sur le bureau à côté de lui ne doit
+        // rien ouvrir. Le test de hitbox est le MÊME que celui qui absorbe
+        // les clics gauches, donc la zone cliquable est exactement celle
+        // qu'on voit.
+        //
+        // ⚠️ **Au relâchement et non à l'enfoncement**, et pour deux raisons
+        // qui pointent dans le même sens :
+        //
+        // 1. c'est la convention de Windows — l'explorateur, comme toute
+        //    application, ouvre son menu contextuel sur `WM_RBUTTONUP` ;
+        // 2. ouvrir au bouton encore enfoncé lance `TrackPopupMenu` pendant
+        //    que Windows suit toujours un clic droit en cours. Le menu hérite
+        //    alors d'un suivi de souris qui ne lui appartient pas, et se
+        //    referme mal — ce qu'on a justement cherché à corriger ici.
+        let front_descendant_droit = !m.right_down && bouton_droit_precedent;
         bouton_droit_precedent = m.right_down;
 
-        if front_montant_droit && sur_le_personnage {
+        if front_descendant_droit && sur_le_personnage {
             // `let … else` : si la fenêtre a été fermée, on sort du thread.
             // Équivalent d'un `match` dont la branche `None` ferait `return`.
             let Some(win) = handle.get_webview_window(&label) else {
@@ -978,7 +1023,14 @@ fn boucle(
             // **Cet appel bloque** jusqu'à la fermeture du menu : le
             // personnage s'immobilise pendant ce temps, ce qui est voulu
             // (voir `menu_perso::ouvrir`).
-            if let Err(e) = menu_perso::ouvrir(&handle, &win, &ch.manifest, &table) {
+            //
+            // `ou_de(&ch.attachment)` : le menu proposé dépend de l'endroit
+            // où il est accroché — voir `menu_perso::Ou`. C'est ce qui
+            // corrige le bug rapporté à l'écran : un menu de sol proposé à
+            // un personnage accroché à un mur le faisait tomber au premier
+            // clic, quelle que soit l'entrée choisie.
+            let ou = menu_perso::ou_de(&ch.attachment);
+            if let Err(e) = menu_perso::ouvrir(&handle, &win, &ch.manifest, &table, ou) {
                 eprintln!("menu du personnage : {e}");
             }
 
@@ -1018,6 +1070,58 @@ fn boucle(
         // La MÊME fonction que le mode simulation.
         let dt = PERIODE.as_secs_f32();
         behavior::pas(&mut ch, &monde, &entrees, &table, &reglages, maintenant, dt, &mut rng);
+
+        // ── Diagnostic : `SHIMEJI_ESCALADE=1` ───────────────────────────
+        // Rien qu'une intention `Grimper` en cours ne trace : c'est
+        // exactement le moment que l'auteur doit regarder pour mesurer
+        // l'ancre de `grabWall`/`climbWall` à l'œil.
+        if trace_escalade {
+            if let Some(ai) = ch.intention {
+                if let behavior::intention::EtatIntention::Grimpe { phase, .. } = ai.etat {
+                    // Le MESSAGE affiché garde l'offset — il aide à situer le
+                    // personnage sur la paroi au moment précis où la trace
+                    // sort. Voir plus bas pourquoi la CLÉ, elle, ne le
+                    // contient plus.
+                    let face_affichee = match ch.attachment {
+                        character::attach::Attachment::On { face, offset, .. } => {
+                            format!("{face:?} offset={offset:.1}")
+                        }
+                        character::attach::Attachment::Falling { .. } => "chute".to_string(),
+                        character::attach::Attachment::Dragged => "porté".to_string(),
+                    };
+
+                    // ⚠️ **La clé de dédoublonnage NE CONTIENT PAS l'offset**
+                    // (correction de la relecture finale, point 4) : seul le
+                    // nom de la face y entre, sans sa valeur numérique.
+                    //
+                    // L'offset avance en continu pendant `Rejoindre` et
+                    // `Paroi` (jusqu'à 0,83 px par image), donc l'inclure
+                    // dans la clé la faisait changer à presque CHAQUE image :
+                    // la trace sortait à ~60 lignes par seconde, alors que ce
+                    // commentaire promet « à chaque changement de phase ».
+                    // Inutilisable pour ce à quoi cette trace sert : dire à
+                    // l'auteur QUAND regarder l'écran pour mesurer l'ancre de
+                    // `grabWall`/`climbWall` — la seule vérification de ce
+                    // projet qui reste manuelle (voir plus haut, à la
+                    // déclaration de `trace_escalade`). La clé ne porte donc
+                    // que ce qui identifie une PHASE, pas une position dans
+                    // cette phase.
+                    let face_pour_la_cle = match ch.attachment {
+                        character::attach::Attachment::On { face, .. } => format!("{face:?}"),
+                        character::attach::Attachment::Falling { .. } => "chute".to_string(),
+                        character::attach::Attachment::Dragged => "porté".to_string(),
+                    };
+                    let cle = (format!("{phase:?}"), face_pour_la_cle, ch.pose.clone());
+                    if derniere_trace_grimpe.as_ref() != Some(&cle) {
+                        println!(
+                            "SHIMEJI_ESCALADE : phase={:?} {} pose={}",
+                            phase, face_affichee, ch.pose
+                        );
+                        derniere_trace_grimpe = Some(cle);
+                    }
+                }
+            }
+        }
 
         // ── Sur changement seulement : la taille de la fenêtre ──────────
         // Elle ne dépend que du manifeste et de l'échelle de l'écran.

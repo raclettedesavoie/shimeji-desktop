@@ -40,6 +40,16 @@ pub struct Biais {
     pub flaner: f32,
     pub se_reposer: f32,
     pub jouer: f32,
+
+    /// Le biais de l'escalade (étape 4a).
+    ///
+    /// **Aucun signal ne le touche encore**, et il vaut donc toujours 1.0.
+    /// Il existe quand même, parce que `pour` est un `match` exhaustif : le
+    /// champ manquant, ajouter `Intention::Grimper` ne compilerait pas. C'est
+    /// exactement le rappel qu'on attend de cette forme — la table reste
+    /// complète, et le jour où « la fenêtre active est un jeu » devra faire
+    /// grimper davantage, il n'y aura qu'une multiplication à écrire.
+    pub grimper: f32,
 }
 
 impl Biais {
@@ -51,6 +61,7 @@ impl Biais {
             flaner: 1.0,
             se_reposer: 1.0,
             jouer: 1.0,
+            grimper: 1.0,
         }
     }
 
@@ -62,6 +73,7 @@ impl Biais {
             // ×3 » vaut pour les deux, et les distinguer serait un réglage de
             // plus sans effet observable.
             Intention::Jouer(_) => self.jouer,
+            Intention::Grimper => self.grimper,
         }
     }
 }

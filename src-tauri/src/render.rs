@@ -167,6 +167,115 @@ pub fn fenetre_au_premier_plan() -> Option<windows::Win32::Foundation::HWND> {
     }
 }
 
+/// Met **notre** fenêtre au premier plan, avant d'ouvrir le menu. Rend `true`
+/// si Windows a accepté.
+///
+/// # Pourquoi la refaire alors que `muda` l'appelle déjà
+///
+/// `muda` appelle bien `SetForegroundWindow(hwnd)` juste avant
+/// `TrackPopupMenu` (`muda-0.19.3`, `src/platform_impl/windows/mod.rs:1038`)
+/// — **mais il ne regarde pas son résultat**. Or cet appel est régulièrement
+/// refusé : Windows ne le concède qu'au processus qui a reçu le dernier
+/// événement d'entrée, et notre fenêtre — en couche, `WS_EX_TOOLWINDOW`,
+/// jamais activée de la session — n'est pas dans la position la plus
+/// favorable pour le demander.
+///
+/// Et un refus ne se voit pas : le menu s'affiche quand même. C'est
+/// **exactement** le piège Win32 du menu qui ne se referme pas quand on
+/// clique ailleurs, décrit dans `autoriser_activation` — `TrackPopupMenu`
+/// termine sa boucle modale sur la perte d'activation de son propriétaire, et
+/// un propriétaire qui n'a jamais été activé n'en perd jamais.
+///
+/// # Le repli par `AttachThreadInput`
+///
+/// La parade documentée (KB135788) : attacher temporairement la file
+/// d'entrée du thread propriétaire de notre fenêtre à celle du thread qui
+/// détient le premier plan. Pendant cet attachement les deux threads
+/// partagent la notion de « qui a le focus », et `SetForegroundWindow`
+/// redevient autorisé.
+///
+/// ⚠️ **C'est le thread PROPRIÉTAIRE de la fenêtre qu'on attache**, pas le
+/// nôtre : notre boucle 60 Hz n'a pas de fenêtre, donc pas de file d'entrée
+/// qui intéresse Windows. D'où `GetWindowThreadProcessId(hwnd)` plutôt que
+/// `GetCurrentThreadId()` — c'est l'erreur silencieuse classique de cette
+/// recette, et elle rendrait le repli inopérant sans le moindre message.
+///
+/// L'attachement est **toujours défait**, y compris si `SetForegroundWindow`
+/// échoue encore : le laisser en place lierait durablement notre file
+/// d'entrée à celle d'une autre application.
+pub fn prendre_le_premier_plan(win: &WebviewWindow) -> Result<bool, String> {
+    // `AttachThreadInput` vit dans `System::Threading` et non dans
+    // `WindowsAndMessaging` comme les trois autres — c'est une fonction de
+    // *thread*, pas de fenêtre. D'où la feature `Win32_System_Threading`
+    // dans `Cargo.toml`.
+    use windows::Win32::System::Threading::AttachThreadInput;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetForegroundWindow, GetWindowThreadProcessId, SetForegroundWindow,
+    };
+
+    let hwnd = win.hwnd().map_err(|e| format!("hwnd indisponible : {e}"))?;
+
+    unsafe {
+        // Le cas normal : Windows accepte, il n'y a rien de plus à faire.
+        // `.as_bool()` : le binding rend un `BOOL`, pas un `bool` de Rust.
+        if SetForegroundWindow(hwnd).as_bool() {
+            return Ok(true);
+        }
+
+        // ── Le repli ────────────────────────────────────────────────────
+        let devant = GetForegroundWindow();
+        if devant.is_invalid() {
+            // Aucun premier plan à qui s'attacher (bureau sécurisé,
+            // transition) : il n'y a pas de repli possible, et ce n'est pas
+            // une anomalie.
+            return Ok(false);
+        }
+
+        // `None` pour le second paramètre : on ne veut que l'identifiant du
+        // thread, pas celui du processus. Le binding l'expose en
+        // `Option<*mut u32>` précisément pour ça.
+        let thread_devant = GetWindowThreadProcessId(devant, None);
+        let thread_nous = GetWindowThreadProcessId(hwnd, None);
+
+        // Deux threads déjà identiques : rien à attacher, et l'appel
+        // échouerait. Ce serait le cas si le premier plan était… nous.
+        if thread_devant == 0 || thread_nous == 0 || thread_devant == thread_nous {
+            return Ok(false);
+        }
+
+        let _ = AttachThreadInput(thread_nous, thread_devant, true);
+        let ok = SetForegroundWindow(hwnd).as_bool();
+        let _ = AttachThreadInput(thread_nous, thread_devant, false);
+
+        Ok(ok)
+    }
+}
+
+/// Poste un message vide dans la file de la fenêtre, **après** la fermeture
+/// du menu.
+///
+/// La seconde moitié de la recette de KB135788, et celle qu'on oublie
+/// toujours parce qu'elle n'a aucun effet visible le premier coup :
+/// `TrackPopupMenu` laisse sa fenêtre propriétaire dans un état où le menu
+/// **suivant** peut refuser de s'afficher ou de se refermer, tant qu'un
+/// message quelconque n'est pas passé dans sa file. `WM_NULL` est le message
+/// qui ne fait rien, choisi exactement pour cet usage.
+///
+/// L'échec est ignoré : si la fenêtre vient de disparaître, il n'y a plus de
+/// file, et plus de menu à débloquer non plus.
+pub fn reveiller_la_file(win: &WebviewWindow) {
+    use windows::Win32::Foundation::{LPARAM, WPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_NULL};
+
+    let Ok(hwnd) = win.hwnd() else {
+        return;
+    };
+
+    unsafe {
+        let _ = PostMessageW(Some(hwnd), WM_NULL, WPARAM(0), LPARAM(0));
+    }
+}
+
 /// Rend le premier plan à la fenêtre qui l'avait.
 ///
 /// L'échec est **ignoré volontairement** : Windows refuse `SetForegroundWindow`
