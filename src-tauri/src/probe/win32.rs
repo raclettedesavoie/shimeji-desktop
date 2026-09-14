@@ -711,6 +711,27 @@ pub fn imprimer_diagnostic(sonde: &dyn SystemProbe) {
         "souris : ({}, {}) bouton gauche={} bouton droit={}",
         m.pos.x, m.pos.y, m.left_down, m.right_down
     );
+
+    // ── Le recensement des fenêtres (étape 4b) ──────────────────────────
+    //
+    // Imprimé au démarrage, une fois. C'est l'équivalent scriptable du
+    // « regarder si le personnage s'assoit au bon endroit » : on voit
+    // directement ce que les six filtres ont retenu, et les rectangles sont
+    // ceux que DWM déclare — donc comparables à l'œil avec les fenêtres à
+    // l'écran, sans avoir à lancer l'animation.
+    //
+    // Sans cette impression, un filtre trop gourmand (un bureau sans aucune
+    // plateforme) ou trop laxiste (des fenêtres fantômes) ne se
+    // diagnostiquerait qu'en regardant le personnage se comporter bizarrement
+    // — c'est-à-dire très mal.
+    let fenetres = sonde.windows();
+    println!("fenêtres praticables : {}", fenetres.len());
+    for f in &fenetres {
+        println!(
+            "  z={:<4} hwnd={:#x} x={} y={} l={} h={}",
+            f.z, f.hwnd, f.rect.x, f.rect.y, f.rect.w, f.rect.h
+        );
+    }
 }
 
 // Pas de `#[cfg(test)] mod tests` dans ce fichier, et c'est volontaire : il ne

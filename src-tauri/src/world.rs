@@ -57,6 +57,29 @@ pub enum Role {
     Plafond = 3,
 }
 
+impl Role {
+    /// Le rôle que portent deux bits d'un `PlatformId`.
+    ///
+    /// L'inverse exact de `role as u64`. Rust ne sait pas convertir un entier
+    /// en `enum` tout seul — il faudrait une crate ou du code `unsafe` — donc
+    /// on écrit le `match`, qui a l'avantage d'échouer à la compilation si
+    /// une cinquième variante apparaissait.
+    ///
+    /// `_ => Sol` n'est pas atteignable : l'appelant masque déjà sur deux
+    /// bits. C'est le repli muet qu'exige l'exhaustivité, et le rendre
+    /// `unreachable!()` ferait paniquer l'application pour une faute de
+    /// masquage — un très mauvais échange dans un pet de bureau.
+    fn depuis_bits(bits: u64) -> Role {
+        match bits {
+            0 => Role::Sol,
+            1 => Role::MurGauche,
+            2 => Role::MurDroit,
+            3 => Role::Plafond,
+            _ => Role::Sol,
+        }
+    }
+}
+
 impl PlatformId {
     /// Le nombre de bits réservés, en bas de l'identifiant, à ce qui n'est
     /// pas la poignée : **deux pour le rôle, un pour la source.**
@@ -121,6 +144,28 @@ impl PlatformId {
     /// `meme_ecran` à l'étape 4b : un personnage debout sur une barre de
     /// titre qui grimpe le flanc de SA fenêtre est exactement le comportement
     /// voulu, et l'ancien nom l'aurait fait lire comme un bug.
+    /// Cette plateforme vient-elle d'une fenêtre ?
+    ///
+    /// Sert au **suivi à 60 Hz** : seules les plateformes de fenêtres ont
+    /// besoin d'être ré-interrogées à chaque image, puisqu'un écran ne se
+    /// déplace pas à la souris.
+    pub fn est_fenetre(&self) -> bool {
+        self.0 & Self::BIT_FENETRE != 0
+    }
+
+    /// La poignée (`HWND` ou `HMONITOR`) dont cette plateforme est issue.
+    ///
+    /// L'inverse du décalage de `ecran` / `fenetre`. C'est elle qu'on repasse
+    /// à `SystemProbe::rect_de_fenetre`.
+    pub fn poignee(&self) -> u64 {
+        self.0 >> Self::BITS_BAS
+    }
+
+    /// Le rôle de cette plateforme au sein de son support.
+    pub fn role(&self) -> Role {
+        Role::depuis_bits((self.0 >> 1) & 0b11)
+    }
+
     pub fn meme_support(&self, autre: PlatformId) -> bool {
         (self.0 & Self::BIT_FENETRE) == (autre.0 & Self::BIT_FENETRE)
             && self.0 >> Self::BITS_BAS == autre.0 >> Self::BITS_BAS
@@ -593,6 +638,70 @@ impl World {
         }
 
         monde
+    }
+
+    /// Recale les plateformes d'**une seule fenêtre** sur son rectangle
+    /// courant — le suivi à 60 Hz du design §5.5.
+    ///
+    /// # Pourquoi une seule, et pourquoi à 60 Hz
+    ///
+    /// Parce que c'est ce qui fait sourire. Un personnage assis sur une barre
+    /// de titre que l'on **balade à la souris** doit voyager avec elle sans
+    /// une saccade ; recalculé au seul rythme du recensement (8 Hz), il
+    /// avancerait par bonds de 125 ms. Interroger *une* fenêtre coûte un
+    /// appel système par image, contre la quarantaine d'un recensement — le
+    /// design §5.5 le dit, et c'est ce qui rend l'échange évident.
+    ///
+    /// # Ce qui n'est PAS recalculé ici, et pourquoi c'est correct
+    ///
+    /// L'occlusion. Les morceaux libres restent ceux du dernier recensement,
+    /// simplement **rognés** à la nouvelle longueur de face. Recalculer
+    /// l'occlusion demanderait de réinterroger toutes les autres fenêtres,
+    /// c'est-à-dire de refaire un recensement complet à 60 Hz — précisément
+    /// ce que les trois horloges existent pour éviter.
+    ///
+    /// Le décalage se voit-il ? Non : une fenêtre que l'on déplace passe au
+    /// premier plan, donc plus rien ne la recouvre, et ses morceaux libres
+    /// sont déjà toute sa face. Le cas où l'occlusion changerait pendant un
+    /// déplacement est celui d'une *autre* fenêtre qui bougerait en même
+    /// temps — vu 125 ms plus tard, ce qui est imperceptible.
+    ///
+    /// Le rognage, lui, n'est pas cosmétique : une fenêtre qu'on
+    /// **rétrécit** sous les pieds du personnage raccourcit sa face, et il
+    /// doit tomber (décision n° 1). Sans ce rognage il resterait suspendu
+    /// dans le vide jusqu'au prochain recensement.
+    pub fn suivre_fenetre(&mut self, hwnd: u64, rect_fenetre: Rect) {
+        for plat in self.platforms.iter_mut() {
+            if !plat.id.est_fenetre() || plat.id.poignee() != hwnd {
+                continue;
+            }
+
+            plat.rect = rect_de_face(rect_fenetre, plat.id.role());
+
+            // `faces[0]` : une plateforme de fenêtre n'a qu'une face, par
+            // construction (`ROLES_DE_FENETRE` en associe exactement une à
+            // chaque rôle).
+            let longueur = plat.rect.face_length(plat.faces[0]);
+
+            // On rogne, et on jette ce qui ne dépasse plus la longueur
+            // minimale : `retain` évite de reconstruire le `Vec`.
+            for morceau in plat.libre.iter_mut() {
+                morceau.0 = morceau.0.min(longueur);
+                morceau.1 = morceau.1.min(longueur);
+            }
+            plat.libre
+                .retain(|(a, b)| b - a >= LONGUEUR_MINIMALE_SEGMENT);
+        }
+    }
+
+    /// Retire toutes les plateformes d'une fenêtre — elle a disparu.
+    ///
+    /// Le personnage qui s'y tenait tombe **à l'image suivante**, sans aucun
+    /// code dédié : `hors_bornes` ne trouve plus la plateforme, et le
+    /// réflexe 1 s'en charge. C'est la décision n° 1 qui paie, encore.
+    pub fn retirer_fenetre(&mut self, hwnd: u64) {
+        self.platforms
+            .retain(|p| !(p.id.est_fenetre() && p.id.poignee() == hwnd));
     }
 
     pub fn platforms(&self) -> &[Platform] {
