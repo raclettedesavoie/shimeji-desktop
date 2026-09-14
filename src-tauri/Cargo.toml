@@ -44,6 +44,7 @@ features = [
     "Win32_System_SystemInformation",   # GetLocalTime, GetTickCount
     "Win32_System_Power",               # GetSystemPowerStatus
     "Win32_System_RemoteDesktop",       # WTSQuerySessionInformationW — verrouillage
+    "Win32_Graphics_Dwm",               # DwmGetWindowAttribute — les bornes VISUELLES et DWMWA_CLOAKED (etape 4b)
 ]
 
 # En release, on veut un exe autonome et petit.

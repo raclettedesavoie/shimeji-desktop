@@ -32,18 +32,25 @@ pub use crate::geom::Face;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PlatformId(pub u64);
 
-/// Le rôle d'une plateforme issue d'un écran.
+/// Le rôle d'une plateforme au sein de son support — un écran **ou une
+/// fenêtre**.
 ///
-/// Sert **uniquement** à fabriquer quatre identités distinctes par écran :
+/// Sert **uniquement** à fabriquer quatre identités distinctes par support :
 /// ni la physique ni le comportement ne le consultent jamais, exactement
 /// comme `PlatformKind`. Une plateforme se décrit par ses `faces`, pas par
 /// son étiquette d'origine.
 ///
+/// Les noms restent ceux de l'écran, et les fenêtres les réemploient tels
+/// quels : le `Sol` d'une fenêtre est sa **barre de titre**, son `Plafond`
+/// est son **dessous** (où l'on se suspend). C'est volontairement le même
+/// vocabulaire — la physique ne doit jamais pouvoir distinguer les deux
+/// sources (design §5.1), et deux jeux de noms l'inviteraient à essayer.
+///
 /// Les valeurs explicites (`= 0`, `= 1`…) ne sont pas décoratives : elles
-/// entrent dans le calcul de `PlatformId::ecran`, et les changer changerait
-/// toutes les identités.
+/// entrent dans le calcul des identités, et les changer changerait toutes
+/// les plateformes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RoleEcran {
+pub enum Role {
     Sol = 0,
     MurGauche = 1,
     MurDroit = 2,
@@ -51,32 +58,72 @@ pub enum RoleEcran {
 }
 
 impl PlatformId {
-    /// L'identité d'une des quatre plateformes d'un écran (design §2.2).
+    /// Le nombre de bits réservés, en bas de l'identifiant, à ce qui n'est
+    /// pas la poignée : **deux pour le rôle, un pour la source.**
     ///
-    /// `monitor << 2 | role` : les deux bits de poids faible portent le rôle,
-    /// le reste porte la poignée du moniteur. `HMONITOR` et `HWND` sont des
-    /// poignées en espace utilisateur, largement sous 2⁴⁷ sur Windows x64 —
-    /// décaler de deux bits ne perd donc rien et ne peut pas collisionner.
+    /// ⚠️ **Le bit de source a été ajouté à l'étape 4b, et il n'est pas
+    /// facultatif.** `HMONITOR` et `HWND` sont deux espaces de poignées
+    /// *distincts*, mais ce sont tous deux des pointeurs en espace
+    /// utilisateur : rien n'interdit qu'un moniteur et une fenêtre portent la
+    /// même valeur numérique. Sans ce bit, les deux plateformes
+    /// collisionneraient — et le symptôme serait un personnage qui « change
+    /// de support » sans raison, au hasard des lancements. Introuvable.
+    const BITS_BAS: u32 = 3;
+
+    /// Le bit qui distingue une fenêtre d'un écran. 0 = écran, 1 = fenêtre.
+    const BIT_FENETRE: u64 = 1;
+
+    /// L'identité d'une des quatre plateformes d'un **écran** (design §5.2).
     ///
-    /// **L'identité reste indépendante de la géométrie** (spec §5.2), ce qui
-    /// est la condition de la décision n° 1 : changer la résolution ne change
-    /// pas la poignée du moniteur, donc pas l'identité.
+    /// **L'identité reste indépendante de la géométrie**, ce qui est la
+    /// condition de la décision n° 1 : changer la résolution ne change pas la
+    /// poignée du moniteur, donc pas l'identité.
     ///
     /// `role as u64` : un `enum` sans données et à valeurs explicites se
-    /// convertit en entier par un simple `as`. C'est la seule conversion de
-    /// ce genre du projet, et elle est sûre parce que les quatre valeurs
-    /// tiennent sur deux bits.
-    pub fn ecran(monitor: u64, role: RoleEcran) -> PlatformId {
-        PlatformId(monitor << 2 | role as u64)
+    /// convertit en entier par un simple `as`. C'est sûr parce que les quatre
+    /// valeurs tiennent sur deux bits.
+    pub fn ecran(monitor: u64, role: Role) -> PlatformId {
+        PlatformId(monitor << Self::BITS_BAS | (role as u64) << 1)
     }
 
-    /// Ces deux plateformes viennent-elles du même écran ?
+    /// L'identité d'une des quatre plateformes d'une **fenêtre**
+    /// (design §5.2, étape 4b).
     ///
-    /// On retire les deux bits de rôle et on compare le reste. Sert à
-    /// l'intention `Grimper` (Tâche 4), qui cherche un mur **de l'écran où
-    /// le personnage se trouve** — pas celui d'en face.
-    pub fn meme_ecran(&self, autre: PlatformId) -> bool {
-        self.0 >> 2 == autre.0 >> 2
+    /// Dérivée du `HWND`, donc **stable au déplacement ET au
+    /// redimensionnement** de la fenêtre. C'est ce qui fait qu'un personnage
+    /// assis sur une barre de titre qu'on balade voyage avec elle sans une
+    /// ligne de code dédiée (décision n° 1).
+    ///
+    /// ⚠️ **Le numéro de segment n'entre PAS dans l'identité**, alors qu'un
+    /// bord partiellement recouvert en produit plusieurs (décision n° 2).
+    /// C'était la tentation naturelle, et elle aurait cassé la décision n° 1 :
+    /// les segments se renumérotent dès qu'une fenêtre au-dessus bouge, donc
+    /// « la plateforme où je suis » changerait d'identité et le personnage
+    /// tomberait sans raison, par intermittence. Les segments vivent donc
+    /// dans `Platform::libre`, qui varie — pas dans l'identité, qui ne doit
+    /// pas.
+    pub fn fenetre(hwnd: u64, role: Role) -> PlatformId {
+        PlatformId(hwnd << Self::BITS_BAS | (role as u64) << 1 | Self::BIT_FENETRE)
+    }
+
+    /// Ces deux plateformes viennent-elles du **même support** — le même
+    /// écran, ou la même fenêtre ?
+    ///
+    /// On retire les bits de rôle et de source, et on compare le reste.
+    ///
+    /// ⚠️ La source est comparée **séparément**, et ce n'est pas du zèle :
+    /// deux poignées d'espaces différents peuvent coïncider numériquement
+    /// (c'est la raison d'être de `BIT_FENETRE`), et un décalage seul rendrait
+    /// alors `true` pour un écran et une fenêtre sans rapport.
+    ///
+    /// Sert à l'intention `Grimper`, qui cherche un mur **du support où le
+    /// personnage se trouve** — pas celui d'en face. Renommée depuis
+    /// `meme_ecran` à l'étape 4b : un personnage debout sur une barre de
+    /// titre qui grimpe le flanc de SA fenêtre est exactement le comportement
+    /// voulu, et l'ancien nom l'aurait fait lire comme un bug.
+    pub fn meme_support(&self, autre: PlatformId) -> bool {
+        (self.0 & Self::BIT_FENETRE) == (autre.0 & Self::BIT_FENETRE)
+            && self.0 >> Self::BITS_BAS == autre.0 >> Self::BITS_BAS
     }
 }
 
@@ -168,7 +215,7 @@ impl World {
             // Son bord SUPÉRIEUR est à hauteur du bas de la zone de travail :
             // c'est la ligne sur laquelle on marche.
             platforms.push(Platform {
-                id: PlatformId::ecran(s.id, RoleEcran::Sol),
+                id: PlatformId::ecran(s.id, Role::Sol),
                 rect: Rect::new(z.left(), z.bottom(), z.w, EPAISSEUR_PLATEFORME),
                 kind: PlatformKind::Screen,
                 z: 0,
@@ -183,7 +230,7 @@ impl World {
             //
             // Jamais supprimé, lui : il n'y a rien au-dessus du bureau.
             platforms.push(Platform {
-                id: PlatformId::ecran(s.id, RoleEcran::Plafond),
+                id: PlatformId::ecran(s.id, Role::Plafond),
                 rect: Rect::new(
                     z.left(),
                     z.top() - EPAISSEUR_PLATEFORME,
@@ -203,7 +250,7 @@ impl World {
             // haut, donc vers l'intérieur (design §2.1).
             if !ecran_adjacent(screens, s, false) {
                 platforms.push(Platform {
-                    id: PlatformId::ecran(s.id, RoleEcran::MurGauche),
+                    id: PlatformId::ecran(s.id, Role::MurGauche),
                     rect: Rect::new(
                         z.left() - EPAISSEUR_PLATEFORME,
                         z.top(),
@@ -218,7 +265,7 @@ impl World {
 
             if !ecran_adjacent(screens, s, true) {
                 platforms.push(Platform {
-                    id: PlatformId::ecran(s.id, RoleEcran::MurDroit),
+                    id: PlatformId::ecran(s.id, Role::MurDroit),
                     rect: Rect::new(z.right(), z.top(), EPAISSEUR_PLATEFORME, z.h),
                     kind: PlatformKind::Screen,
                     z: 0,

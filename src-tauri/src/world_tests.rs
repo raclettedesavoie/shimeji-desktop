@@ -113,14 +113,14 @@ fn deux_ecrans_donnent_des_identites_toutes_distinctes() {
 }
 
 #[test]
-fn meme_ecran_reconnait_les_quatre_plateformes_d_un_ecran() {
+fn meme_support_reconnait_les_quatre_plateformes_d_un_ecran() {
     let monde = World::from_screens(&FakeProbe::deux_ecrans().screens());
     let sol_a = monde.platforms()[0].id;
 
     let memes = monde
         .platforms()
         .iter()
-        .filter(|p| p.id.meme_ecran(sol_a))
+        .filter(|p| p.id.meme_support(sol_a))
         .count();
     assert_eq!(memes, 3, "sol + plafond + un mur pour l'écran de gauche");
 }
