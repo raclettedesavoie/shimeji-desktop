@@ -374,7 +374,7 @@ pub fn ouvrir_catalogue(app: &AppHandle) {
         tauri::WebviewUrl::App("catalogue.html".into()),
     )
     .title("Catalogue de personnages")
-    .inner_size(900.0, 640.0)
+    .inner_size(1000.0, 700.0)
     .min_inner_size(520.0, 400.0)
     .resizable(true)
     .build();

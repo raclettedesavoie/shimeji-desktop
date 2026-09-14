@@ -1,33 +1,109 @@
 <!doctype html>
+<html>
+<head>
 <meta charset="utf-8">
 <title>Catalogue de personnages</title>
-<body style="font: 14px sans-serif; background:#242424; color:#c9c9c9; padding:16px">
-<h1 style="font-size:18px">Catalogue</h1>
-<pre id="sortie">chargement…</pre>
-<script>
-// PAGE PROVISOIRE — la tâche 10 la remplace par la vraie fenêtre.
-//
-// Elle ne fait qu'une chose : montrer que le tuyau est ouvert. C'est
-// l'étape que la première tentative d'événements du projet n'avait PAS
-// faite, et qui lui a coûté un diagnostic complet (render.rs:195-225) :
-// Tauri v2 a une liste de contrôle d'accès, et elle refuse en SILENCE.
-//
-// Le verdict de cette page a été relevé sur stdout, pas à l'œil — voir le
-// commit de la tâche 8. Ce qu'il reste ici est le filet : si une
-// régression coupait l'IPC, la page le dirait au lieu de rester blanche.
-const sortie = document.getElementById('sortie');
+<style>
+  /* Jetons MESURÉS dans le DOM de shimejis.xyz, pas approchés (spec §9). */
+  :root {
+    --fond: rgb(36, 36, 36);
+    --texte: rgb(201, 201, 201);
+  }
 
-if (!window.__TAURI__) {
-  sortie.textContent = 'ECHEC : window.__TAURI__ absent -> withGlobalTauri non active';
-} else {
-  window.__TAURI__.core.invoke('bibliotheque')
-    .then((packs) => {
-      sortie.textContent = packs
-        .map((p) => (p.actif ? '* ' : '  ') + p.nom)
-        .join('\n');
-    })
-    .catch((e) => {
-      sortie.textContent = 'ECHEC invoke (ACL ?) : ' + e;
-    });
-}
-</script>
+  body {
+    margin: 0;
+    background: var(--fond);
+    color: var(--texte);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                 "Helvetica Neue", Arial, sans-serif;
+  }
+
+  header {
+    position: sticky;   /* la recherche reste atteignable sur 2000 cartes */
+    top: 0;
+    background: var(--fond);
+    padding: 12px 16px;
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  }
+
+  nav button {
+    background: transparent;
+    color: var(--texte);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    padding: 6px 12px;
+    cursor: pointer;
+    font: inherit;
+  }
+  nav button[aria-selected="true"] { background: rgba(255, 255, 255, 0.12); }
+
+  #recherche {
+    flex: 1;
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--texte);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    padding: 6px 10px;
+    font: inherit;
+  }
+
+  h2 { font-size: 15px; font-weight: 600; margin: 20px 16px 4px; }
+
+  /* Flex wrap, PAS une CSS grid : c'est ce que fait shimejis.xyz, et les
+     cartes ont une largeur fixe. */
+  .grille { display: flex; flex-wrap: wrap; padding: 0 8px; }
+
+  .carte {
+    width: 223px;
+    height: 144px;
+    padding: 8px;
+    background: transparent;   /* sans bordure ni ombre : mesuré */
+    border: none;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+  .carte:hover { background: rgba(255, 255, 255, 0.06); }
+  .carte[disabled] { cursor: default; opacity: 0.55; }
+
+  .carte img {
+    width: 128px;
+    height: 128px;
+    object-fit: contain;
+    border-radius: 0;
+    /* Pixel-art : la mise à l'échelle doit rester nette. */
+    image-rendering: pixelated;
+  }
+
+  .carte span { font-size: 12px; text-align: center; }
+  .pastille { color: #7fd67f; }
+
+  #etat {
+    position: fixed;
+    bottom: 0; left: 0; right: 0;
+    padding: 8px 16px;
+    background: rgba(0, 0, 0, 0.85);
+    font-size: 13px;
+  }
+  #etat:empty { display: none; }
+</style>
+</head>
+<body>
+  <header>
+    <nav>
+      <button id="onglet-catalogue" aria-selected="true">Catalogue</button>
+      <button id="onglet-biblio" aria-selected="false">Ma bibliothèque</button>
+    </nav>
+    <input id="recherche" type="search" placeholder="Rechercher un personnage…">
+  </header>
+
+  <main id="contenu"></main>
+  <div id="etat"></div>
+
+  <script src="catalogue.js"></script>
+</body>
+</html>
