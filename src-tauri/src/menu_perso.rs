@@ -18,7 +18,7 @@
 //! « remettre les entrées d'accord avec l'état », qui est exactement la
 //! classe de bugs que ce projet évite ailleurs par recalcul (décision n° 1).
 
-use crate::actions::{ID_DOSSIER, ID_P_CACHER, ID_QUITTER, ID_RECHARGER};
+use crate::actions::{ID_CATALOGUE, ID_DOSSIER, ID_P_CACHER, ID_QUITTER, ID_RECHARGER};
 use crate::behavior::desire::TableEnvies;
 use crate::behavior::intention::{Intention, Jeu};
 use crate::character::attach::Attachment;
@@ -297,6 +297,15 @@ pub fn ouvrir(
     )
     .map_err(|e| format!("entrée « dossier » : {e}"))?;
 
+    let catalogue = MenuItem::with_id(
+        app,
+        ID_CATALOGUE,
+        "Catalogue de personnages…",
+        true,
+        None::<&str>,
+    )
+    .map_err(|e| format!("entrée « catalogue » : {e}"))?;
+
     // **Deux séparateurs distincts et non un réutilisé** : une entrée de menu
     // ne peut occuper qu'une position, la poser deux fois ne la duplique pas.
     let separateur = PredefinedMenuItem::separator(app).map_err(|e| format!("séparateur : {e}"))?;
@@ -327,6 +336,7 @@ pub fn ouvrir(
     refs.push(&cacher);
     refs.push(&recharger);
     refs.push(&dossier);
+    refs.push(&catalogue);
     refs.push(&separateur_final);
     refs.push(&quitter);
 

@@ -33,7 +33,9 @@ use tauri::{AppHandle, Manager};
 // Les identifiants vivent dans `actions.rs` avec ceux du menu du personnage :
 // c'est là qu'ils sont lus, et les tenir à deux endroits inviterait à en
 // ajouter un sans son cas de traitement.
-use crate::actions::{ID_AFFICHER, ID_DEMARRAGE, ID_DOSSIER, ID_QUITTER, ID_RECHARGER};
+use crate::actions::{
+    ID_AFFICHER, ID_CATALOGUE, ID_DEMARRAGE, ID_DOSSIER, ID_QUITTER, ID_RECHARGER,
+};
 
 /// Partagé entre le tray et les boucles : les personnages sont-ils visibles ?
 ///
@@ -122,6 +124,15 @@ pub fn installer(
     )
     .map_err(|e| format!("entrée « dossier » : {e}"))?;
 
+    let catalogue = MenuItem::with_id(
+        app,
+        ID_CATALOGUE,
+        "Catalogue de personnages…",
+        true,
+        None::<&str>,
+    )
+    .map_err(|e| format!("entrée « catalogue » : {e}"))?;
+
     let separateur =
         PredefinedMenuItem::separator(app).map_err(|e| format!("séparateur : {e}"))?;
 
@@ -138,6 +149,7 @@ pub fn installer(
             &recharger,
             &demarrage,
             &dossier,
+            &catalogue,
             &separateur,
             &quitter,
         ],

@@ -50,6 +50,11 @@ pub const ID_DEMARRAGE: &str = "demarrage";
 pub const ID_DOSSIER: &str = "dossier";
 pub const ID_QUITTER: &str = "quitter";
 
+/// Proposée par les DEUX menus, comme `recharger` et `dossier` : elle fait
+/// exactement la même chose depuis l'un ou l'autre, donc un seul
+/// identifiant — et donc un seul cas dans `executer`.
+pub const ID_CATALOGUE: &str = "catalogue";
+
 /// Entrée propre au menu du **personnage**.
 ///
 /// `recharger`, `dossier` et `quitter` n'y figurent pas : elles font
@@ -260,6 +265,10 @@ pub fn executer(actions: &Actions, app: &AppHandle, id: &str, cases_du_tray: &Ca
                 // regarde l'ancien.
                 Err(e) => eprintln!("rechargement impossible : {e}"),
             }
+        }
+
+        ID_CATALOGUE => {
+            ouvrir_catalogue(app);
         }
 
         ID_DOSSIER => {
