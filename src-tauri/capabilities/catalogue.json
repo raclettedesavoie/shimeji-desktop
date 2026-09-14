@@ -1,0 +1,6 @@
+{
+  "identifier": "catalogue",
+  "description": "Permet a la fenetre du catalogue d'appeler Rust et d'ecouter la progression d'installation. Portee a CETTE fenetre : le personnage continue de passer par eval, sans aucune permission.",
+  "windows": ["catalogue"],
+  "permissions": ["core:default", "core:event:allow-listen"]
+}

@@ -32,6 +32,7 @@ mod behavior;
 mod catalogue;
 mod character;
 mod clock;
+mod commandes;
 mod config;
 mod geom;
 mod menu_perso;
@@ -274,6 +275,16 @@ fn lancer_application() {
     let echelle_config = configuration.echelle;
 
     tauri::Builder::default()
+        // ── Les trois commandes de la fenêtre du catalogue (spec §9) ────
+        // `generate_handler!` engendre la table de routage à la
+        // compilation. Attention : une commande oubliée ici est
+        // introuvable côté JS **sans erreur de compilation** — d'où la
+        // sonde d'IPC qui a validé le tuyau avant qu'on bâtisse dessus.
+        .invoke_handler(tauri::generate_handler![
+            commandes::installer,
+            commandes::bibliotheque,
+            commandes::choisir
+        ])
         // ── Le schéma URI qui sert les PNG externes ─────────────────────
         // Les personnages sont des fichiers externes au binaire (spec §8.1),
         // donc aucun chemin relatif du webview ne peut les atteindre. Rust
@@ -511,6 +522,14 @@ fn lancer_application() {
                     commande,
                 );
                 });
+            }
+
+            // `SHIMEJI_CATALOGUE=1` ouvre la fenêtre du catalogue au
+            // démarrage — l'équivalent scriptable de l'entrée de menu que la
+            // tâche 11 ajoutera, et ce qui a prouvé que l'IPC répondait
+            // avant qu'on bâtisse une interface dessus (tâche 8).
+            if std::env::var("SHIMEJI_CATALOGUE").is_ok() {
+                actions::ouvrir_catalogue(&tauri::Manager::app_handle(app).clone());
             }
 
             Ok(())

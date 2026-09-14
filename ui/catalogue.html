@@ -1,0 +1,33 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Catalogue de personnages</title>
+<body style="font: 14px sans-serif; background:#242424; color:#c9c9c9; padding:16px">
+<h1 style="font-size:18px">Catalogue</h1>
+<pre id="sortie">chargement…</pre>
+<script>
+// PAGE PROVISOIRE — la tâche 10 la remplace par la vraie fenêtre.
+//
+// Elle ne fait qu'une chose : montrer que le tuyau est ouvert. C'est
+// l'étape que la première tentative d'événements du projet n'avait PAS
+// faite, et qui lui a coûté un diagnostic complet (render.rs:195-225) :
+// Tauri v2 a une liste de contrôle d'accès, et elle refuse en SILENCE.
+//
+// Le verdict de cette page a été relevé sur stdout, pas à l'œil — voir le
+// commit de la tâche 8. Ce qu'il reste ici est le filet : si une
+// régression coupait l'IPC, la page le dirait au lieu de rester blanche.
+const sortie = document.getElementById('sortie');
+
+if (!window.__TAURI__) {
+  sortie.textContent = 'ECHEC : window.__TAURI__ absent -> withGlobalTauri non active';
+} else {
+  window.__TAURI__.core.invoke('bibliotheque')
+    .then((packs) => {
+      sortie.textContent = packs
+        .map((p) => (p.actif ? '* ' : '  ') + p.nom)
+        .join('\n');
+    })
+    .catch((e) => {
+      sortie.textContent = 'ECHEC invoke (ACL ?) : ' + e;
+    });
+}
+</script>

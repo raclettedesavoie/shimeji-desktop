@@ -298,3 +298,47 @@ fn deposer_commande(actions: &Actions, commande: crate::menu_perso::Commande) {
         Err(_) => eprintln!("verrou de commande empoisonné"),
     }
 }
+
+/// Ouvre la fenêtre du catalogue, ou la ramène au premier plan.
+///
+/// Tout l'inverse de la fenêtre du personnage (spec §9) : décorée,
+/// redimensionnable, focalisable, présente dans la barre des tâches. C'est
+/// une fenêtre d'application ordinaire, et il faut résister à la tentation
+/// de lui réutiliser quoi que ce soit de l'autre.
+///
+/// ⚠️ Le label `catalogue` n'est pas décoratif : il doit correspondre
+/// **exactement** à celui déclaré dans `capabilities/catalogue.json`, sinon
+/// la capacité ne s'applique pas et les appels `invoke` sont refusés **en
+/// silence** — le piège de `render.rs:195-225`.
+pub fn ouvrir_catalogue(app: &AppHandle) {
+    const LABEL: &str = "catalogue";
+
+    // Déjà ouverte : on la remonte plutôt que d'en créer une seconde.
+    // `get_webview_window` rend une `Option` — `if let Some` est le `match`
+    // dont la branche `None` continuerait.
+    if let Some(existante) = tauri::Manager::get_webview_window(app, LABEL) {
+        let _ = existante.show();
+        let _ = existante.set_focus();
+        return;
+    }
+
+    // Créée à la DEMANDE et détruite à la fermeture, jamais masquée : une
+    // fenêtre WebView2 vivante coûte de la mémoire pour rien, et le
+    // catalogue s'ouvre quelques fois dans une vie.
+    let resultat = tauri::WebviewWindowBuilder::new(
+        app,
+        LABEL,
+        tauri::WebviewUrl::App("catalogue.html".into()),
+    )
+    .title("Catalogue de personnages")
+    .inner_size(900.0, 640.0)
+    .min_inner_size(520.0, 400.0)
+    .resizable(true)
+    .build();
+
+    if let Err(e) = resultat {
+        // On ne panique pas : ne pas pouvoir ouvrir le catalogue n'est pas
+        // une raison de tuer le personnage, qui lui tourne très bien.
+        eprintln!("catalogue : ouverture impossible — {e}");
+    }
+}

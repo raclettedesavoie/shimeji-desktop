@@ -151,6 +151,7 @@ qu'à l'œil et sur plusieurs minutes :
 | `SHIMEJI_ESCALADE=1` | force l'intention `Grimper` dès la première image, et trace (phase, face, offset, pose) à chaque changement — étape 4a, voir plus bas « mesurer l'ancre » |
 | `SHIMEJI_MONDE=1` | à chaque recensement, les plateformes **de fenêtres** et ce que l'occlusion leur laisse de praticable — étape 4b |
 | `SHIMEJI_MENU=1` | signale quand Windows **refuse le premier plan** à l'ouverture du menu contextuel — la cause du menu qui reste collé à l'écran, voir `render::prendre_le_premier_plan` |
+| `SHIMEJI_CATALOGUE=1` | ouvre la **fenêtre du catalogue** au démarrage — l'équivalent scriptable de l'entrée de menu, et ce qui a prouvé que l'IPC de Tauri répondait |
 
 **Et un fichier témoin** : créer `characters/recharger.txt` déclenche un rechargement à
 chaud, puis le fichier est supprimé.

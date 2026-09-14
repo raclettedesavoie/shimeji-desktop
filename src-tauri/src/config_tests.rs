@@ -218,3 +218,51 @@ fn la_bibliotheque_gagne_sur_le_dossier_livre() {
         "sans bibliothèque, le dossier livré suffit"
     );
 }
+
+/// On modifie la SEULE clé `personnages`, en laissant tout le reste intact.
+///
+/// Une sérialisation depuis `Config` perdrait les clés inconnues et
+/// remettrait les valeurs par défaut partout : l'utilisateur verrait son
+/// fichier réglé à la main écrasé par un clic dans une autre fenêtre
+/// (spec §10).
+#[test]
+fn ecrire_le_personnage_preserve_le_reste_du_fichier() {
+    let chemin = std::env::temp_dir().join("shimeji-test-config-chirurgie.json");
+    std::fs::write(
+        &chemin,
+        r#"{
+  "echelle": 1.5,
+  "vitesse": 2,
+  "personnages": ["blob"],
+  "une_cle_que_le_code_ne_connait_pas": { "a": 1 }
+}"#,
+    )
+    .expect("écriture du fichier de test");
+
+    ecrire_personnage(&chemin, "luffy").expect("l'écriture doit réussir");
+
+    let texte = lire_json(&chemin).expect("relecture");
+    let v: serde_json::Value = serde_json::from_str(&texte).expect("JSON valide");
+
+    assert_eq!(v["personnages"][0], "luffy", "la clé visée est changée");
+    assert_eq!(v["echelle"], 1.5, "les autres réglages survivent");
+    assert_eq!(v["vitesse"], 2);
+    assert_eq!(
+        v["une_cle_que_le_code_ne_connait_pas"]["a"], 1,
+        "les clés inconnues survivent"
+    );
+    assert!(!texte.starts_with('\u{feff}'), "jamais de BOM");
+}
+
+/// Un fichier absent est CRÉÉ, avec la seule clé qu'on sait devoir y mettre.
+#[test]
+fn ecrire_le_personnage_cree_le_fichier_absent() {
+    let chemin = std::env::temp_dir().join("shimeji-test-config-neuve.json");
+    let _ = std::fs::remove_file(&chemin);
+
+    ecrire_personnage(&chemin, "blob").expect("création");
+
+    let texte = lire_json(&chemin).expect("relecture");
+    let v: serde_json::Value = serde_json::from_str(&texte).expect("JSON valide");
+    assert_eq!(v["personnages"][0], "blob");
+}

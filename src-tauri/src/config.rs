@@ -497,6 +497,79 @@ pub fn personnage_dans(bibliotheque: Option<&Path>, livre: &Path, nom: &str) -> 
     None
 }
 
+/// Le chemin du `config.json` réellement chargé.
+///
+/// ⚠️ **Mémorisé et non recalculé.** `resoudre` trouve d'abord celui du
+/// dépôt ; si l'écriture allait dans `%APPDATA%` pendant que la lecture vient
+/// du dépôt, le réglage paraîtrait sans effet et le diagnostic serait long
+/// (spec §10).
+///
+/// `OnceLock` : écrit une fois au démarrage, lu de plusieurs threads, sans
+/// verrou. C'est le type de la bibliothèque standard fait exactement pour ça
+/// — contrairement à un `Mutex`, il ne peut pas être réécrit ensuite, et
+/// c'est précisément la garantie qu'on veut ici.
+static CHEMIN_CHARGE: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+
+pub fn chemin_charge() -> Option<PathBuf> {
+    // `get_or_init` : à la première interrogation, on résout ; ensuite on
+    // rend la même valeur. `clone` parce que l'appelant veut posséder.
+    CHEMIN_CHARGE.get_or_init(|| resoudre("config.json")).clone()
+}
+
+/// Remplace la clé `personnages` de `chemin`, en laissant tout le reste.
+///
+/// Édition **chirurgicale** : on relit en `serde_json::Value`, on ne touche
+/// qu'à une clé, on réécrit. Sérialiser depuis `Config` perdrait toutes les
+/// clés inconnues et remettrait les valeurs par défaut partout (spec §10) —
+/// l'utilisateur verrait son fichier réglé à la main écrasé par un clic.
+pub fn ecrire_personnage(chemin: &Path, nom: &str) -> Result<(), String> {
+    // Un fichier absent n'est pas une erreur : c'est le cas normal au
+    // premier choix, et on le crée. Un fichier présent mais ILLISIBLE, si —
+    // l'écraser perdrait des réglages que l'utilisateur croit avoir.
+    let mut valeur: serde_json::Value = match lire_json(chemin) {
+        Ok(texte) => serde_json::from_str(&texte)
+            .map_err(|e| format!("config.json illisible, rien n'est écrit : {e}"))?,
+        Err(_) => serde_json::json!({}),
+    };
+
+    // Un objet JSON, sinon on n'a rien à modifier. `as_object_mut` rend
+    // `None` si la racine est un tableau ou un scalaire.
+    let Some(objet) = valeur.as_object_mut() else {
+        return Err("config.json n'est pas un objet JSON".to_string());
+    };
+    objet.insert("personnages".to_string(), serde_json::json!([nom]));
+
+    // `to_string_pretty` : le fichier est édité à la main par l'auteur, une
+    // seule ligne le rendrait pénible.
+    let texte =
+        serde_json::to_string_pretty(&valeur).map_err(|e| format!("sérialisation : {e}"))?;
+
+    // `write` écrit en UTF-8 SANS BOM — c'est ce qu'il faut : `serde_json`
+    // refuse le BOM avec le message trompeur « expected value at line 1
+    // column 1 », et c'est nous qui relirions ce fichier.
+    std::fs::write(chemin, texte).map_err(|e| format!("écriture de config.json : {e}"))
+}
+
+/// Enregistre le personnage choisi dans le `config.json` réellement chargé,
+/// ou en crée un dans `%APPDATA%` s'il n'y en avait aucun.
+pub fn definir_personnage(nom: &str) -> Result<(), String> {
+    match chemin_charge() {
+        Some(c) => ecrire_personnage(&c, nom),
+        None => {
+            // Aucun config.json nulle part : on en crée un à côté de la
+            // bibliothèque, jamais dans le dépôt — celui-ci peut être en
+            // lecture seule, et y écrire salirait un dossier versionné.
+            let Ok(appdata) = std::env::var("APPDATA") else {
+                return Err("%APPDATA% introuvable".to_string());
+            };
+            let dossier = PathBuf::from(appdata).join("shimeji-desktop");
+            std::fs::create_dir_all(&dossier)
+                .map_err(|e| format!("création de {} : {e}", dossier.display()))?;
+            ecrire_personnage(&dossier.join("config.json"), nom)
+        }
+    }
+}
+
 /// Charge la configuration. **Ne peut pas échouer.**
 pub fn charger() -> Config {
     match resoudre("config.json") {
