@@ -67,6 +67,44 @@ fn main() {
     // pas d'autres (les réglages iront dans config.json).
     let args: Vec<String> = std::env::args().collect();
 
+    // ── `--installer <slug>` ────────────────────────────────────────────
+    //
+    // L'équivalent scriptable du clic dans la grille du catalogue, selon la
+    // règle du projet : tout ce qui demanderait un clic reçoit un équivalent
+    // en ligne de commande.
+    //
+    // Il vérifie en prime le seul morceau que les tests ne couvrent pas —
+    // **que le CDN réponde bien ce qu'on croit**, et que `ReseauWinHttp`
+    // sache lui parler. Les tests, eux, ne voient que le faux réseau.
+    if let Some(pos) = args.iter().position(|a| a == "--installer") {
+        let Some(slug) = args.get(pos + 1) else {
+            eprintln!("usage : --installer <slug>");
+            std::process::exit(2);
+        };
+
+        println!("installation de « {slug} »…");
+        let mut dernier = 0;
+        let resultat = catalogue::installer(slug, &mut |fait, total| {
+            // On n'imprime qu'au changement : 46 lignes identiques ne
+            // renseignent personne.
+            if fait != dernier {
+                dernier = fait;
+                println!("  {fait}/{total}");
+            }
+        });
+
+        match resultat {
+            Ok(chemin) => {
+                println!("installé : {}", chemin.display());
+                std::process::exit(0);
+            }
+            Err(e) => {
+                eprintln!("échec : {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     if let Some(i) = args.iter().position(|a| a == "--sim") {
         // `get(i + 1)` puis `parse` : une valeur absente ou illisible vaut
         // 30 minutes plutôt qu'une erreur — c'est un outil de développement.
