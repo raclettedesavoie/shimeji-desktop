@@ -522,7 +522,14 @@ pub fn chemin_charge() -> Option<PathBuf> {
 /// qu'à une clé, on réécrit. Sérialiser depuis `Config` perdrait toutes les
 /// clés inconnues et remettrait les valeurs par défaut partout (spec §10) —
 /// l'utilisateur verrait son fichier réglé à la main écrasé par un clic.
-pub fn ecrire_personnage(chemin: &Path, nom: &str) -> Result<(), String> {
+/// Prend une **liste** et non un nom : `personnages` est un multi-ensemble
+/// depuis l'étape « plusieurs personnages » (design §4). `["blob", "blob"]`
+/// veut dire deux blob à l'écran, et les doublons doivent survivre à
+/// l'aller-retour.
+///
+/// La **liste vide est acceptée** : zéro personnage est un état normal —
+/// décocher le dernier est permis, et l'application vit alors dans le tray.
+pub fn ecrire_personnages(chemin: &Path, noms: &[String]) -> Result<(), String> {
     // Un fichier absent n'est pas une erreur : c'est le cas normal au
     // premier choix, et on le crée. Un fichier présent mais ILLISIBLE, si —
     // l'écraser perdrait des réglages que l'utilisateur croit avoir.
@@ -537,7 +544,7 @@ pub fn ecrire_personnage(chemin: &Path, nom: &str) -> Result<(), String> {
     let Some(objet) = valeur.as_object_mut() else {
         return Err("config.json n'est pas un objet JSON".to_string());
     };
-    objet.insert("personnages".to_string(), serde_json::json!([nom]));
+    objet.insert("personnages".to_string(), serde_json::json!(noms));
 
     // `to_string_pretty` : le fichier est édité à la main par l'auteur, une
     // seule ligne le rendrait pénible.
@@ -550,11 +557,11 @@ pub fn ecrire_personnage(chemin: &Path, nom: &str) -> Result<(), String> {
     std::fs::write(chemin, texte).map_err(|e| format!("écriture de config.json : {e}"))
 }
 
-/// Enregistre le personnage choisi dans le `config.json` réellement chargé,
-/// ou en crée un dans `%APPDATA%` s'il n'y en avait aucun.
-pub fn definir_personnage(nom: &str) -> Result<(), String> {
+/// Enregistre la liste des personnages dans le `config.json` réellement
+/// chargé, ou en crée un dans `%APPDATA%` s'il n'y en avait aucun.
+pub fn definir_personnages(noms: &[String]) -> Result<(), String> {
     match chemin_charge() {
-        Some(c) => ecrire_personnage(&c, nom),
+        Some(c) => ecrire_personnages(&c, noms),
         None => {
             // Aucun config.json nulle part : on en crée un à côté de la
             // bibliothèque, jamais dans le dépôt — celui-ci peut être en
@@ -565,7 +572,7 @@ pub fn definir_personnage(nom: &str) -> Result<(), String> {
             let dossier = PathBuf::from(appdata).join("shimeji-desktop");
             std::fs::create_dir_all(&dossier)
                 .map_err(|e| format!("création de {} : {e}", dossier.display()))?;
-            ecrire_personnage(&dossier.join("config.json"), nom)
+            ecrire_personnages(&dossier.join("config.json"), noms)
         }
     }
 }

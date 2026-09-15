@@ -138,7 +138,7 @@ pub fn choisir(
     // manifeste est illisible, rien n'a changé — ni à l'écran, ni dans la
     // config, qui aurait sinon nommé un personnage qui ne charge pas.
     actions.changer_personnage(&nom, dossier)?;
-    crate::config::definir_personnage(&nom)?;
+    crate::config::definir_personnages(&[nom.clone()])?;
 
     println!("personnage choisi : {nom}");
     Ok(())

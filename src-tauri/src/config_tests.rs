@@ -239,7 +239,7 @@ fn ecrire_le_personnage_preserve_le_reste_du_fichier() {
     )
     .expect("écriture du fichier de test");
 
-    ecrire_personnage(&chemin, "luffy").expect("l'écriture doit réussir");
+    ecrire_personnages(&chemin, &["luffy".to_string()]).expect("l'écriture doit réussir");
 
     let texte = lire_json(&chemin).expect("relecture");
     let v: serde_json::Value = serde_json::from_str(&texte).expect("JSON valide");
@@ -260,9 +260,91 @@ fn ecrire_le_personnage_cree_le_fichier_absent() {
     let chemin = std::env::temp_dir().join("shimeji-test-config-neuve.json");
     let _ = std::fs::remove_file(&chemin);
 
-    ecrire_personnage(&chemin, "blob").expect("création");
+    ecrire_personnages(&chemin, &["blob".to_string()]).expect("création");
 
     let texte = lire_json(&chemin).expect("relecture");
     let v: serde_json::Value = serde_json::from_str(&texte).expect("JSON valide");
     assert_eq!(v["personnages"][0], "blob");
+}
+
+// ── Le multi-ensemble (étape « plusieurs personnages ») ─────────────────
+
+#[test]
+fn ecrire_personnages_ecrit_un_multi_ensemble() {
+    let dossier = std::env::temp_dir().join("shimeji-test-multi-ensemble");
+    let _ = std::fs::create_dir_all(&dossier);
+    let chemin = dossier.join("config.json");
+    let _ = std::fs::remove_file(&chemin);
+
+    let noms = vec!["blob".to_string(), "blob".to_string(), "luffy".to_string()];
+    ecrire_personnages(&chemin, &noms).expect("écriture");
+
+    let relu = charger_depuis(&chemin);
+    // Les doublons SURVIVENT : c'est tout l'objet du multi-ensemble.
+    assert_eq!(relu.personnages, noms);
+}
+
+#[test]
+fn ecrire_personnages_accepte_la_liste_vide() {
+    // Zéro personnage est un état NORMAL (design §4) : décocher le dernier
+    // est permis, et l'application vit alors dans le tray.
+    let dossier = std::env::temp_dir().join("shimeji-test-liste-vide");
+    let _ = std::fs::create_dir_all(&dossier);
+    let chemin = dossier.join("config.json");
+    let _ = std::fs::remove_file(&chemin);
+
+    ecrire_personnages(&chemin, &[]).expect("écriture");
+    let relu = charger_depuis(&chemin);
+    assert!(relu.personnages.is_empty());
+}
+
+#[test]
+fn ecrire_personnages_preserve_les_cles_inconnues() {
+    // L'édition est CHIRURGICALE : sérialiser depuis `Config` remettrait
+    // les valeurs par défaut partout, et l'utilisateur verrait son fichier
+    // réglé à la main écrasé par un clic dans une autre fenêtre.
+    let dossier = std::env::temp_dir().join("shimeji-test-cles-inconnues");
+    let _ = std::fs::create_dir_all(&dossier);
+    let chemin = dossier.join("config.json");
+
+    std::fs::write(
+        &chemin,
+        r#"{ "personnages": ["blob"], "mon_reglage_a_moi": 42, "echelle": 2.0 }"#,
+    )
+    .expect("préparation");
+
+    ecrire_personnages(&chemin, &["luffy".to_string()]).expect("écriture");
+
+    let texte = std::fs::read_to_string(&chemin).expect("relecture");
+    let v: serde_json::Value = serde_json::from_str(&texte).expect("JSON");
+    assert_eq!(v["mon_reglage_a_moi"], 42);
+    assert_eq!(v["echelle"], 2.0);
+    assert_eq!(v["personnages"], serde_json::json!(["luffy"]));
+}
+
+#[test]
+fn ecrire_personnages_n_ecrit_jamais_de_bom() {
+    // `serde_json` refuse le BOM avec le message trompeur « expected value
+    // at line 1 column 1 », et c'est NOUS qui relisons ce fichier.
+    let dossier = std::env::temp_dir().join("shimeji-test-bom");
+    let _ = std::fs::create_dir_all(&dossier);
+    let chemin = dossier.join("config.json");
+    let _ = std::fs::remove_file(&chemin);
+
+    ecrire_personnages(&chemin, &["blob".to_string()]).expect("écriture");
+
+    let octets = std::fs::read(&chemin).expect("relecture");
+    assert_ne!(&octets[0..3], &[0xEF, 0xBB, 0xBF]);
+}
+
+#[test]
+fn une_config_sans_cle_personnages_garde_le_defaut_blob() {
+    // Inchangé : c'est le premier démarrage, pas une liste vidée à la main.
+    let dossier = std::env::temp_dir().join("shimeji-test-sans-cle");
+    let _ = std::fs::create_dir_all(&dossier);
+    let chemin = dossier.join("config.json");
+    std::fs::write(&chemin, r#"{ "echelle": 1.0 }"#).expect("préparation");
+
+    let relu = charger_depuis(&chemin);
+    assert_eq!(relu.personnages, vec!["blob".to_string()]);
 }
