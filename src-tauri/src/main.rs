@@ -27,6 +27,7 @@
 // quitter proprement.
 
 mod actions;
+mod apparition;
 mod autostart;
 mod behavior;
 mod catalogue;
@@ -387,17 +388,55 @@ fn lancer_application() {
                 return Ok(());
             }
 
-            // ── Le personnage, posé au milieu du premier sol ────────────
-            // `let … else` : sans écran, il n'y a nulle part où poser le
-            // personnage. On sort du bloc de placement plutôt que de paniquer
-            // — un monde vide est un cas normal (session distante en cours
-            // d'établissement), voir `World::from_screens`. Le bloc englobant
-            // rend déjà `Ok(())` juste au-dessus pour ce même cas.
-            let Some(sol) = monde.premier_sol() else {
+            // ── L'aléatoire, semé UNE SEULE FOIS ────────────────────────
+            //
+            // Semé ici et non dans la boucle, parce que l'apparition en a
+            // besoin avant que la boucle n'existe — et surtout parce qu'il
+            // ne doit y en avoir **qu'un**. Un `XorShift32::seeded(index)`
+            // par personnage retomberait en plein dans le piège des graines
+            // séquentielles (CLAUDE.md) : tous apparaîtraient au même `x` et
+            // tireraient la même première envie.
+            //
+            // Graine issue de l'horloge système : deux lancements ne doivent
+            // pas donner la même histoire. C'est le seul endroit du
+            // programme où l'aléatoire n'est pas reproductible, et c'est
+            // voulu — le mode simulation, lui, prend une graine explicite.
+            let graine = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.subsec_nanos())
+                .unwrap_or(12345);
+            let mut rng = rng::XorShift32::seeded(graine);
+
+            // ── Le personnage, qui TOMBE du haut de l'écran ─────────────
+            //
+            // Presque rien à écrire, et c'est la décision n° 1 qui le
+            // permet : `Attachment::Falling` existe déjà, et les réflexes à
+            // 60 Hz gèrent chute puis atterrissage depuis l'étape 4a.
+            //
+            // `let … else` : sans écran, il n'y a nulle part où le faire
+            // apparaître. On sort du bloc plutôt que de paniquer — un monde
+            // vide est un cas normal (session distante en cours
+            // d'établissement), voir `World::from_screens`.
+            let taille_sprite = character::attach::window_size(
+                &manifeste,
+                ecrans[0].scale * configuration.echelle,
+            );
+            let Some(attachement) =
+                apparition::point_de_chute(&monde, taille_sprite.0 as f32, &mut rng)
+            else {
                 return Ok(());
             };
-            let offset = sol.rect.face_length(world::Face::Top) / 2.0;
-            let depart = sol.rect.point_on(world::Face::Top, offset);
+
+            // `pos_connue` doit valoir le point de chute : c'est le champ
+            // qui amorce une chute qui commence (voir son commentaire dans
+            // `character/mod.rs`).
+            let depart = match attachement {
+                character::attach::Attachment::Falling { pos, .. } => pos,
+                // Inatteignable — `point_de_chute` ne rend que `Falling`. Un
+                // repli lisible plutôt qu'un `unreachable!()` qui tuerait le
+                // démarrage si ce module changeait un jour.
+                _ => geom::Point::new(0.0, 0.0),
+            };
 
             // L'échelle d'AFFICHAGE : celle du moniteur, multipliée par le
             // réglage de l'utilisateur. Les fonctions de `attach` n'ont pas à
@@ -551,15 +590,7 @@ fn lancer_application() {
             let acteurs = vec![Acteur {
                 label: label.clone(),
                 nom: nom_personnage.clone(),
-                ch: character::Character::new(
-                    manifeste,
-                    character::attach::Attachment::On {
-                        platform: sol.id,
-                        face: world::Face::Top,
-                        offset,
-                    },
-                    depart,
-                ),
+                ch: character::Character::new(manifeste, attachement, depart),
                 dernier_rendu: None,
                 derniere_taille: None,
                 dernier_coin: None,
@@ -598,6 +629,7 @@ fn lancer_application() {
                         temoin,
                         configuration_boucle,
                         commande,
+                        rng,
                     );
                 });
             }
@@ -842,6 +874,12 @@ fn boucle(
     // menu ne déclenche rien, et le clic part dans la boucle d'événements de
     // Tauri jusqu'à l'unique gestionnaire installé par `tray.rs`.
     commande: actions::BoiteCommande,
+    // **Le RNG, semé une seule fois par `setup`.** Il arrive déjà amorcé
+    // parce que l'apparition du premier personnage s'en est servie avant que
+    // ce thread n'existe. Le re-semer ici rejouerait la même séquence, et en
+    // créer un par personnage retomberait dans le piège des graines
+    // séquentielles (CLAUDE.md).
+    mut rng: rng::XorShift32,
 ) {
     use behavior::Entrees;
     use std::time::{Duration, Instant};
@@ -878,16 +916,6 @@ fn boucle(
         }
         println!("SHIMEJI_ESCALADE : intention Grimper forcée au démarrage");
     }
-
-    // Graine issue de l'horloge système : deux lancements ne doivent pas
-    // donner la même histoire. C'est le seul endroit du programme où
-    // l'aléatoire n'est pas reproductible, et c'est voulu — le mode
-    // simulation, lui, prend une graine explicite.
-    let graine = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.subsec_nanos())
-        .unwrap_or(12345);
-    let mut rng = rng::XorShift32::seeded(graine);
 
     const PERIODE: Duration = Duration::from_micros(16_667); // 60 Hz
     const PERIODE_MONDE: Duration = Duration::from_millis(125); // 8 Hz
