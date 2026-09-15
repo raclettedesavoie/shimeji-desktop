@@ -414,6 +414,30 @@ fn lancer_application() {
             // ainsi que `commandes::choisir` atteint le personnage courant.
             tauri::Manager::manage(app, actions.clone());
 
+            // `SHIMEJI_CHANGER=<nomA>,<nomB>,…` enchaîne des changements de
+            // personnage à 8 s d'intervalle — l'équivalent scriptable du clic
+            // dans « Ma bibliothèque », selon la règle du projet.
+            //
+            // Elle a été écrite pour le diagnostic du 2026-09-15 et gardée :
+            // c'est le SEUL moyen de rejouer sans humain le défaut où le
+            // second changement ne prenait pas. Combinée à `SHIMEJI_TRACE=1`,
+            // elle dit quel personnage est réellement servi, image par image.
+            if let Ok(liste) = std::env::var("SHIMEJI_CHANGER") {
+                let actions_diag = actions.clone();
+                std::thread::spawn(move || {
+                    for nom in liste.split(',') {
+                        std::thread::sleep(std::time::Duration::from_secs(8));
+                        match crate::config::dossier_du_personnage(nom) {
+                            Some(d) => match actions_diag.changer_personnage(nom, d) {
+                                Ok(v) => println!("[diag] changement vers {nom} -> version {v}"),
+                                Err(e) => println!("[diag] echec {nom} : {e}"),
+                            },
+                            None => println!("[diag] {nom} introuvable"),
+                        }
+                    }
+                });
+            }
+
             if let Err(e) = tray::installer(
                 &app.handle().clone(),
                 // Le REGISTRE et non la config : les deux divergent dès que
@@ -663,7 +687,11 @@ fn boucle(
     mut echelle_config: f32,
     demande: rechargement::Demande,
     temoin: std::path::PathBuf,
-    nom_personnage: String,
+    // `mut` : ce n'est plus le personnage du DÉMARRAGE mais le personnage
+    // COURANT. La fenêtre du catalogue peut en changer, et la boucle doit
+    // suivre — sinon le fichier témoin rechargerait celui d'il y a une
+    // heure, ramenant `blob` sur un personnage qu'on venait de choisir.
+    mut nom_personnage: String,
     // La Config complète (option 1 du brief de la Tâche 6) : `signals::biais_de`
     // a besoin de la table des applications, que `Reglages` n'expose pas.
     // Une variable globale aurait été plus courte à écrire, mais la spec
@@ -951,6 +979,11 @@ fn boucle(
 
                     // Le webview doit oublier ses images, et la taille de la
                     // fenêtre peut avoir changé (`frameSize`, `scale`).
+                    // Le personnage courant a pu CHANGER (fenêtre du
+                    // catalogue) : on le retient, faute de quoi le fichier
+                    // témoin rechargerait celui du démarrage.
+                    nom_personnage = r.personnage.clone();
+
                     let _ = render::recharger(&handle, &label, r.version, &r.personnage);
                     derniere_taille = None;
                     dernier_rendu = None;

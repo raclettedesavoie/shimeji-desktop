@@ -140,7 +140,7 @@ cargo run -- --installer <slug>        # installe un pack du catalogue dans %APP
 > `%APPDATA%\shimeji-desktop\characters\`, puis le `characters/` du dépôt —
 > qui ne contient plus que `blob`. Voir « Les packs livrés » plus bas.
 
-**Sept variables d'environnement de diagnostic.** Les trois premières ont chacune servi
+**Huit variables d'environnement de diagnostic.** Les trois premières ont chacune servi
 à démentir une hypothèse fausse — voir « Mesurer le CPU » plus bas ; les trois dernières
 remplacent un clic dans le tray ou rendent observable un calcul qui, sinon, ne se verrait
 qu'à l'œil et sur plusieurs minutes :
@@ -156,6 +156,7 @@ qu'à l'œil et sur plusieurs minutes :
 | `SHIMEJI_ESCALADE=1` | force l'intention `Grimper` dès la première image, et trace (phase, face, offset, pose) à chaque changement — étape 4a, voir plus bas « mesurer l'ancre » |
 | `SHIMEJI_MENU=1` | signale quand Windows **refuse le premier plan** à l'ouverture du menu contextuel — la cause du menu qui reste collé à l'écran, voir `render::prendre_le_premier_plan` |
 | `SHIMEJI_CATALOGUE=1` | ouvre la **fenêtre du catalogue** au démarrage — l'équivalent scriptable de l'entrée de menu, et ce qui a prouvé que l'IPC de Tauri répondait |
+| `SHIMEJI_CHANGER=<a>,<b>` | enchaîne des **changements de personnage** à 8 s d'intervalle — l'équivalent scriptable du clic dans « Ma bibliothèque ». Avec `SHIMEJI_TRACE=1`, elle dit quel personnage est réellement servi, image par image |
 
 **Et un fichier témoin** : créer `characters/recharger.txt` déclenche un rechargement à
 chaud, puis le fichier est supprimé.

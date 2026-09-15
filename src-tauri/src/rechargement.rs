@@ -120,9 +120,28 @@ pub fn preparer(demande: &Demande, dossier_perso: &Path) -> Result<u64, String> 
         // rechargement est le moindre des soucis.
         .map_err(|_| "verrou de rechargement empoisonné".to_string())?;
 
-    // La version repart de celle en attente s'il y en avait une, pour que
-    // deux clics rapprochés ne rendent pas le même numéro.
-    let version = boite.as_ref().map(|r| r.version).unwrap_or(0) + 1;
+    // ⚠️ Un compteur MONOTONE, et non la version de la demande en attente.
+    //
+    // La version se déduisait de `boite.as_ref()`, ce qui paraissait suffire
+    // : « deux clics rapprochés ne rendent pas le même numéro ». Mais la
+    // boucle 60 Hz vide la boîte par `take()` — la demande suivante repartait
+    // donc de `0 + 1`, et **tout rechargement consommé rendait 1**.
+    //
+    // Sans conséquence tant qu'un seul personnage existait : la version ne
+    // servait qu'à contourner le cache d'images du webview, et le contenu
+    // rechargé était le même personnage. Depuis le catalogue, `pet.js` indexe
+    // ce cache par `version + '/' + frame` : deux rechargements de même
+    // version font de chaque frame **déjà vue** un succès de cache, qui rend
+    // l'URL de l'ANCIEN personnage. À l'écran, le personnage changeait pour
+    // les poses neuves et gardait l'ancien dessin pour les poses connues —
+    // d'où « il repasse sur blob dès qu'il fait autre chose que flâner ».
+    //
+    // `Relaxed` : on ne demande qu'une chose à cet atomique, que deux appels
+    // ne rendent jamais le même nombre. Aucun autre accès mémoire n'a besoin
+    // d'être ordonné par rapport à lui, donc l'ordonnancement le moins cher
+    // convient.
+    static COMPTEUR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let version = COMPTEUR.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
 
     *boite = Some(Rechargement {
         manifeste,
@@ -135,4 +154,58 @@ pub fn preparer(demande: &Demande, dossier_perso: &Path) -> Result<u64, String> 
     });
 
     Ok(version)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Deux rechargements CONSOMMÉS doivent porter deux versions distinctes.
+    ///
+    /// C'est le défaut du 2026-09-15, et il ne se voyait qu'à l'écran. La
+    /// version ne servait qu'à contourner le cache du webview tant qu'un seul
+    /// personnage existait ; depuis le catalogue, `pet.js` indexe ce cache par
+    /// `version + '/' + frame`. Deux rechargements qui rendent le MÊME numéro
+    /// font donc de chaque frame déjà vue un succès de cache — qui sert l'URL
+    /// de l'**ancien** personnage. Résultat à l'écran : le personnage change
+    /// pour les poses neuves et reste l'ancien pour les poses connues.
+    ///
+    /// Le piège tenait à ce que la version se déduisait de la demande EN
+    /// ATTENTE. La boucle 60 Hz la vide par `take()` : la suivante repartait
+    /// donc systématiquement de 0 + 1.
+    #[test]
+    fn deux_rechargements_consommes_ne_partagent_pas_leur_version() {
+        let dossier = crate::config::dossier_du_personnage("blob")
+            .expect("le personnage de référence doit exister");
+
+        let demande: Demande = nouvelle_demande();
+
+        let v1 = preparer(&demande, &dossier).expect("premier rechargement");
+        // La boucle consomme la demande — c'est exactement ce que fait
+        // `boite.take()` à 8 Hz.
+        demande.lock().unwrap().take();
+
+        let v2 = preparer(&demande, &dossier).expect("second rechargement");
+
+        assert_ne!(
+            v1, v2,
+            "deux rechargements consommés ont rendu la même version : \
+             le cache du webview servirait l'ancien personnage"
+        );
+        assert!(v2 > v1, "les versions doivent croître ({v1} puis {v2})");
+    }
+
+    /// Et deux demandes NON consommées gardent la propriété d'origine.
+    #[test]
+    fn deux_rechargements_rapproches_croissent_aussi() {
+        let dossier = crate::config::dossier_du_personnage("blob")
+            .expect("le personnage de référence doit exister");
+
+        let demande: Demande = nouvelle_demande();
+        let v1 = preparer(&demande, &dossier).expect("premier");
+        // Sans `take()` : deux clics plus rapides que la boucle.
+        let v2 = preparer(&demande, &dossier).expect("second");
+
+        assert!(v2 > v1, "deux clics rapprochés doivent différer");
+    }
 }
