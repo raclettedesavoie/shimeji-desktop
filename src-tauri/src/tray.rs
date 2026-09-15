@@ -60,9 +60,32 @@ pub fn nouvelle_visibilite() -> Visibilite {
 /// pas un problème, et il n'y a rien à faire de plus que continuer avec les
 /// autres.
 pub fn basculer_visibilite(app: &AppHandle, visible: bool) {
-    for (_label, win) in app.webview_windows() {
+    // ⚠️ **Les fenêtres de PERSONNAGES seulement**, reconnues à leur label.
+    //
+    // La boucle parcourait auparavant toutes les fenêtres du programme, ce
+    // qui était sans conséquence tant qu'il n'y en avait qu'une. Depuis le
+    // catalogue il y en a deux sortes, et « Cacher les personnages » faisait
+    // aussi disparaître la fenêtre du catalogue — y compris quand c'est
+    // depuis elle qu'on venait de désactiver quelqu'un.
+    //
+    // Le préfixe `pet-` est posé par `label_de` et par la réconciliation du
+    // roster : c'est la seule convention de nommage du programme, et elle
+    // est vérifiée par `libelle_de_personnage`.
+    for (label, win) in app.webview_windows() {
+        if !est_un_personnage(&label) {
+            continue;
+        }
         let _ = if visible { win.show() } else { win.hide() };
     }
+}
+
+/// Ce label est-il celui d'une fenêtre de personnage ?
+///
+/// Une fonction plutôt qu'un `starts_with` recopié à trois endroits : le
+/// jour où le préfixe change, il ne doit y avoir qu'un seul endroit à
+/// corriger — et surtout un seul endroit à oublier.
+pub fn est_un_personnage(label: &str) -> bool {
+    label.starts_with("pet-")
 }
 
 /// Installe l'icône du tray et son menu.

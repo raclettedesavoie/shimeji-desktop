@@ -545,15 +545,31 @@ fn lancer_application() {
 
             // ── Les horloges ────────────────────────────────────────────
             let handle = app.handle().clone();
-            let personnage = character::Character::new(
-                manifeste,
-                character::attach::Attachment::On {
-                    platform: sol.id,
-                    face: world::Face::Top,
-                    offset,
-                },
-                depart,
-            );
+            // Le `Vec` d'un seul acteur : la boucle est généralisée, mais le
+            // démarrage n'instancie encore qu'un personnage. La Tâche 6 lui
+            // fera lire le roster de la config.
+            let acteurs = vec![Acteur {
+                label: label.clone(),
+                nom: nom_personnage.clone(),
+                ch: character::Character::new(
+                    manifeste,
+                    character::attach::Attachment::On {
+                        platform: sol.id,
+                        face: world::Face::Top,
+                        offset,
+                    },
+                    depart,
+                ),
+                dernier_rendu: None,
+                derniere_taille: None,
+                dernier_coin: None,
+                // `true` : c'est ce que `creer_fenetre_personnage` vient de
+                // poser. Mentir ici ferait sauter le premier appel de
+                // `traverser_les_clics`, et le personnage serait incliquable
+                // jusqu'au prochain changement d'état.
+                clics_traversent: true,
+                derniere_trace_grimpe: None,
+            }];
 
             // Diagnostic de performance : `SHIMEJI_SANS_BOUCLE=1` crée la
             // fenêtre et n'anime rien. C'est la seule façon de séparer ce que
@@ -570,21 +586,19 @@ fn lancer_application() {
                 let configuration_boucle = configuration.clone();
                 std::thread::spawn(move || {
                     boucle(
-                    handle,
-                    label,
-                    personnage,
-                    monde,
-                    echelle_affichage,
-                    visibilite,
-                    reglages,
-                    table,
-                    echelle_config,
-                    demande,
-                    temoin,
-                    nom_personnage,
-                    configuration_boucle,
-                    commande,
-                );
+                        handle,
+                        acteurs,
+                        monde,
+                        echelle_affichage,
+                        visibilite,
+                        reglages,
+                        table,
+                        echelle_config,
+                        demande,
+                        temoin,
+                        configuration_boucle,
+                        commande,
+                    );
                 });
             }
 
@@ -706,10 +720,106 @@ fn deja_en_reveil(ch: &character::Character) -> bool {
     )
 }
 
+/// Un personnage à l'écran : sa fenêtre, son état, et le peu de mémoire de
+/// rendu qu'il faut pour n'appeler Windows que sur changement.
+///
+/// **Ce qui est ici est ce qui doit exister N fois.** Tout ce qui est
+/// partagé — le monde, les signaux, le biais, le RNG, les horloges — reste
+/// une variable locale de `boucle` et n'est calculé qu'UNE fois par image
+/// (design « plusieurs personnages » §3). C'est ce partage qui fait que N
+/// personnages ne coûtent pas N fois notre calcul.
+struct Acteur {
+    /// Le label de sa fenêtre Tauri.
+    ///
+    /// ⚠️ **Jamais réutilisé** : il vient d'un compteur monotone, pas de
+    /// l'index dans le `Vec`. Retirer `pet-1` puis en ajouter un
+    /// réattribuerait `pet-1` pendant que Windows détruit encore la fenêtre
+    /// précédente (design §3, piège n° 3).
+    label: String,
+
+    /// Le pack dont il est une instance. **Plusieurs acteurs peuvent
+    /// partager le même nom** : c'est tout l'objet des doublons.
+    nom: String,
+
+    ch: character::Character,
+
+    // ── La mémoire de rendu ─────────────────────────────────────────────
+    // Ces quatre champs existent pour une seule raison : n'appeler Windows
+    // que quand quelque chose a changé. Le coût étant proportionnel au
+    // nombre de déplacements (design §2), s'en priver multiplierait la
+    // consommation par ~2 — c'est mesuré, 21 % contre 12,3 %.
+    dernier_rendu: Option<render::Rendu>,
+    derniere_taille: Option<(u32, u32)>,
+    dernier_coin: Option<(i32, i32)>,
+    clics_traversent: bool,
+
+    /// Diagnostic `SHIMEJI_ESCALADE=1` : le dernier triplet tracé, pour ne
+    /// tracer qu'au changement de phase.
+    derniere_trace_grimpe: Option<(String, String, String)>,
+}
+
+/// Quel personnage le curseur désigne-t-il ? **Au plus un.**
+///
+/// Rend son index dans le `Vec`. Il n'y a qu'un curseur, donc au plus un
+/// personnage concerné : sans cette règle, deux personnages superposés
+/// seraient attrapés ENSEMBLE par un même clic et se suivraient jusqu'au
+/// relâchement (design §3, piège n° 2).
+///
+/// L'ordre de départage est celui du `Vec` : arbitraire, mais **stable** —
+/// le même personnage gagne tant que rien ne change. Deux fenêtres toujours
+/// au premier plan n'ont de toute façon pas de z-order que nous
+/// contrôlions.
+fn elire_sous_le_curseur(
+    acteurs: &[Acteur],
+    monde: &world::World,
+    souris: geom::Point,
+    echelle: f32,
+) -> Option<usize> {
+    // Un personnage déjà porté garde la main, où que soit le curseur : un
+    // glisser rapide fait sortir le sprite de sa propre hitbox, et le
+    // relâcher tout seul serait précisément le bug que la traversée des
+    // clics évite déjà côté fenêtre.
+    for (i, a) in acteurs.iter().enumerate() {
+        if matches!(a.ch.attachment, character::attach::Attachment::Dragged) {
+            return Some(i);
+        }
+    }
+
+    for (i, a) in acteurs.iter().enumerate() {
+        // Position indérivable (plateforme disparue) ou pose absente du
+        // manifeste : on ne peut pas savoir. On passe au suivant plutôt que
+        // de décider à sa place — les clics continuent de traverser, ce qui
+        // ne gêne personne.
+        let (Some(pos), Some(pose)) = (
+            character::attach::world_position(&a.ch.attachment, monde, souris),
+            a.ch.manifest.pose(&a.ch.pose),
+        ) else {
+            continue;
+        };
+
+        if character::attach::hitbox_ecran(
+            pos,
+            &a.ch.pose,
+            pose,
+            &a.ch.manifest,
+            echelle,
+            a.ch.facing,
+        )
+        .contains(souris)
+        {
+            return Some(i);
+        }
+    }
+
+    None
+}
+
 fn boucle(
     handle: tauri::AppHandle,
-    label: String,
-    mut ch: character::Character,
+    // Le `Vec` remplace le couple `(label, ch)` du temps où il n'y avait
+    // qu'un personnage. `mut` : il grandit et rétrécit en cours
+    // d'exécution, c'est tout l'objet de cette étape.
+    mut acteurs: Vec<Acteur>,
     mut monde: world::World,
     mut echelle_affichage: f32,
     visibilite: tray::Visibilite,
@@ -721,11 +831,6 @@ fn boucle(
     mut echelle_config: f32,
     demande: rechargement::Demande,
     temoin: std::path::PathBuf,
-    // `mut` : ce n'est plus le personnage du DÉMARRAGE mais le personnage
-    // COURANT. La fenêtre du catalogue peut en changer, et la boucle doit
-    // suivre — sinon le fichier témoin rechargerait celui d'il y a une
-    // heure, ramenant `blob` sur un personnage qu'on venait de choisir.
-    mut nom_personnage: String,
     // La Config complète (option 1 du brief de la Tâche 6) : `signals::biais_de`
     // a besoin de la table des applications, que `Reglages` n'expose pas.
     // Une variable globale aurait été plus courte à écrire, mais la spec
@@ -763,16 +868,16 @@ fn boucle(
     // l'écran sans avoir à fixer le personnage pendant plusieurs minutes.
     let trace_escalade = std::env::var("SHIMEJI_ESCALADE").is_ok();
     if trace_escalade {
-        ch.intention = Some(behavior::intention::ActiveIntention::nouvelle(
-            behavior::intention::Intention::Grimper,
-            horloge.elapsed(),
-        ));
+        // Sur TOUS les acteurs : à N=1 c'est l'ancien comportement, et à N
+        // supérieur on veut pouvoir regarder n'importe lequel d'entre eux.
+        for a in acteurs.iter_mut() {
+            a.ch.intention = Some(behavior::intention::ActiveIntention::nouvelle(
+                behavior::intention::Intention::Grimper,
+                horloge.elapsed(),
+            ));
+        }
         println!("SHIMEJI_ESCALADE : intention Grimper forcée au démarrage");
     }
-    // Le dernier triplet (phase, face, pose) imprimé : on ne retrace qu'au
-    // CHANGEMENT, sinon la console serait inondée à 60 Hz pour une
-    // information qui ne bouge qu'à la transition.
-    let mut derniere_trace_grimpe: Option<(String, String, String)> = None;
 
     // Graine issue de l'horloge système : deux lancements ne doivent pas
     // donner la même histoire. C'est le seul endroit du programme où
@@ -823,16 +928,12 @@ fn boucle(
     } else {
         1.0
     };
-    let mut dernier_rendu: Option<render::Rendu> = None;
-    let mut derniere_taille: Option<(u32, u32)> = None;
-
-    // La position ENTIÈRE effectivement posée à la dernière image.
-    //
-    // `set_position` ne prend que des entiers : deux positions flottantes qui
-    // s'arrondissent au même pixel produisent exactement le même appel. À
-    // l'arrêt — environ trois tirages d'allure sur dix — la position ne
-    // change pas du tout, et on épargne 60 appels système par seconde.
-    let mut dernier_coin: Option<(i32, i32)> = None;
+    // `dernier_rendu`, `derniere_taille`, `dernier_coin` et
+    // `clics_traversent` ont migré dans `Acteur` : ce sont les seules
+    // variables de cette boucle qui doivent exister N fois. La position
+    // ENTIÈRE posée à la dernière image (`dernier_coin`) en fait partie —
+    // `set_position` ne prend que des entiers, et deux positions flottantes
+    // qui s'arrondissent au même pixel produisent exactement le même appel.
 
     // Diagnostic de cadence, voir plus bas.
     let trace_cadence = std::env::var("SHIMEJI_CADENCE").is_ok();
@@ -841,11 +942,11 @@ fn boucle(
     let mut travail_cumule = Duration::ZERO;
     let mut derniere_trace = Duration::ZERO;
 
-    // L'état courant de la traversée des clics. Initialisé à `true` parce
-    // que c'est ce que `setup` a posé juste avant de lancer ce thread.
-    let mut clics_traversent = true;
-
     // Le bouton droit était-il enfoncé à l'image précédente ?
+    //
+    // **Partagé, et pas par acteur** : il n'y a qu'une souris, donc qu'un
+    // front descendant par clic. Un drapeau par personnage ferait ouvrir N
+    // menus d'affilée sur un seul clic.
     //
     // C'est ce qui transforme un état — « le bouton est enfoncé », vrai
     // pendant les ~15 images que dure un clic humain — en un **front**, qui
@@ -916,8 +1017,17 @@ fn boucle(
                 // n'imprime qu'un « verrouillée » et qu'un « déverrouillée ».
                 // Le vrai « réveil joué deux fois » venait de l'ordre des
                 // frames — voir `POSE_WAKE`.
-                if !verrouille && !deja_en_reveil(&ch) {
-                    ch.intention = Some(behavior::intention::ActiveIntention::reveil(maintenant));
+                //
+                // Sur TOUS les acteurs : en oublier un le laisserait figé
+                // dans la pose qu'il avait au verrouillage, pendant que les
+                // autres émergent.
+                if !verrouille {
+                    for a in acteurs.iter_mut() {
+                        if !deja_en_reveil(&a.ch) {
+                            a.ch.intention =
+                                Some(behavior::intention::ActiveIntention::reveil(maintenant));
+                        }
+                    }
                 }
 
                 // On ne rend visible que si l'utilisateur n'avait pas
@@ -976,12 +1086,21 @@ fn boucle(
                 // démarrage : le personnage a pu être installé dans la
                 // bibliothèque entre-temps, et un chemin mémorisé ne le
                 // verrait jamais.
-                match config::dossier_du_personnage(&nom_personnage) {
-                    Some(d) => match rechargement::preparer(&demande, &d) {
-                        Ok(v) => println!("rechargement demandé par témoin (version {v})"),
-                        Err(e) => eprintln!("rechargement impossible : {e}"),
+                //
+                // Le nom vient du PREMIER acteur : à N=1 c'est le
+                // personnage courant, comme avant. La Tâche 6 remplacera
+                // tout ce bloc par un rechargement du roster entier.
+                match acteurs.first().map(|a| a.nom.clone()) {
+                    Some(nom) => match config::dossier_du_personnage(&nom) {
+                        Some(d) => match rechargement::preparer(&demande, &d) {
+                            Ok(v) => println!("rechargement demandé par témoin (version {v})"),
+                            Err(e) => eprintln!("rechargement impossible : {e}"),
+                        },
+                        None => eprintln!("rechargement impossible : « {nom} » introuvable"),
                     },
-                    None => eprintln!("rechargement impossible : « {nom_personnage} » introuvable"),
+                    // Aucun personnage à l'écran : il n'y a rien à
+                    // recharger, et ce n'est pas une erreur.
+                    None => println!("rechargement sans objet : aucun personnage"),
                 }
             }
 
@@ -995,33 +1114,42 @@ fn boucle(
                 // demande est consommée atomiquement, sans drapeau à
                 // remettre à zéro.
                 if let Some(r) = boite.take() {
-                    // La pose courante existe-t-elle encore dans le nouveau
-                    // manifeste ? Si l'utilisateur vient de la renommer ou de
-                    // la retirer, `set_pose` refuserait tout changement et le
-                    // personnage resterait figé sur une clé morte.
-                    if !r.manifeste.has_pose(&ch.pose) {
-                        ch.pose = character::manifest::POSE_STAND.to_string();
-                        ch.pose_depuis = maintenant;
-                    }
-
-                    ch.manifest = r.manifeste;
                     reglages = r.reglages;
                     table = r.table;
                     echelle_config = r.echelle_config;
                     config_courante = r.config;
                     echelle_affichage = ecrans_echelle * echelle_config;
 
-                    // Le webview doit oublier ses images, et la taille de la
-                    // fenêtre peut avoir changé (`frameSize`, `scale`).
-                    // Le personnage courant a pu CHANGER (fenêtre du
-                    // catalogue) : on le retient, faute de quoi le fichier
-                    // témoin rechargerait celui du démarrage.
-                    nom_personnage = r.personnage.clone();
+                    // Appliqué à TOUS les acteurs. À N=1 c'est exactement
+                    // l'ancien comportement ; la Tâche 6 remplacera ce bloc
+                    // par une réconciliation du roster.
+                    for a in acteurs.iter_mut() {
+                        // La pose courante existe-t-elle encore dans le
+                        // nouveau manifeste ? Si l'utilisateur vient de la
+                        // renommer ou de la retirer, `set_pose` refuserait
+                        // tout changement et le personnage resterait figé
+                        // sur une clé morte.
+                        if !r.manifeste.has_pose(&a.ch.pose) {
+                            a.ch.pose = character::manifest::POSE_STAND.to_string();
+                            a.ch.pose_depuis = maintenant;
+                        }
 
-                    let _ = render::recharger(&handle, &label, r.version, &r.personnage);
-                    derniere_taille = None;
-                    dernier_rendu = None;
-                    dernier_coin = None;
+                        a.ch.manifest = r.manifeste.clone();
+
+                        // Le personnage courant a pu CHANGER (fenêtre du
+                        // catalogue) : on le retient sur l'acteur, faute de
+                        // quoi le fichier témoin rechargerait celui du
+                        // démarrage.
+                        a.nom = r.personnage.clone();
+
+                        // Le webview doit oublier ses images, et la taille
+                        // de la fenêtre peut avoir changé (`frameSize`,
+                        // `scale`).
+                        let _ = render::recharger(&handle, &a.label, r.version, &r.personnage);
+                        a.derniere_taille = None;
+                        a.dernier_rendu = None;
+                        a.dernier_coin = None;
+                    }
 
                     println!("personnage rechargé (version {})", r.version);
                 }
@@ -1036,103 +1164,24 @@ fn boucle(
         // traînerait visiblement derrière le curseur pendant un glisser.
         let m = sonde.mouse();
 
-        // Le curseur est-il dans la hitbox de la POSE COURANTE — et non dans
-        // la boîte de 128×128 ? Sans cette distinction, le personnage serait
-        // un trou noir de 128 px avalant les clics dans ses zones
-        // transparentes.
-        let sur_le_personnage = match (
-            character::attach::world_position(&ch.attachment, &monde, m.pos),
-            ch.manifest.pose(&ch.pose),
-        ) {
-            (Some(pos), Some(pose)) => character::attach::hitbox_ecran(
-                pos,
-                &ch.pose,
-                pose,
-                &ch.manifest,
-                echelle_affichage,
-                ch.facing,
-            )
-            .contains(m.pos),
+        // ── L'élection : UN SEUL personnage sous le curseur ─────────────
+        //
+        // Le hit-testing compare le curseur à la hitbox de la POSE COURANTE
+        // — et non à la boîte de 128×128 : sans cette distinction, le
+        // personnage serait un trou noir de 128 px avalant les clics dans
+        // ses zones transparentes. `elire_sous_le_curseur` le fait pour
+        // chaque acteur, et n'en retient qu'un.
+        let elu = elire_sous_le_curseur(&acteurs, &monde, m.pos, echelle_affichage);
 
-            // Position indérivable (plateforme disparue) ou pose absente :
-            // on ne peut pas savoir. `false` est le bon défaut — les clics
-            // continuent de traverser, ce qui ne gêne personne.
-            _ => false,
-        };
-
-        // ── Absorber le clic, mais seulement là où il faut ──────────────
+        // Le front descendant du bouton droit : calculé UNE fois, avant la
+        // boucle, parce qu'il n'y a qu'une souris.
         //
-        // Pourquoi désactiver la traversée alors que la sonde nous dit déjà
-        // tout ? Parce que si les clics continuaient de traverser, cliquer
-        // sur le personnage cliquerait **aussi** l'icône du bureau derrière
-        // lui. Il faut ABSORBER le clic — c'est à ça que sert le va-et-vient
-        // de `set_ignore_cursor_events` (spec §3.3).
-        //
-        // Pendant un glisser, on garde les clics absorbés même si le sprite
-        // a glissé hors de sa propre hitbox : sinon un déplacement rapide
-        // relâcherait le personnage tout seul.
-        let porte = matches!(ch.attachment, character::attach::Attachment::Dragged);
-        let doit_traverser = !sur_le_personnage && !porte;
-
-        // On n'appelle Win32 que sur CHANGEMENT d'état : appeler
-        // `set_ignore_cursor_events` 60 fois par seconde marcherait, mais
-        // c'est un appel système par image pour rien — et la section
-        // « Mesurer le CPU » de CLAUDE.md dit pourquoi on y regarde.
-        if doit_traverser != clics_traversent {
-            if render::traverser_les_clics(&handle, &label, doit_traverser).is_err() {
-                return;
-            }
-            clics_traversent = doit_traverser;
-        }
-
-        // ── Clic droit sur le personnage : le menu contextuel ───────────
-        //
-        // Front **descendant** (le bouton vient d'être RELÂCHÉ) ET curseur
-        // dans la hitbox : un clic droit sur le bureau à côté de lui ne doit
-        // rien ouvrir. Le test de hitbox est le MÊME que celui qui absorbe
-        // les clics gauches, donc la zone cliquable est exactement celle
-        // qu'on voit.
-        //
-        // ⚠️ **Au relâchement et non à l'enfoncement**, et pour deux raisons
-        // qui pointent dans le même sens :
-        //
-        // 1. c'est la convention de Windows — l'explorateur, comme toute
-        //    application, ouvre son menu contextuel sur `WM_RBUTTONUP` ;
-        // 2. ouvrir au bouton encore enfoncé lance `TrackPopupMenu` pendant
-        //    que Windows suit toujours un clic droit en cours. Le menu hérite
-        //    alors d'un suivi de souris qui ne lui appartient pas, et se
-        //    referme mal — ce qu'on a justement cherché à corriger ici.
+        // C'est ce qui transforme un état — « le bouton est enfoncé », vrai
+        // pendant les ~15 images que dure un clic humain — en un **front**,
+        // qui n'arrive qu'une fois. Sans lui, maintenir le bouton rouvrirait
+        // le menu en boucle dès sa fermeture.
         let front_descendant_droit = !m.right_down && bouton_droit_precedent;
         bouton_droit_precedent = m.right_down;
-
-        if front_descendant_droit && sur_le_personnage {
-            // `let … else` : si la fenêtre a été fermée, on sort du thread.
-            // Équivalent d'un `match` dont la branche `None` ferait `return`.
-            let Some(win) = handle.get_webview_window(&label) else {
-                return;
-            };
-
-            // **Cet appel bloque** jusqu'à la fermeture du menu : le
-            // personnage s'immobilise pendant ce temps, ce qui est voulu
-            // (voir `menu_perso::ouvrir`).
-            //
-            // `ou_de(&ch.attachment)` : le menu proposé dépend de l'endroit
-            // où il est accroché — voir `menu_perso::Ou`. C'est ce qui
-            // corrige le bug rapporté à l'écran : un menu de sol proposé à
-            // un personnage accroché à un mur le faisait tomber au premier
-            // clic, quelle que soit l'entrée choisie.
-            let ou = menu_perso::ou_de(&ch.attachment);
-            if let Err(e) = menu_perso::ouvrir(&handle, &win, &ch.manifest, &table, ou) {
-                eprintln!("menu du personnage : {e}");
-            }
-
-            // On repart sur une image neuve plutôt que de finir celle-ci :
-            // `maintenant` a été lu AVANT le menu, il a donc plusieurs
-            // secondes de retard, et `dt` vaut toujours 16,7 ms. Poursuivre
-            // ferait juger toutes les échéances (délai d'abandon, durée de
-            // pose) sur un instant périmé.
-            continue;
-        }
 
         // La commande éventuellement déposée par le gestionnaire de menu.
         //
@@ -1141,13 +1190,129 @@ fn boucle(
         // lue à l'image suivante, 16 ms plus tard — invisible.
         //
         // `take()` vide la boîte en récupérant son contenu : la commande est
-        // ainsi consommée une fois et une seule.
-        let commande_du_menu = match commande.try_lock() {
+        // ainsi consommée une fois et une seule. **Lue avant la boucle, et
+        // donnée au seul acteur élu** : la donner à tous ferait exécuter
+        // l'entrée de menu par N personnages.
+        let mut commande_du_menu = match commande.try_lock() {
             Ok(mut boite) => boite.take(),
             Err(_) => None,
         };
 
-        let entrees = Entrees {
+        // Caché par l'utilisateur, OU session verrouillée : on calcule tout,
+        // on ne dessine rien. Lu une fois, il vaut pour tous les acteurs.
+        //
+        // Le comportement, lui, continue de tourner : il doit avancer pour
+        // qu'on le retrouve ailleurs en le réaffichant, et c'est du calcul
+        // pur — mesuré à 100 µs par image quand il ne se passe rien.
+        //
+        // Ce qui coûte, c'est `SetWindowPos` sur une fenêtre en couche (voir
+        // « Mesurer le CPU » dans CLAUDE.md), et c'est exactement ce qu'on
+        // saute. Le verrouillage emprunte EXACTEMENT ce même chemin, déjà
+        // mesuré à 0,9 %.
+        //
+        // `Ordering::Relaxed` : il n'y a aucune autre donnée à synchroniser
+        // avec ce booléen, seulement sa propre valeur.
+        let visible = visibilite.load(std::sync::atomic::Ordering::Relaxed) && !verrouille;
+
+        // Un menu contextuel a-t-il été ouvert pendant cette image ? Voir
+        // pourquoi ce drapeau existe, plus bas, là où il est posé.
+        let mut menu_ouvert = false;
+
+        let dt = PERIODE.as_secs_f32();
+
+        // ── 60 Hz par personnage ────────────────────────────────────────
+        for i in 0..acteurs.len() {
+            let sur_le_personnage = elu == Some(i);
+            let acteur = &mut acteurs[i];
+
+            // ── Absorber le clic, mais seulement là où il faut ──────────
+            //
+            // Pourquoi désactiver la traversée alors que la sonde nous dit
+            // déjà tout ? Parce que si les clics continuaient de traverser,
+            // cliquer sur le personnage cliquerait **aussi** l'icône du
+            // bureau derrière lui. Il faut ABSORBER le clic — c'est à ça que
+            // sert le va-et-vient de `set_ignore_cursor_events` (spec §3.3).
+            //
+            // Pendant un glisser, on garde les clics absorbés même si le
+            // sprite a glissé hors de sa propre hitbox : sinon un
+            // déplacement rapide relâcherait le personnage tout seul.
+            let porte = matches!(
+                acteur.ch.attachment,
+                character::attach::Attachment::Dragged
+            );
+            let doit_traverser = !sur_le_personnage && !porte;
+
+            // On n'appelle Win32 que sur CHANGEMENT d'état : appeler
+            // `set_ignore_cursor_events` 60 fois par seconde marcherait,
+            // mais c'est un appel système par image pour rien — et la
+            // section « Mesurer le CPU » de CLAUDE.md dit pourquoi on y
+            // regarde.
+            if doit_traverser != acteur.clics_traversent {
+                // ⚠️ `continue` et non `return` : la fenêtre de CE
+                // personnage a pu être détruite, mais ça n'est plus une
+                // raison de tuer la boucle — les autres continuent de
+                // vivre. C'est la généralisation qui l'impose, et c'est
+                // aussi ce qui rend le retrait d'un acteur inoffensif.
+                if render::traverser_les_clics(&handle, &acteur.label, doit_traverser).is_err() {
+                    continue;
+                }
+                acteur.clics_traversent = doit_traverser;
+            }
+
+            // ── Clic droit sur le personnage : le menu contextuel ───────
+            //
+            // Front **descendant** (le bouton vient d'être RELÂCHÉ) ET
+            // curseur dans la hitbox : un clic droit sur le bureau à côté de
+            // lui ne doit rien ouvrir. Le test de hitbox est le MÊME que
+            // celui qui absorbe les clics gauches, donc la zone cliquable
+            // est exactement celle qu'on voit.
+            //
+            // ⚠️ **Au relâchement et non à l'enfoncement**, et pour deux
+            // raisons qui pointent dans le même sens :
+            //
+            // 1. c'est la convention de Windows — l'explorateur, comme toute
+            //    application, ouvre son menu contextuel sur `WM_RBUTTONUP` ;
+            // 2. ouvrir au bouton encore enfoncé lance `TrackPopupMenu`
+            //    pendant que Windows suit toujours un clic droit en cours.
+            //    Le menu hérite alors d'un suivi de souris qui ne lui
+            //    appartient pas, et se referme mal.
+            if front_descendant_droit && sur_le_personnage {
+                // `let … else` : si la fenêtre a été fermée, cet acteur n'a
+                // plus de menu à ouvrir. On passe au suivant.
+                let Some(win) = handle.get_webview_window(&acteur.label) else {
+                    continue;
+                };
+
+                // **Cet appel bloque** jusqu'à la fermeture du menu : le
+                // personnage s'immobilise pendant ce temps, ce qui est voulu
+                // (voir `menu_perso::ouvrir`).
+                //
+                // `ou_de` : le menu proposé dépend de l'endroit où il est
+                // accroché — voir `menu_perso::Ou`. C'est ce qui corrige le
+                // bug rapporté à l'écran : un menu de sol proposé à un
+                // personnage accroché à un mur le faisait tomber au premier
+                // clic, quelle que soit l'entrée choisie.
+                let ou = menu_perso::ou_de(&acteur.ch.attachment);
+                if let Err(e) =
+                    menu_perso::ouvrir(&handle, &win, &acteur.ch.manifest, &table, ou)
+                {
+                    eprintln!("menu du personnage : {e}");
+                }
+
+                // ⚠️ **On sort de la boucle `for`, et l'image entière est
+                // abandonnée** — pas seulement ce personnage.
+                //
+                // `maintenant` a été lu AVANT le menu, il a donc plusieurs
+                // secondes de retard, et `dt` vaut toujours 16,7 ms.
+                // Poursuivre ferait juger toutes les échéances (délai
+                // d'abandon, durée de pose) sur un instant périmé — et à N
+                // personnages, un simple `continue` de la boucle `for`
+                // étendrait ce défaut aux N−1 autres au lieu de le corriger.
+                menu_ouvert = true;
+                break;
+            }
+
+            let entrees = Entrees {
             souris: m.pos,
             echelle_affichage,
             bouton_gauche: m.left_down,
@@ -1155,26 +1320,42 @@ fn boucle(
             // Recalculés à 2 Hz ci-dessus, transportés tels quels à 60 Hz.
             biais,
             utilisateur_actif,
-            commande: commande_du_menu,
-        };
+                // `take()` : la commande n'est donnée qu'à l'acteur ÉLU, et
+                // une seule fois. La donner à tous ferait exécuter l'entrée
+                // de menu par N personnages — dont N−1 qui n'ont rien
+                // demandé.
+                commande: if sur_le_personnage {
+                    commande_du_menu.take()
+                } else {
+                    None
+                },
+            };
 
-        // ── 60 Hz : le comportement ─────────────────────────────────────
-        // La MÊME fonction que le mode simulation.
-        let dt = PERIODE.as_secs_f32();
-        behavior::pas(&mut ch, &monde, &entrees, &table, &reglages, maintenant, dt, &mut rng);
+            // ── 60 Hz : le comportement ────────────────────────────────
+            // La MÊME fonction que le mode simulation.
+            behavior::pas(
+                &mut acteur.ch,
+                &monde,
+                &entrees,
+                &table,
+                &reglages,
+                maintenant,
+                dt,
+                &mut rng,
+            );
 
         // ── Diagnostic : `SHIMEJI_ESCALADE=1` ───────────────────────────
         // Rien qu'une intention `Grimper` en cours ne trace : c'est
         // exactement le moment que l'auteur doit regarder pour mesurer
         // l'ancre de `grabWall`/`climbWall` à l'œil.
         if trace_escalade {
-            if let Some(ai) = ch.intention {
+            if let Some(ai) = acteur.ch.intention {
                 if let behavior::intention::EtatIntention::Grimpe { phase, .. } = ai.etat {
                     // Le MESSAGE affiché garde l'offset — il aide à situer le
                     // personnage sur la paroi au moment précis où la trace
                     // sort. Voir plus bas pourquoi la CLÉ, elle, ne le
                     // contient plus.
-                    let face_affichee = match ch.attachment {
+                    let face_affichee = match acteur.ch.attachment {
                         character::attach::Attachment::On { face, offset, .. } => {
                             format!("{face:?} offset={offset:.1}")
                         }
@@ -1198,114 +1379,107 @@ fn boucle(
                     // déclaration de `trace_escalade`). La clé ne porte donc
                     // que ce qui identifie une PHASE, pas une position dans
                     // cette phase.
-                    let face_pour_la_cle = match ch.attachment {
+                    let face_pour_la_cle = match acteur.ch.attachment {
                         character::attach::Attachment::On { face, .. } => format!("{face:?}"),
                         character::attach::Attachment::Falling { .. } => "chute".to_string(),
                         character::attach::Attachment::Dragged => "porté".to_string(),
                     };
-                    let cle = (format!("{phase:?}"), face_pour_la_cle, ch.pose.clone());
-                    if derniere_trace_grimpe.as_ref() != Some(&cle) {
+                    let cle = (format!("{phase:?}"), face_pour_la_cle, acteur.ch.pose.clone());
+                    if acteur.derniere_trace_grimpe.as_ref() != Some(&cle) {
                         println!(
                             "SHIMEJI_ESCALADE : phase={:?} {} pose={}",
-                            phase, face_affichee, ch.pose
+                            phase, face_affichee, acteur.ch.pose
                         );
-                        derniere_trace_grimpe = Some(cle);
+                        acteur.derniere_trace_grimpe = Some(cle);
                     }
                 }
             }
         }
 
-        // ── Sur changement seulement : la taille de la fenêtre ──────────
-        // Elle ne dépend que du manifeste et de l'échelle de l'écran.
-        // L'appeler à 60 Hz coûtait 8 points de pourcentage de CPU pour
-        // rien (voir l'avertissement de `render::placer`).
-        let taille = character::attach::window_size(&ch.manifest, echelle_affichage);
-        if derniere_taille != Some(taille) {
-            if render::dimensionner(&handle, &label, taille).is_err() {
-                return;
+            // ── Sur changement seulement : la taille de la fenêtre ─────
+            // Elle ne dépend que du manifeste et de l'échelle de l'écran.
+            // L'appeler à 60 Hz coûtait 8 points de pourcentage de CPU pour
+            // rien (voir l'avertissement de `render::placer`).
+            let taille = character::attach::window_size(&acteur.ch.manifest, echelle_affichage);
+            if acteur.derniere_taille != Some(taille) {
+                // `continue` et non `return` : voir la traversée des clics
+                // plus haut — la fenêtre d'un acteur peut disparaître sans
+                // que les autres aient à mourir avec.
+                if render::dimensionner(&handle, &acteur.label, taille).is_err() {
+                    continue;
+                }
+                acteur.derniere_taille = Some(taille);
             }
-            derniere_taille = Some(taille);
+
+            // Caché ou session verrouillée : on a fait tourner le
+            // comportement ci-dessus, et on s'arrête là. `visible` est lu
+            // une fois pour tous, avant la boucle.
+            if !visible {
+                // On oublie ce qu'on avait posé : au retour, il faut tout
+                // repousser, la fenêtre ayant pu être masquée entre-temps.
+                acteur.dernier_coin = None;
+                acteur.dernier_rendu = None;
+                continue;
+            }
+
+            // ── 60 Hz : le rendu ───────────────────────────────────────
+            // La position est DÉRIVÉE à chaque image (décision n° 1).
+            if let Some(pos) =
+                character::attach::world_position(&acteur.ch.attachment, &monde, m.pos)
+            {
+                if let Some(pose) = acteur.ch.manifest.pose(&acteur.ch.pose) {
+                    let coin = character::attach::window_top_left(
+                        pos,
+                        pose,
+                        &acteur.ch.manifest,
+                        echelle_affichage,
+                        acteur.ch.facing,
+                    );
+
+                    // Arrondi ici et non dans `placer` : c'est cet entier
+                    // qu'on compare, et le calculer deux fois serait deux
+                    // occasions de divergence.
+                    let coin_entier = (coin.x.round() as i32, coin.y.round() as i32);
+
+                    if acteur.dernier_coin != Some(coin_entier) {
+                        if render::placer(&handle, &acteur.label, coin).is_err() {
+                            continue;
+                        }
+                        acteur.dernier_coin = Some(coin_entier);
+                        placements_depuis_trace += 1;
+                    }
+                }
+            }
+
+            let rendu = render::Rendu {
+                image: acteur.ch.frame_courante(maintenant),
+                flip: acteur.ch.facing.flipped(),
+            };
+
+            // N'émettre que sur changement — sauf pendant l'amorçage, où
+            // l'écouteur du webview n'existe peut-être pas encore.
+            //
+            // À 60 Hz, une pose de marche ne change d'image que ~8 fois par
+            // seconde : on économise ~85 % des messages, sans une ligne de
+            // logique côté front.
+            let amorcage = maintenant < AMORCAGE;
+            if amorcage || acteur.dernier_rendu != Some(rendu) {
+                if let Err(e) = render::pousser(&handle, &acteur.label, rendu) {
+                    // On imprime : un acteur qui meurt en silence donne un
+                    // personnage figé sans explication, et c'est exactement
+                    // ce qu'on a déjà passé du temps à diagnostiquer.
+                    eprintln!("rendu impossible pour {} : {e}", acteur.label);
+                    continue;
+                }
+                acteur.dernier_rendu = Some(rendu);
+            }
         }
 
-        // ── Caché par l'utilisateur, OU session verrouillée : rien à dessiner ──
-        //
-        // Le comportement, lui, continue de tourner : il doit avancer pour
-        // qu'on le retrouve ailleurs en le réaffichant, et c'est du calcul
-        // pur — mesuré à 100 µs par image quand il ne se passe rien.
-        //
-        // Ce qui coûte, c'est `SetWindowPos` sur une fenêtre en couche (voir
-        // la section « Mesurer le CPU » de CLAUDE.md), et c'est exactement ce
-        // qu'on saute ici. Le verrouillage emprunte EXACTEMENT ce même chemin,
-        // déjà mesuré à 0,9 % : c'est donc aussi la première des pistes CPU
-        // restantes, et elle se referme ici.
-        //
-        // `Ordering::Relaxed` : il n'y a aucune autre donnée à synchroniser
-        // avec ce booléen, seulement sa propre valeur. Un ordre plus fort
-        // n'apporterait qu'un coût.
-        let visible = visibilite.load(std::sync::atomic::Ordering::Relaxed) && !verrouille;
-
-        if !visible {
-            // On oublie ce qu'on avait posé : au retour, il faut tout
-            // repousser, la fenêtre ayant pu être masquée entre-temps.
-            dernier_coin = None;
-            dernier_rendu = None;
-
-            let ecoule = debut.elapsed();
-            if let Some(reste) = PERIODE.checked_sub(ecoule) {
-                std::thread::sleep(reste);
-            }
+        // Un menu contextuel a été ouvert : il a bloqué plusieurs secondes,
+        // `maintenant` est périmé. On repart sur une image neuve plutôt que
+        // de juger les échéances de tout le monde sur un instant faux.
+        if menu_ouvert {
             continue;
-        }
-
-        // ── 60 Hz : le rendu ────────────────────────────────────────────
-        // La position est DÉRIVÉE à chaque image (décision n° 1).
-        if let Some(pos) = character::attach::world_position(&ch.attachment, &monde, m.pos) {
-            if let Some(pose) = ch.manifest.pose(&ch.pose) {
-                let coin = character::attach::window_top_left(
-                    pos,
-                    pose,
-                    &ch.manifest,
-                    echelle_affichage,
-                    ch.facing,
-                );
-
-                // Arrondi ici et non dans `placer` : c'est cet entier qu'on
-                // compare, et le calculer deux fois serait deux occasions de
-                // divergence.
-                let coin_entier = (coin.x.round() as i32, coin.y.round() as i32);
-
-                if dernier_coin != Some(coin_entier) {
-                    if render::placer(&handle, &label, coin).is_err() {
-                        // Fenêtre fermée : plus rien à faire dans ce thread.
-                        return;
-                    }
-                    dernier_coin = Some(coin_entier);
-                    placements_depuis_trace += 1;
-                }
-            }
-        }
-
-        let rendu = render::Rendu {
-            image: ch.frame_courante(maintenant),
-            flip: ch.facing.flipped(),
-        };
-
-        // N'émettre que sur changement — sauf pendant l'amorçage, où
-        // l'écouteur du webview n'existe peut-être pas encore.
-        //
-        // À 60 Hz, une pose de marche ne change d'image que ~8 fois par
-        // seconde : on économise ~85 % des messages, sans une ligne de
-        // logique côté front.
-        let amorcage = maintenant < AMORCAGE;
-        if amorcage || dernier_rendu != Some(rendu) {
-            if let Err(e) = render::pousser(&handle, &label, rendu) {
-                // On imprime avant de sortir : un thread qui meurt en silence
-                // donne un personnage figé sans explication, et c'est
-                // exactement ce qu'on vient de passer du temps à diagnostiquer.
-                eprintln!("rendu impossible, arrêt de la boucle : {e}");
-                return;
-            }
-            dernier_rendu = Some(rendu);
         }
 
         // ── Diagnostic de cadence ───────────────────────────────────────
