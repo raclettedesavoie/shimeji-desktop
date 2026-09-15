@@ -344,6 +344,21 @@ Chaque module s'ouvre sur deux ou trois lignes disant **sa responsabilité uniqu
 section de la spec dont il relève. Si cet en-tête devient difficile à écrire, c'est que le
 fichier fait trop de choses.
 
+### ⚠️ Ne jamais éditer un fichier source par PowerShell `Get-Content`/`Set-Content`
+
+Les sources de ce projet sont en **UTF-8 accentué**, et PowerShell 5.1 relit un
+fichier en **cp1252** puis le réécrit en UTF-8 : tout le fichier est
+double-encodé (« même » devient « mÃªme »), et un **BOM** s'ajoute en tête.
+
+**Le code compile et les tests passent** — seuls les commentaires sont touchés,
+ce qui est exactement ce qui rend le défaut facile à ne pas voir. Arrivé le
+2026-09-15 sur `main.rs` : 660 lignes corrompues pour corriger *un* commentaire.
+
+Les éditions passent donc par un outil d'édition, ou par Python en UTF-8
+explicite. La réparation, si le mal est fait, demande de reconstruire la table
+inverse de cp1252 à la main — .NET laisse passer les cinq octets que cp1252 ne
+définit pas (0x81, 0x8D, 0x8F, 0x90, 0x9D), là où Python refuse de les encoder.
+
 ### Ce qui ne s'explique pas en commentaire
 
 Un nom mal choisi ne se rattrape pas par un commentaire. Nommer d'abord, commenter
