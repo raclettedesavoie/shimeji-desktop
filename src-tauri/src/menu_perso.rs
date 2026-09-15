@@ -146,9 +146,19 @@ const ENVIES: &[(&str, &str, &[Ou], Commande)] = &[
         &[Ou::Sol],
         Commande::Intention(Intention::SeReposer),
     ),
+    // Le libellé ne décrit PAS le dessin, et c'est délibéré. `spinHead` est
+    // un numéro de slot Shimeji (`SitAndSpinHeadAction`), pas une promesse :
+    // `blob` y fait tourner sa tête, un autre pack y mange ou y joue sa pose
+    // de signature. Annoncer « Faire tourner la tête » promettait donc, sur
+    // presque tous les packs du catalogue, quelque chose que le pack ne
+    // tenait pas. « Faire son petit truc » dit seulement que c'est SON
+    // animation à lui — ce qui reste vrai quel que soit le dessin.
+    //
+    // L'identifiant, lui, garde le nom du slot : il n'est jamais affiché, et
+    // c'est ce qui permet de retrouver la pose que la ligne déclenche.
     (
         "perso.tete",
-        "Faire tourner la tête",
+        "Faire son petit truc",
         &[Ou::Sol],
         Commande::Intention(Intention::Jouer(Jeu::TeteQuiTourne)),
     ),
