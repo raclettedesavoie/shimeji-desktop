@@ -213,6 +213,79 @@ fn label_de(index: usize) -> String {
     format!("pet-{index}")
 }
 
+/// Crée la fenêtre d'UN personnage, avec toutes ses propriétés.
+///
+/// Extraite de `setup` : les fenêtres naissent désormais **en cours
+/// d'exécution**, depuis le thread de la boucle, et plus seulement au
+/// démarrage (design « plusieurs personnages » §3).
+///
+/// C'est légitime : `RuntimeHandle` de Tauri poste un message au thread
+/// principal quand on l'appelle depuis un autre thread. À l'inverse,
+/// `tauri-runtime-wry` panique explicitement si `WindowMessage::Close` est
+/// traité *sur* le thread principal (`lib.rs:3492`) — c'est-à-dire si l'on
+/// ferme une fenêtre depuis un gestionnaire d'événements. Notre boucle étant
+/// un thread à part, elle est du bon côté. **Vérifié par un spike jetable**
+/// (20 cycles création/destruction) et pas seulement déduit des sources.
+///
+/// ⚠️ **Les deux styles étendus sont posés ICI et nulle part ailleurs.** Les
+/// oublier sur les fenêtres n° 2 et suivantes donnerait des personnages qui
+/// volent le focus et apparaissent dans Alt+Tab — un défaut qui ne se verrait
+/// que sur le deuxième personnage, donc jamais pendant une mise au point à
+/// N=1.
+fn creer_fenetre_personnage(
+    app: &tauri::AppHandle,
+    label: &str,
+    nom: &str,
+    taille: (u32, u32),
+) -> Result<tauri::WebviewWindow, String> {
+    let win = tauri::WebviewWindowBuilder::new(
+        app,
+        label,
+        // Le fragment dit à `pet.js` quel personnage servir, et il doit
+        // porter le nom **du pack**, pas `blob` en dur.
+        //
+        // Le bug que ça corrige est sournois : avec `#blob` fixe, le
+        // manifeste chargé était bien celui du personnage demandé (bonnes
+        // poses, bonnes ancres, bonne hitbox) mais le webview réclamait
+        // `shime:///blob/N` — donc les **images** de blob. Rien ne le
+        // signalait : aucune erreur, aucune trace, un personnage
+        // parfaitement animé… avec le mauvais dessin.
+        //
+        // Invisible tant que `blob` était le seul pack livré. Constaté à
+        // l'œil en ajoutant `luffy`, et par aucun autre moyen.
+        tauri::WebviewUrl::App(format!("index.html#{nom}").into()),
+    )
+    .title("shimeji-desktop")
+    .inner_size(taille.0 as f64, taille.1 as f64)
+    .decorations(false)
+    .transparent(true)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .resizable(false)
+    .shadow(false)
+    .focused(false)
+    .build()
+    .map_err(|e| format!("fenêtre « {label} » : {e}"))?;
+
+    // Les clics traversent en permanence ; la boucle ne les réactive que
+    // dans la hitbox de la pose courante (spec §3.3).
+    win.set_ignore_cursor_events(true)
+        .map_err(|e| format!("clics traversants sur « {label} » : {e}"))?;
+
+    // **Les deux découvertes de l'étape 0.** À faire avant que la hitbox
+    // n'existe : sinon le vol de focus apparaîtrait en même temps que
+    // l'attrapabilité, et les deux se diagnostiqueraient ensemble, pour rien.
+    match render::appliquer_styles_etendus(&win) {
+        Ok(()) => println!("styles étendus posés sur {label} (NOACTIVATE, TOOLWINDOW)"),
+        // Non bloquant : la fenêtre marche sans, elle est seulement moins
+        // polie. Mieux vaut un personnage qui vole le focus qu'aucun
+        // personnage.
+        Err(e) => eprintln!("styles étendus NON appliqués sur {label} : {e}"),
+    }
+
+    Ok(win)
+}
+
 fn lancer_application() {
     let dossier = config::dossier_personnages();
     println!("personnages : {}", dossier.display());
@@ -334,51 +407,11 @@ fn lancer_application() {
 
             // ── La fenêtre ──────────────────────────────────────────────
             // Exactement la combinaison validée par l'étape 0, plus les deux
-            // styles étendus qu'elle a révélés manquants.
+            // styles étendus qu'elle a révélés manquants — le tout dans
+            // `creer_fenetre_personnage`, qui servira aussi aux fenêtres
+            // créées en cours d'exécution.
             let label = label_de(0);
-            let win = tauri::WebviewWindowBuilder::new(
-                app,
-                &label,
-                // Le fragment dit à `pet.js` quel personnage servir, et il
-                // doit porter le nom **lu dans la config**, pas `blob` en dur.
-                //
-                // Le bug que ça corrige est sournois : avec `#blob` fixe, le
-                // manifeste chargé était bien celui du personnage demandé
-                // (bonnes poses, bonnes ancres, bonne hitbox) mais le webview
-                // réclamait `shime:///blob/N` — donc les **images** de blob.
-                // Rien ne le signalait : aucune erreur, aucune trace, un
-                // personnage parfaitement animé… avec le mauvais dessin.
-                //
-                // Invisible tant que `blob` était le seul pack livré. Constaté
-                // à l'œil en ajoutant `luffy`, et par aucun autre moyen.
-                tauri::WebviewUrl::App(format!("index.html#{nom_personnage}").into()),
-            )
-            .title("shimeji-desktop")
-            .inner_size(taille.0 as f64, taille.1 as f64)
-            .decorations(false)
-            .transparent(true)
-            .always_on_top(true)
-            .skip_taskbar(true)
-            .resizable(false)
-            .shadow(false)
-            .focused(false)
-            .build()?;
-
-            // Les clics traversent en permanence ; la Tâche 11 ne les
-            // réactive que dans la hitbox de la pose courante (spec §3.3).
-            win.set_ignore_cursor_events(true)?;
-
-            // **Les deux découvertes de l'étape 0.** À faire ici, avant que
-            // la hitbox n'existe : sinon le vol de focus apparaîtrait en même
-            // temps que l'attrapabilité, et les deux se diagnostiqueraient
-            // ensemble, pour rien.
-            match render::appliquer_styles_etendus(&win) {
-                Ok(()) => println!("styles étendus posés (NOACTIVATE, TOOLWINDOW)"),
-                // Non bloquant : la fenêtre marche sans, elle est seulement
-                // moins polie. Mieux vaut un personnage qui vole le focus
-                // qu'aucun personnage.
-                Err(e) => eprintln!("styles étendus NON appliqués : {e}"),
-            }
+            creer_fenetre_personnage(&app.handle().clone(), &label, &nom_personnage, taille)?;
 
             // ── Le tray ─────────────────────────────────────────────────
             // Installé AVANT la boucle : si le tray échoue, on veut le savoir
