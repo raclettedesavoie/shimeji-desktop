@@ -173,6 +173,23 @@ impl Actions {
         // lecture de fichier bloquerait en plus la boucle 60 Hz pour rien.
         let version = crate::rechargement::preparer_roster(&self.demande, voulus, sans_animation)?;
 
+        // ── L'avertissement à 10 (design §2) ────────────────────────────
+        //
+        // Posé ICI et non dans `definir_compte`, pour qu'il sorte quelle que
+        // soit la voie empruntée — le clic dans la bibliothèque comme
+        // `SHIMEJI_PERSONNAGES`. C'est la règle du projet : l'équivalent
+        // scriptable doit être équivalent, pas presque.
+        //
+        // ⚠️ Il AVERTIT, il n'interdit pas : aucun plafond, aucun refus.
+        // Décision de l'auteur prise en connaissance de la mesure.
+        if voulus.len() >= crate::commandes::SEUIL_AVERTISSEMENT {
+            println!(
+                "⚠️  {} personnages à l'écran. Chacun qui marche consomme du \
+                 processeur ; à ce nombre, la consommation peut devenir notable.",
+                voulus.len()
+            );
+        }
+
         match self.roster.lock() {
             Ok(mut r) => {
                 *r = voulus.to_vec();

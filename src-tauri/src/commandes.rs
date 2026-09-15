@@ -161,20 +161,6 @@ pub fn definir_compte(
     actions.definir_roster(&voulus, false)?;
     crate::config::definir_personnages(&voulus)?;
 
-    // ── L'avertissement à 10 (design §2) ────────────────────────────────
-    //
-    // Il AVERTIT, il n'interdit pas : aucun plafond dur, aucun bouton
-    // désactivé, aucune confirmation. Décision de l'auteur, prise en
-    // connaissance de la mesure. La fenêtre affiche la même phrase ; celle-ci
-    // en est l'équivalent scriptable.
-    if voulus.len() >= SEUIL_AVERTISSEMENT {
-        println!(
-            "ATTENTION : {} personnages a l'ecran. Chacun qui marche consomme du \
-             processeur ; a ce nombre, la consommation peut devenir notable.",
-            voulus.len()
-        );
-    }
-
     println!("roster : {voulus:?}");
     Ok(())
 }

@@ -156,7 +156,8 @@ qu'à l'œil et sur plusieurs minutes :
 | `SHIMEJI_ESCALADE=1` | force l'intention `Grimper` dès la première image, et trace (phase, face, offset, pose) à chaque changement — étape 4a, voir plus bas « mesurer l'ancre » |
 | `SHIMEJI_MENU=1` | signale quand Windows **refuse le premier plan** à l'ouverture du menu contextuel — la cause du menu qui reste collé à l'écran, voir `render::prendre_le_premier_plan` |
 | `SHIMEJI_CATALOGUE=1` | ouvre la **fenêtre du catalogue** au démarrage — l'équivalent scriptable de l'entrée de menu, et ce qui a prouvé que l'IPC de Tauri répondait |
-| `SHIMEJI_CHANGER=<a>,<b>` | enchaîne des **changements de personnage** à 8 s d'intervalle — l'équivalent scriptable du clic dans « Ma bibliothèque ». Avec `SHIMEJI_TRACE=1`, elle dit quel personnage est réellement servi, image par image |
+| `SHIMEJI_PERSONNAGES=<a>,<b>,…` | le **roster de départ**, doublons compris (`blob,blob` = deux blob) — l'équivalent scriptable des clics dans « Ma bibliothèque » |
+| `SHIMEJI_ROSTER=<s>:<a>,<b>` | un **changement de roster** après *s* secondes. C'est le seul moyen d'observer un **départ** sans qu'un humain clique |
 
 **Et un fichier témoin** : créer `characters/recharger.txt` déclenche un rechargement à
 chaud, puis le fichier est supprimé.
@@ -606,9 +607,28 @@ installé et il ne se passe rien » indébogable.
 ### Ajouter un pack — le catalogue, plus jamais à la main
 
 **Depuis l'application** : clic droit sur le personnage ou sur l'icône du
-tray → « Catalogue de personnages… ». Deux écrans, parce que **deux gestes** :
-« Catalogue » installe, « Ma bibliothèque » choisit qui s'affiche. Le
-changement est immédiat, sans redémarrage.
+tray → « Catalogue de personnages… ». Deux écrans : « Catalogue » **installe**,
+« Ma bibliothèque » **active et supprime**. Le changement est immédiat, sans
+redémarrage.
+
+Sur une carte de la bibliothèque, **quatre gestes, une seule commande**
+(`definir_compte`) : le fond de la carte ajoute un exemplaire, `−` en retire
+un, l'interrupteur met à 0 ou à 1, la poubelle supprime le pack du disque.
+
+> **L'interrupteur n'est que le reflet de `compte > 0`.** Éteindre trois blob
+> puis rallumer en ramène **un** : il n'y a aucun compte « en sommeil » stocké
+> à côté, donc aucune seconde vérité à tenir d'accord avec
+> `config.personnages`. Ne pas en ajouter une.
+
+> ⚠️ **`config.personnages` est un MULTI-ENSEMBLE** : `["blob", "blob"]` veut
+> dire deux blob à l'écran. Le compteur d'une carte, c'est le nombre
+> d'occurrences du nom — et rien d'autre ne le stocke.
+
+> ⚠️ **La suppression est définitive, et ne porte que sur la bibliothèque.**
+> Un pack est supprimable **si et seulement si** son dossier résout dans
+> `%APPDATA%` — règle générale, et surtout pas un cas particulier nommé
+> « blob » : on ne supprime jamais un fichier versionné, et le dossier livré
+> n'est peut-être même pas inscriptible.
 
 **En ligne de commande**, l'équivalent scriptable :
 
@@ -665,7 +685,8 @@ Chaque étape est agréable en elle-même, et aucune ne dépend d'un dessin manq
 | ✅ 0 | Validation technique | fenêtre transparente, sans bordure, au premier plan, hors taskbar, clics traversants, PNG déplacé à 60 Hz sur 2 écrans |
 | ✅ 1 | **Il vit sur le sol** | marche, court, s'arrête, demi-tour, tous les écrans ; attrapable et il tombe ; tray, démarrage auto |
 | ✅ 2 | **Il réagit** | s'endort quand on part, se réveille au retour, mange à midi |
-| ⏸️ 3 | **Un deuxième personnage** | **mise de côté, à la demande de l'auteur** — ils coexisteraient et se remarqueraient |
+| ✅ 3a | **Plusieurs personnages** | ils **coexistent** : compteur et interrupteur par pack dans la bibliothèque, apparition en tombant, départ animé, suppression du disque |
+| ⏸️ 3b | **Et ils se remarquent** | **toujours de côté** — le comportement social (s'approcher, réagir l'un à l'autre) n'est PAS fait |
 | 4 | **Il grimpe** | ✅ **4a** : bords et plafond de l'**écran** — reste **les fenêtres** (barres de titre, chute quand la fenêtre se ferme) ← *la prochaine* |
 | 5 | **Il suit** | se déplace vers l'application au premier plan |
 
@@ -695,23 +716,37 @@ avant d'écrire une ligne de physique, pas après.
 
 ## État actuel
 
-**L'étape 4a est terminée — il grimpe les bords et le plafond de l'écran.** Un personnage
-`blob` marche, court, s'arrête, fait demi-tour, circule sur les deux écrans, s'attrape à
-la souris, se lance et atterrit ; il grimpe les murs et le plafond de chaque écran, de
-lui-même ou parce qu'on l'a jeté contre un bord, et redescend ou se laisse tomber ; un
-tray l'affiche, le cache, le recharge, le fait démarrer avec Windows et le quitte ; un
-`config.json` règle son caractère sans recompiler. **264 tests**, **12 % d'un cœur**
-en marche et **0,8 %** caché (mesuré à l'étape 4a, sous la référence de 0,9 % —
-voir « Mesurer le CPU »).
+**Plusieurs personnages vivent à l'écran en même temps.** On les active depuis
+« Ma bibliothèque » (compteur et interrupteur par pack, doublons compris) ;
+chacun **apparaît en tombant** du haut d'un écran tiré au sort, et repart en se
+ramassant, sautant, puis tombant hors de l'écran. Une poubelle supprime un pack
+du disque. Le reste est inchangé — marche, escalade, attrape-souris, tray,
+`config.json`.
 
-**Et depuis le 2026-09-14, on choisit son personnage depuis l'application.** Un
-catalogue de **2353 packs** se parcourt par franchise, s'installe en un clic
-dans `%APPDATA%`, et le personnage change **à chaud**, sans redémarrage. Le
-dépôt ne versionne plus que `blob` : 3,2 Mo de sprites sous droits en sont
-sortis, tous réinstallables. Le design est dans
-`docs/specs/2026-09-11-catalogue-de-personnages-design.md`, le plan
-d'implémentation en 12 tâches dans
-`docs/plans/2026-09-11-catalogue-de-personnages.md`.
+**299 tests.** Et le CPU, mesuré sur le programme réel (release, 60 s) :
+
+| Roster | Caché | En marche |
+|---|---|---|
+| 1 | 0,7 % | — |
+| 4 | 0,9 % | — |
+| **10** | **0,7 %** | **67,9 %**, cadence tenue à 58,8 img/s |
+
+> ⚠️ **Le mode caché est PLAT** — 0,7 % à un personnage comme à dix. Notre
+> calcul ne grandit pas avec le roster : les signaux à 2 Hz, le recensement du
+> monde à 8 Hz et la sonde du curseur sont payés **une seule fois** par la
+> boucle unique. Ce qui coûte reste `SetWindowPos`, donc le **nombre de
+> personnages qui MARCHENT** — un personnage assis ou endormi est gratuit.
+>
+> **Aucun plafond n'est imposé**, par décision de l'auteur prise en
+> connaissance de la mesure : la bibliothèque **avertit** à partir de 10, et
+> n'interdit rien.
+
+> ⚠️ **Ce qui n'est PAS fait : le comportement social.** Ils coexistent, ils ne
+> se remarquent pas. Ne pas conclure de « plusieurs personnages » que l'étape 3
+> est soldée.
+
+**Le catalogue de 2353 packs** se parcourt par franchise et s'installe en un
+clic dans `%APPDATA%`. Le dépôt ne versionne plus que `blob`.
 
 > ⚠️ **La branche `catalogue-de-personnages` part de `etape-2-il-reagit`.**
 > L'étape 4a y a été fusionnée le 2026-09-14 ; **4b a été fusionnée puis
@@ -731,6 +766,8 @@ d'implémentation en 12 tâches dans
 | `docs/plans/2026-09-09-etape-2-il-reagit.md` | le plan de l'étape 2, **exécuté** — 7 tâches, 71 étapes |
 | `docs/specs/2026-09-11-etape-4a-il-grimpe-design.md` | le design de l'étape 4a : les plateformes verticales, `contact()`, l'intention `Grimper`, le monde vertical |
 | `docs/plans/2026-09-11-etape-4a-il-grimpe.md` | le plan de l'étape 4a, **soldé** — 7 tâches |
+| `docs/specs/2026-09-15-plusieurs-personnages-design.md` | **le design de « plusieurs personnages »** : la boucle unique, le multi-ensemble, l'apparition, le départ, la suppression — et le CPU mesuré AVANT d'être conçu |
+| `docs/plans/2026-09-15-plusieurs-personnages.md` | son plan, **soldé** — 13 tâches |
 | `docs/conception/2026-09-14-cout-des-sessions.md` | **ce que coûte une session d'assistance** : le relevé, et l'hypothèse évidente qui était fausse |
 | `docs/conception/2026-09-14-journal-des-etapes.md` | **le récit de chaque étape** (0, 1a, 1b, 2, 4a) et les réglages « à l'œil » qui se sont révélés faux — extrait de ce fichier le 2026-09-14 |
 | `docs/specs/2026-09-09-mesure-cpu.md` | **le dossier CPU complet** : les quatre hypothèses démenties par la mesure — à lire avant de toucher au chemin 60 Hz |
@@ -772,15 +809,26 @@ réglages « faits à l'œil » qui se sont tous révélés faux — est dans
 
 ### La prochaine action
 
-**L'étape 3 (un deuxième personnage) est mise de côté, à la demande de l'auteur.** La
-suite est l'**étape 4 complète** — les plateformes de **fenêtres** (barres de titre,
-chute quand la fenêtre se ferme, soustraction d'intervalles 1D pour les bords recouverts,
-spec §2.2 et décision n° 2) — puis l'**étape 5** (il suit l'application au premier plan).
+**L'étape 4 complète** — les plateformes de **fenêtres** (barres de titre, chute
+quand la fenêtre se ferme, soustraction d'intervalles 1D pour les bords
+recouverts, spec §2.2 et décision n° 2) — puis l'**étape 5** (il suit
+l'application au premier plan).
 
-L'étape 4a a posé les plateformes d'**écran** et toute la physique verticale
-(`contact()`, l'intention `Grimper`, le monde vertical) ; l'étape 4 restante n'ajoute
-**que** le recensement des fenêtres et leur filtrage (fenêtres fantômes, occlusion) —
-`geom.rs`, `Attachment` et le comportement d'escalade ne devraient pas avoir à changer.
+L'étape 4a ayant posé les plateformes d'**écran** et toute la physique
+verticale, il ne reste que le recensement des fenêtres et leur filtrage :
+`geom.rs`, `Attachment` et le comportement d'escalade ne devraient pas changer.
+
+> ⚠️ **Et c'est là que le CPU redeviendra une question.** Le recensement à 8 Hz
+> est aujourd'hui payé une seule fois pour tout le roster, ce qui est exactement
+> ce qui rend dix personnages gratuits en mode caché. `EnumWindows` y est
+> beaucoup plus cher que la liste des écrans : **re-mesurer avec
+> `docs/outils/mesurer-roster.ps1 -Cache`** après l'avoir branché, et comparer
+> aux 0,7 % d'aujourd'hui. Si le chiffre monte avec le roster, c'est que du
+> travail partagé est passé par erreur dans la boucle par personnage.
+
+**L'étape 3b (qu'ils se remarquent) reste de côté**, à la demande de l'auteur —
+mais elle est devenue facile : tous les personnages vivent dans un seul `Vec`,
+donc une rencontre est une vérification côté coordinateur.
 
 > ⚠️ **Reste ouvert depuis l'étape 4a : mesurer l'ancre de `grabWall`/`climbWall`.**
 > C'est la seule vérification du projet qui ne se scripte pas — il faut **regarder** le

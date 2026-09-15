@@ -142,6 +142,54 @@ barrière.
 > mesure à N=10, dont le résultat sera consigné ici. Rien n'en est déduit
 > d'avance.
 
+### ✅ La mesure après implémentation — et ce qu'elle corrige
+
+Relevés le 2026-09-15 sur le programme réel, build `release`, 60 s chacun,
+avec `docs/outils/mesurer-roster.ps1`. **Un seul processus portant tout le
+roster** : ce n'est plus l'approximation par N instances, c'est le vrai
+programme.
+
+| Roster | Mode | CPU total | Par personnage |
+|---|---|---|---|
+| 1 | caché | **0,7 %** | 0,68 % |
+| 4 | caché | **0,9 %** | 0,23 % |
+| **10** | **caché** | **0,7 %** | **0,07 %** |
+| **10** | **en marche** | **67,9 %** | 6,8 % |
+
+**Le mode caché est PLAT.** 0,7 % à un personnage, 0,7 % à dix. Notre calcul ne
+grandit pas avec le roster, parce que tout ce qui coûte — les cinq signaux à
+2 Hz, le recensement du monde à 8 Hz, la sonde du curseur à 60 Hz — est payé
+**une seule fois** par la boucle unique. Le travail par personnage (physique,
+comportement, hit-testing) est trop petit pour se voir.
+
+> C'est **mieux que la borne haute** annoncée plus haut. La mesure par N
+> instances donnait 0,8 % par personnage et prévoyait donc ~8 % à dix ; la
+> boucle unique en coûte **0,7 % au total**. L'argument « la part partagée est
+> payée une seule fois » n'était qu'un raisonnement — il est maintenant chiffré.
+
+**Et le coût par déplacement baisse aussi.** À N=10 en marche : 324
+placements/s pour 67,9 %, soit **0,207 point par (placement/s)**, contre 0,274
+à quatre instances et 0,351 à une. Dix fenêtres pilotées par une boucle
+coûtent donc **moins cher par mouvement** que dix processus — et la loi du §2
+se révèle **pessimiste** : elle prédisait 98 %, on mesure 67,9 %.
+
+**La réserve est levée.** La cadence tient : 3528 images en 60 s, soit
+**58,8 img/s** — la boucle n'a pas décroché, et 67,9 % reste sous un cœur
+entier, donc la file de déplacements du thread principal n'a pas de raison de
+s'accumuler. Le symptôme redouté (des personnages traînant derrière leur
+position calculée) n'apparaît pas à ce nombre.
+
+> ### ⚠️ Un chiffre de la trace était trompeur, et a été corrigé
+>
+> `SHIMEJI_CADENCE=1` rapportait « 19419 placements sur 3528 images (**550 %**) ».
+> Le pourcentage comparait des placements **tous acteurs confondus** à un nombre
+> d'images compté **une fois** : à dix personnages il ne pouvait que dépasser
+> 100 %, et ressemblait à une anomalie alors qu'il n'en était pas une.
+>
+> La trace divise désormais par le nombre d'acteurs et affiche « % par acteur ».
+> 550 % à dix acteurs, c'était **55 % par acteur** — soit exactement le taux de
+> déplacement attendu.
+
 ### La piste d'optimisation, non promise
 
 Une seule piste peut aplatir la courbe, et elle n'a **pas** été mesurée :
@@ -157,6 +205,20 @@ C'est la seule idée qui s'attaque au terme dominant. Le plan en fait une tâche
 **avec go/no-go sur mesure** : si le gain ne se voit pas sur 60 s, le code est
 jeté et la mesure consignée. On n'applique pas une optimisation non mesurée —
 c'est la règle du projet, et quatre hypothèses évidentes y sont déjà mortes.
+
+> ### ⛔ Non faite, et pourquoi — 2026-09-15
+>
+> **La mesure a retiré sa raison d'être.** Elle devait traiter un problème que
+> les relevés ci-dessous ne montrent pas : à dix personnages la cadence tient
+> (58,8 img/s), le total reste sous un cœur (67,9 %), et le coût par
+> déplacement s'est révélé **plus bas** que prévu (0,207 point contre 0,274
+> mesuré par instances séparées).
+>
+> L'écrire maintenant reviendrait à optimiser sur une intuition, dans le
+> chemin le plus sensible du programme, contre le seul principe que ce projet
+> tient depuis l'étape 1b. **L'idée reste consignée ici** : le jour où un
+> roster beaucoup plus grand, ou l'étape 4b et son `EnumWindows`, feront
+> remonter le chiffre, elle sera là, avec son protocole.
 
 ---
 

@@ -1,5 +1,9 @@
 # Plusieurs personnages simultanés — plan d'implémentation
 
+> ✅ **SOLDÉ le 2026-09-15.** Les 13 tâches sont exécutées, sauf la 12
+> (grouper les déplacements), **délibérément non faite** : la mesure de la
+> tâche 11 a retiré sa raison d'être. Voir le design §2.
+
 > **Pour l'exécutant :** ce plan s'exécute **tâche par tâche**, dans l'ordre.
 > Chaque tâche se termine par une suite verte et un commit. Les étapes sont
 > des cases à cocher (`- [ ]`) — une étape = une action de 2 à 5 minutes.

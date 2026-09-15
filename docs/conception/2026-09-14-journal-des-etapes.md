@@ -199,6 +199,148 @@ finit par ne protéger qu'un des deux chemins.**
 
 ---
 
+## Plusieurs personnages — 2026-09-15
+
+L'étape « ils coexistent ». Pas « ils se remarquent » : le comportement social
+reste de côté, à la demande de l'auteur.
+
+### Le CPU a été mesuré AVANT d'être conçu, et le piège s'est refermé une cinquième fois
+
+Le brief de l'auteur nommait lui-même le risque : « un personnage en marche
+coûte 12 % d'un cœur, donc deux ~24 %, quatre ~48 % — dis-moi franchement s'il
+faut plafonner ». La mesure a été faite **avant** d'écrire une ligne de design,
+en lançant N instances du binaire release — le coût des déplacements étant par
+fenêtre et par mouvement, N processus produisent la même charge que N
+personnages, à notre calcul partagé près.
+
+Le relevé brut :
+
+| N | CPU total |
+|---|---|
+| 1 | 14,1 % |
+| 2 | **11,8 %** |
+| 4 | 43,8 % |
+
+**Deux personnages ont coûté moins qu'un.** Le piège du dossier CPU, à
+l'identique : le chiffre « en marche » mesure le **comportement** — combien de
+fois le personnage a bougé — et pas le code. Il avait déjà piégé le projet
+quatre fois ; la cinquième n'a coûté que dix minutes, parce que le dossier
+prévenait.
+
+Les mesures comparables ont donné la loi : **le coût est linéaire dans le
+nombre de DÉPLACEMENTS, pas de fenêtres**. Quatre fenêtres en couche ne coûtent
+pas plus cher par mouvement qu'une seule. La bonne variable n'était donc pas le
+nombre de personnages mais **le nombre de personnages qui marchent** — et le
+biais de l'étape 2 les fait beaucoup s'arrêter.
+
+L'auteur a tranché en connaissance de cause : **aucun plafond**, un simple
+avertissement à partir de 10.
+
+### Et la mesure d'après implémentation a été meilleure que la prédiction
+
+| Roster | Caché | En marche |
+|---|---|---|
+| 1 | 0,7 % | — |
+| 4 | 0,9 % | — |
+| **10** | **0,7 %** | **67,9 %**, cadence tenue à 58,8 img/s |
+
+**Le mode caché est plat.** L'argument « la part partagée est payée une seule
+fois par la boucle unique » n'était qu'un raisonnement d'architecture ; il est
+maintenant chiffré — 0,7 % à dix personnages là où l'approximation par N
+processus en prévoyait 8.
+
+La loi s'est même révélée **pessimiste** : elle prédisait 98 % à N=10, on
+mesure 67,9 %. Dix fenêtres pilotées par une boucle coûtent moins cher par
+mouvement que dix processus.
+
+**Conséquence directe : l'optimisation prévue n'a pas été écrite.** Grouper les
+déplacements dans un `BeginDeferWindowPos` devait traiter un problème que la
+mesure ne montre pas. L'écrire aurait été optimiser sur une intuition, dans le
+chemin le plus sensible du programme — exactement ce que ce projet refuse
+depuis l'étape 1b. L'idée reste consignée dans le design, avec son protocole.
+
+### Ce qui était gratuit, et ce qui ne l'était pas
+
+L'auteur pressentait que l'apparition en chute serait **gratuite**. C'était
+juste, et pour la raison qu'il avait identifiée : `Attachment::Falling` existe
+depuis l'étape 1, les réflexes à 60 Hz gèrent chute et atterrissage depuis
+l'étape 4a. Le module `apparition.rs` ne fait que **choisir un écran et un x**.
+
+Le seul vrai risque y était ailleurs, et il a été testé plutôt que supposé :
+depuis le 2026-09-12, **le plafond attrape** (divergence assumée de
+Shimeji-ee), et un personnage qui apparaît en haut de la zone de travail naît
+à quelques pixels de sa face accrochable. Ce qui sauve, c'est que
+`contact_plafond` n'attrape **qu'en montant**. Le test le verrouille : qui
+assouplirait un jour cette condition casserait l'apparition, et l'apprendrait
+en `cargo test` plutôt qu'à l'écran.
+
+Le **départ**, lui, n'était pas gratuit. L'auteur demandait « une animation où
+il plierait les jambes pour préparer son saut ». Vérification faite dans le
+relevé des 46 poses : **cette frame n'existe pas** dans le vocabulaire Shimeji,
+qui n'a que `jump` — la frame 22, une seule image. Le départ est donc composé
+avec ce qui existe : `sit` 120 ms, `jump` 150 ms, `fall`. Et comme partout, la
+couverture partielle s'applique seule — un pack sans `sit` ni `jump` tombe
+directement, sans un cas particulier de plus.
+
+Le point de conception du départ : il **court-circuite `behavior::pas`** au
+lieu d'ajouter un état au comportement. Le réflexe d'atterrissage est non
+négociable par définition ; y mettre un « sauf si je pars » aurait été le
+premier pas vers un réflexe plein de cas particuliers.
+
+### ⚠️ Le piège de la session : PowerShell a double-encodé un fichier source
+
+Un `Get-Content | Set-Content -Encoding utf8` lancé pour corriger **un seul
+commentaire** a relu tout `main.rs` en cp1252 puis l'a réécrit en UTF-8 : les
+660 lignes accentuées sont devenues « mÃªme », et un BOM s'est ajouté en tête.
+
+**Le code compilait, et les 299 tests passaient.** Seuls les commentaires
+étaient touchés — c'est précisément ce qui rend ce défaut facile à ne pas voir,
+et il n'a été repéré qu'en relisant une sortie de `grep`.
+
+> **Règle qui en découle : ne jamais faire passer un fichier source par
+> `Get-Content` / `Set-Content`.** Les éditions passent par les outils
+> d'édition, ou par Python en UTF-8 explicite.
+
+La réparation a demandé de reconstruire la table inverse de cp1252 à la main :
+.NET laisse passer tels quels les cinq octets que cp1252 ne définit pas (0x81,
+0x8D, 0x8F, 0x90, 0x9D), là où Python refuse de les encoder.
+
+### Une trace qui mentait, et un défaut latent corrigé au passage
+
+`SHIMEJI_CADENCE=1` annonçait « 550 % » de taux de déplacement à dix
+personnages. Le pourcentage comparait des placements **tous acteurs confondus**
+à un nombre d'images compté **une seule fois** : à dix personnages il ne
+pouvait que dépasser 100 %. Il est désormais rapporté au nombre d'acteurs —
+550 % à dix, c'était 55 % par acteur, soit exactement ce qu'on attendait.
+
+Et `tray::basculer_visibilite` masquait **toutes** les fenêtres du programme,
+donc aussi celle du catalogue — y compris quand c'est depuis elle qu'on venait
+de désactiver quelqu'un. Sans conséquence tant qu'il n'y avait qu'une fenêtre ;
+corrigé en filtrant sur le préfixe `pet-`.
+
+### Ce que la généralisation a obligé à trancher
+
+Trois règles qui n'existaient pas à un personnage, et qui auraient été des bugs
+silencieux si on les avait laissées implicites :
+
+1. **Un seul RNG, semé une fois.** Un `XorShift32::seeded(index)` par
+   personnage serait retombé en plein dans le piège des graines séquentielles :
+   tous seraient apparus au même `x` et auraient tiré la même première envie.
+2. **Un seul personnage élu sous le curseur.** Sinon deux personnages
+   superposés sont attrapés ensemble par un même clic et se suivent jusqu'au
+   relâchement.
+3. **Les labels de fenêtre ne sont jamais réutilisés.** Ils viennent d'un
+   compteur monotone : retirer `pet-1` puis en ajouter un réattribuerait
+   `pet-1` pendant que Windows détruit encore la fenêtre précédente.
+
+Et le menu contextuel a demandé un soin particulier : son `continue` sautait
+l'image entière parce que l'instant est périmé au retour du menu, qui bloque.
+Le transformer en `continue` de la boucle `for` aurait étendu le défaut aux
+N−1 autres personnages au lieu de le corriger. C'est un `break` plus un drapeau.
+
+
+---
+
 ### Ce que le spike a déjà établi
 
 - **Le motif `AppHandle` + recherche de la fenêtre par label** est retenu pour `render.rs`,

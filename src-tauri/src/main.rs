@@ -1929,13 +1929,29 @@ fn boucle(
             if maintenant.saturating_sub(derniere_trace) >= Duration::from_secs(5) {
                 let secondes = maintenant.saturating_sub(derniere_trace).as_secs_f64();
                 let moyenne_us = travail_cumule.as_micros() as f64 / images_depuis_trace as f64;
+                // ⚠️ **Le taux est rapporté au nombre d'ACTEURS.**
+                //
+                // `placements_depuis_trace` compte tous les acteurs
+                // confondus : à 10 personnages, il vaut jusqu'à 10 fois le
+                // nombre d'images, et le pourcentage brut donnait « 550 % »
+                // — un chiffre qui ne veut rien dire et qu'on croirait à une
+                // anomalie. Divisé par le nombre d'acteurs, il redevient ce
+                // qu'il a toujours été : la proportion d'images où UN
+                // personnage a bougé.
+                //
+                // `max(1)` : sans aucun personnage à l'écran (cas normal
+                // depuis cette étape), on ne divise pas par zéro.
+                let acteurs_ici = acteurs.len().max(1) as f64;
                 println!(
-                    "cadence : {:.1} img/s, travail moyen {:.0} µs, {} placements sur {} images ({:.0} %)",
+                    "cadence : {:.1} img/s, travail moyen {:.0} µs, \
+                     {} placements sur {} images × {} acteurs ({:.0} % par acteur)",
                     images_depuis_trace as f64 / secondes,
                     moyenne_us,
                     placements_depuis_trace,
                     images_depuis_trace,
-                    placements_depuis_trace as f64 * 100.0 / images_depuis_trace as f64
+                    acteurs.len(),
+                    placements_depuis_trace as f64 * 100.0
+                        / (images_depuis_trace as f64 * acteurs_ici)
                 );
                 placements_depuis_trace = 0;
                 images_depuis_trace = 0;
