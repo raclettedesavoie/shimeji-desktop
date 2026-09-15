@@ -82,6 +82,95 @@
   .carte span { font-size: 12px; text-align: center; }
   .pastille { color: #7fd67f; }
 
+  /* ── La carte de bibliothèque ────────────────────────────────────────
+     Elle porte cinq choses au lieu de deux : vignette, nom, − n +,
+     interrupteur, poubelle. `position: relative` pour que la poubelle se
+     pose dans son coin sans sortir de la carte. */
+  .carte-biblio {
+    position: relative;
+    justify-content: space-between;
+  }
+  .carte-biblio img { height: 96px; }   /* de la place pour la rangée */
+
+  .rangee {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 2px;
+  }
+
+  /* Tous les petits boutons de la carte partagent la même assiette : fond
+     transparent, texte hérité, et la palette mesurée du site — on
+     n'introduit pas une seconde palette pour quatre boutons. */
+  .rangee button,
+  .poubelle {
+    background: rgba(255, 255, 255, 0.08);
+    color: inherit;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    font: inherit;
+    font-size: 13px;
+    line-height: 1;
+    padding: 2px 7px;
+    cursor: pointer;
+  }
+  .rangee button:hover:not([disabled]),
+  .poubelle:hover:not([disabled]) { background: rgba(255, 255, 255, 0.18); }
+  .rangee button[disabled],
+  .poubelle[disabled] { opacity: 0.3; cursor: default; }
+
+  .compteur {
+    min-width: 14px;          /* la rangée ne doit pas sauter à 0 → 1 */
+    text-align: center;
+    font-size: 12px;
+    color: #7fd67f;
+  }
+
+  /* L'interrupteur : un rail et une pastille, en CSS pur. Pas de
+     `<input type=checkbox>` — il faudrait le masquer puis le redessiner,
+     pour le même résultat et un piège d'accessibilité de plus. Le rôle
+     ARIA est posé côté JS. */
+  .interrupteur {
+    width: 30px;
+    height: 16px;
+    padding: 0;
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.12);
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    position: relative;
+    cursor: pointer;
+  }
+  .interrupteur::after {
+    content: '';
+    position: absolute;
+    top: 2px; left: 2px;
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    background: rgb(201, 201, 201);
+    transition: transform 120ms ease;
+  }
+  .interrupteur.allume { background: rgba(127, 214, 127, 0.35); }
+  .interrupteur.allume::after { transform: translateX(14px); background: #7fd67f; }
+
+  /* La poubelle, dans le coin — le seul bouton destructeur de toute
+     l'application. */
+  .poubelle {
+    position: absolute;
+    top: 4px; right: 4px;
+    padding: 1px 5px;
+    font-size: 12px;
+  }
+  .poubelle:hover:not([disabled]) { background: rgba(214, 90, 90, 0.35); }
+
+  /* Le bandeau des 10. Il AVERTIT, il n'interdit rien : ni bouton
+     désactivé, ni confirmation (design §2). */
+  .avertissement {
+    margin: 12px 16px 0;
+    padding: 8px 12px;
+    background: rgba(214, 170, 90, 0.15);
+    border-left: 3px solid rgb(214, 170, 90);
+    font-size: 13px;
+  }
+
   #etat {
     position: fixed;
     bottom: 0; left: 0; right: 0;
