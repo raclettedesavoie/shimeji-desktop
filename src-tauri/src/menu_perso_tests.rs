@@ -29,7 +29,7 @@ fn chaque_envie_se_decode_en_elle_meme() {
 fn un_identifiant_inconnu_ne_decode_rien() {
     // C'est ce qui permet à `actions::executer` d'utiliser `commande_de`
     // comme cas par défaut sans avaler les entrées du tray.
-    assert_eq!(commande_de("recharger"), None);
+    assert_eq!(commande_de("afficher"), None);
     assert_eq!(commande_de(""), None);
 }
 

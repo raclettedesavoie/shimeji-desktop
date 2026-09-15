@@ -7,9 +7,9 @@
 //! # Pourquoi ce fichier existe
 //!
 //! Il y a maintenant **deux** menus : celui du tray et celui du clic droit
-//! sur le personnage. Quatre entrées leur sont communes — cacher, recharger,
-//! ouvrir le dossier, quitter. Les écrire deux fois, c'est garantir qu'elles
-//! divergeront à la première correction.
+//! sur le personnage. Deux entrées leur sont communes — le catalogue et
+//! quitter. Les écrire deux fois, c'est garantir qu'elles divergeront à la
+//! première correction.
 //!
 //! # ⚠️ Et surtout : il ne peut y avoir QU'UN SEUL gestionnaire
 //!
@@ -45,21 +45,18 @@ use tauri::{AppHandle, Wry};
 
 /// Entrées du menu du **tray**.
 pub const ID_AFFICHER: &str = "afficher";
-pub const ID_RECHARGER: &str = "recharger";
 pub const ID_DEMARRAGE: &str = "demarrage";
-pub const ID_DOSSIER: &str = "dossier";
 pub const ID_QUITTER: &str = "quitter";
 
-/// Proposée par les DEUX menus, comme `recharger` et `dossier` : elle fait
-/// exactement la même chose depuis l'un ou l'autre, donc un seul
-/// identifiant — et donc un seul cas dans `executer`.
+/// Proposée par les DEUX menus, comme `quitter` : elle fait exactement la
+/// même chose depuis l'un ou l'autre, donc un seul identifiant — et donc un
+/// seul cas dans `executer`.
 pub const ID_CATALOGUE: &str = "catalogue";
 
 /// Entrée propre au menu du **personnage**.
 ///
-/// `recharger`, `dossier` et `quitter` n'y figurent pas : elles font
-/// exactement la même chose depuis les deux menus, donc elles réutilisent
-/// telles quelles `ID_RECHARGER`, `ID_DOSSIER` et `ID_QUITTER`.
+/// `quitter` n'y figure pas : elle fait exactement la même chose depuis les
+/// deux menus, donc elle réutilise telle quelle `ID_QUITTER`.
 ///
 /// Seule la visibilité a besoin d'un identifiant distinct, parce qu'elle ne
 /// se lit pas de la même façon : côté tray c'est une **case à cocher** dont
@@ -155,15 +152,6 @@ impl Actions {
         })
     }
 
-    /// Le dossier du personnage courant.
-    ///
-    /// `ok()` : un verrou empoisonné rend `None`, et l'appelant se contentera
-    /// de ne rien faire — bien mieux qu'un panic dans un gestionnaire de menu,
-    /// qui tuerait le thread d'interface.
-    pub fn dossier_courant(&self) -> Option<PathBuf> {
-        self.perso.lock().ok().map(|p| p.1.clone())
-    }
-
     /// Change le personnage courant et demande son chargement.
     ///
     /// Rend la version du rechargement, que la boucle 60 Hz comparera à la
@@ -249,40 +237,8 @@ pub fn executer(actions: &Actions, app: &AppHandle, id: &str, cases_du_tray: &Ca
         }
 
         // ── Les entrées communes aux deux menus ─────────────────────────
-        ID_RECHARGER => {
-            // Le dossier DU PERSONNAGE courant, déjà résolu (bibliothèque
-            // puis dossier livré) : il n'y a plus de nom à joindre ici. Il
-            // se lit désormais sous verrou, la fenêtre du catalogue pouvant
-            // l'avoir changé depuis le démarrage.
-            let Some(dossier) = actions.dossier_courant() else {
-                eprintln!("rechargement impossible : verrou du personnage empoisonné");
-                return;
-            };
-            match crate::rechargement::preparer(&actions.demande, &dossier) {
-                Ok(v) => println!("rechargement demandé (version {v})"),
-                // **Bruyant.** Un rechargement silencieusement raté est le
-                // pire des cas : on croit tester son nouveau timing et on
-                // regarde l'ancien.
-                Err(e) => eprintln!("rechargement impossible : {e}"),
-            }
-        }
-
         ID_CATALOGUE => {
             ouvrir_catalogue(app);
-        }
-
-        ID_DOSSIER => {
-            // Ouvre désormais le dossier DU PERSONNAGE et non son parent,
-            // `actions.dossier` ayant changé de sens. C'est plus utile : on
-            // ouvre ce menu pour éditer un `mascot.json` ou regarder des
-            // frames, jamais pour voir la liste des personnages.
-            //
-            // `explorer` plutôt qu'un plugin Tauri : c'est une ligne, ça
-            // n'ajoute aucune dépendance, et l'échec (dossier absent) n'a pas
-            // de conséquence.
-            if let Some(dossier) = actions.dossier_courant() {
-                let _ = std::process::Command::new("explorer").arg(&dossier).spawn();
-            }
         }
 
         ID_QUITTER => {

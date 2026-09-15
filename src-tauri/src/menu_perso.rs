@@ -18,7 +18,7 @@
 //! « remettre les entrées d'accord avec l'état », qui est exactement la
 //! classe de bugs que ce projet évite ailleurs par recalcul (décision n° 1).
 
-use crate::actions::{ID_CATALOGUE, ID_DOSSIER, ID_P_CACHER, ID_QUITTER, ID_RECHARGER};
+use crate::actions::{ID_CATALOGUE, ID_P_CACHER, ID_QUITTER};
 use crate::behavior::desire::TableEnvies;
 use crate::behavior::intention::{Intention, Jeu};
 use crate::character::attach::Attachment;
@@ -279,24 +279,6 @@ pub fn ouvrir(
     )
     .map_err(|e| format!("entrée « cacher » : {e}"))?;
 
-    let recharger = MenuItem::with_id(
-        app,
-        ID_RECHARGER,
-        "Recharger les personnages",
-        true,
-        None::<&str>,
-    )
-    .map_err(|e| format!("entrée « recharger » : {e}"))?;
-
-    let dossier = MenuItem::with_id(
-        app,
-        ID_DOSSIER,
-        "Ouvrir le dossier des personnages",
-        true,
-        None::<&str>,
-    )
-    .map_err(|e| format!("entrée « dossier » : {e}"))?;
-
     let catalogue = MenuItem::with_id(
         app,
         ID_CATALOGUE,
@@ -315,7 +297,7 @@ pub fn ouvrir(
     // « Quitter » en dernier, derrière son propre séparateur.
     //
     // C'est la seule action irréversible du menu, et la seule qu'on ne veut
-    // surtout pas cliquer de travers en visant « Ouvrir le dossier ». La
+    // surtout pas cliquer de travers en visant « Catalogue ». La
     // mettre à part et tout en bas est la convention de toutes les
     // applications, pour cette raison exacte.
     let quitter = MenuItem::with_id(app, ID_QUITTER, "Quitter", true, None::<&str>)
@@ -334,8 +316,6 @@ pub fn ouvrir(
         refs.push(&separateur);
     }
     refs.push(&cacher);
-    refs.push(&recharger);
-    refs.push(&dossier);
     refs.push(&catalogue);
     refs.push(&separateur_final);
     refs.push(&quitter);
