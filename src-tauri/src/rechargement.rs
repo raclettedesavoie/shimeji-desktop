@@ -27,21 +27,44 @@
 
 use crate::character::manifest::Manifest;
 use crate::config::Reglages;
-use std::path::Path;
 use std::sync::{Arc, Mutex};
+
+/// Un pack chargé, prêt à être instancié autant de fois qu'il le faut.
+///
+/// `Manifest` dérive déjà `Clone` : chaque acteur possède sa copie. Quelques
+/// Ko par personnage, ce qui ne justifie pas d'introduire un `Arc` et
+/// l'emprunt partagé qui va avec (design §4).
+pub struct PersonnageCharge {
+    pub nom: String,
+    pub manifeste: Manifest,
+}
 
 /// Ce qu'un rechargement apporte.
 pub struct Rechargement {
-    pub manifeste: Manifest,
-    pub reglages: Reglages,
-
-    /// Le personnage rechargé.
+    /// Les packs chargés, **un par nom distinct** du roster voulu.
     ///
-    /// Transporté jusqu'au webview parce qu'il peut avoir CHANGÉ : la fenêtre
-    /// du catalogue en choisit un autre, et `pet.js` doit alors refaire sa
-    /// base d'URL. Sans ce nom, il réclamerait encore les images de l'ancien
-    /// — un personnage parfaitement animé avec le mauvais dessin.
-    pub personnage: String,
+    /// Lus par le thread de la commande, jamais par la boucle : c'est ce qui
+    /// garantit qu'il n'y a aucune entrée-sortie à 60 Hz.
+    pub personnages: Vec<PersonnageCharge>,
+
+    /// Le roster voulu, **avec ses doublons** : `["blob", "blob", "luffy"]`
+    /// veut dire deux blob et un luffy (design §4).
+    ///
+    /// Distinct de `personnages`, qui dédoublonne : celui-ci dit COMBIEN,
+    /// celui-là dit QUOI charger.
+    pub voulus: Vec<String>,
+
+    /// Les retraits doivent-ils sauter l'animation de départ ?
+    ///
+    /// `true` uniquement pour la suppression d'un pack du disque : effacer
+    /// les PNG pendant qu'une fenêtre les réclame encore par `shime://`
+    /// donnerait un personnage à moitié dessiné en pleine chute (design §7).
+    ///
+    /// **Un booléen, pas un second chemin de réconciliation** — deux chemins
+    /// divergeraient à la première correction.
+    pub sans_animation: bool,
+
+    pub reglages: Reglages,
 
     /// La table d'envies, reconstruite depuis la config relue.
     pub table: crate::behavior::desire::TableEnvies,
@@ -75,38 +98,55 @@ pub fn nouvelle_demande() -> Demande {
     Arc::new(Mutex::new(None))
 }
 
-/// Relit le manifeste et la config depuis le disque, et dépose le résultat.
+/// Lit ce qu'il faut pour afficher exactement `voulus`, et le dépose.
 ///
-/// Appelée depuis le thread du tray. Rend la nouvelle version, ou l'erreur —
-/// que l'appelant affiche, parce qu'un rechargement silencieusement raté est
-/// le pire des cas : on croit tester son nouveau timing et on regarde
-/// l'ancien.
-/// `dossier_perso` est le dossier **du personnage** et non son parent : il est
-/// désormais résolu par `config::dossier_du_personnage`, qui consulte la
-/// bibliothèque puis le dossier livré. Recevoir le chemin déjà résolu évite
-/// que cette fonction ait à connaître cette règle — et lui permet de charger
-/// un personnage de la bibliothèque comme un autre, sans le savoir.
-/// Le nom d'un personnage, c'est le nom de son dossier.
+/// ⚠️ **Les entrées-sorties D'ABORD, verrou non tenu.** Un manifeste
+/// illisible fait sortir ici sans rien avoir touché, et les personnages
+/// continuent avec ce qu'ils avaient. C'est le point le plus important de ce
+/// fichier — on va éditer ces JSON des dizaines de fois. Tenir le verrou
+/// pendant une lecture de fichier bloquerait en plus la boucle 60 Hz.
 ///
-/// `file_name` rend une `Option` (un chemin peut finir par `..`) et un
-/// `OsStr` (Windows tolère des noms qui ne sont pas de l'UTF-8 valide) :
-/// d'où les deux conversions en cascade. Le repli sur `blob` n'est atteint
-/// que par un chemin absurde, et vaut mieux qu'un `unwrap`.
-fn nom_du_dossier(dossier: &Path) -> String {
-    dossier
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("blob")
-        .to_string()
-}
-
-pub fn preparer(demande: &Demande, dossier_perso: &Path) -> Result<u64, String> {
+/// Un nom **introuvable ou illisible** est signalé bruyamment et **ignoré** :
+/// les autres personnages doivent vivre. Échouer ici sur un seul pack effacé
+/// à la main rendrait toute la bibliothèque inutilisable.
+///
+/// Une liste entièrement vide est un **succès** — zéro personnage est un
+/// état normal (design §4).
+pub fn preparer_roster(
+    demande: &Demande,
+    voulus: &[String],
+    sans_animation: bool,
+) -> Result<u64, String> {
     // ── Les entrées-sorties D'ABORD, verrou non tenu ────────────────────
-    // Si le manifeste est illisible on sort ici, **sans avoir rien touché** :
-    // le personnage continue avec ce qu'il avait. C'est le point le plus
-    // important de ce fichier — on va éditer ce JSON des dizaines de fois.
-    let manifeste = Manifest::load(dossier_perso)
-        .map_err(|e| format!("manifeste illisible, rien n'a changé : {e}"))?;
+    //
+    // Un `BTreeSet` : on ne lit le manifeste d'un pack QU'UNE FOIS, même si
+    // trois exemplaires en sont voulus — et l'ordre est stable d'un appel à
+    // l'autre, contrairement à un `HashSet`.
+    let distincts: std::collections::BTreeSet<&String> = voulus.iter().collect();
+
+    let mut personnages = Vec::new();
+    for nom in distincts {
+        let Some(dossier) = crate::config::dossier_du_personnage(nom) else {
+            eprintln!("personnage « {nom} » introuvable : ignoré");
+            continue;
+        };
+        match Manifest::load(&dossier) {
+            Ok(manifeste) => personnages.push(PersonnageCharge {
+                nom: nom.clone(),
+                manifeste,
+            }),
+            Err(e) => eprintln!("personnage « {nom} » illisible, ignoré : {e}"),
+        }
+    }
+
+    // Ne garder que les noms réellement chargés. Sans ce filtre, la
+    // réconciliation redemanderait la création d'un personnage qu'elle ne
+    // peut pas créer — à chaque passage à 8 Hz, indéfiniment.
+    let voulus: Vec<String> = voulus
+        .iter()
+        .filter(|n| personnages.iter().any(|p| &p.nom == *n))
+        .cloned()
+        .collect();
 
     let config = crate::config::charger();
     let reglages = Reglages::depuis(&config);
@@ -133,20 +173,18 @@ pub fn preparer(demande: &Demande, dossier_perso: &Path) -> Result<u64, String> 
     // ce cache par `version + '/' + frame` : deux rechargements de même
     // version font de chaque frame **déjà vue** un succès de cache, qui rend
     // l'URL de l'ANCIEN personnage. À l'écran, le personnage changeait pour
-    // les poses neuves et gardait l'ancien dessin pour les poses connues —
-    // d'où « il repasse sur blob dès qu'il fait autre chose que flâner ».
+    // les poses neuves et gardait l'ancien dessin pour les poses connues.
     //
     // `Relaxed` : on ne demande qu'une chose à cet atomique, que deux appels
-    // ne rendent jamais le même nombre. Aucun autre accès mémoire n'a besoin
-    // d'être ordonné par rapport à lui, donc l'ordonnancement le moins cher
-    // convient.
+    // ne rendent jamais le même nombre.
     static COMPTEUR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let version = COMPTEUR.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
 
     *boite = Some(Rechargement {
-        manifeste,
+        personnages,
+        voulus,
+        sans_animation,
         reglages,
-        personnage: nom_du_dossier(dossier_perso),
         table,
         echelle_config: config.echelle,
         config,
@@ -175,22 +213,19 @@ mod tests {
     /// donc systématiquement de 0 + 1.
     #[test]
     fn deux_rechargements_consommes_ne_partagent_pas_leur_version() {
-        let dossier = crate::config::dossier_du_personnage("blob")
-            .expect("le personnage de référence doit exister");
-
         let demande: Demande = nouvelle_demande();
+        let roster = vec!["blob".to_string()];
 
-        let v1 = preparer(&demande, &dossier).expect("premier rechargement");
+        let v1 = preparer_roster(&demande, &roster, false).expect("premier rechargement");
         // La boucle consomme la demande — c'est exactement ce que fait
         // `boite.take()` à 8 Hz.
         demande.lock().unwrap().take();
 
-        let v2 = preparer(&demande, &dossier).expect("second rechargement");
+        let v2 = preparer_roster(&demande, &roster, false).expect("second rechargement");
 
         assert_ne!(
             v1, v2,
-            "deux rechargements consommés ont rendu la même version : \
-             le cache du webview servirait l'ancien personnage"
+            "deux rechargements consommés ont rendu la même version :              le cache du webview servirait l'ancien personnage"
         );
         assert!(v2 > v1, "les versions doivent croître ({v1} puis {v2})");
     }
@@ -198,14 +233,64 @@ mod tests {
     /// Et deux demandes NON consommées gardent la propriété d'origine.
     #[test]
     fn deux_rechargements_rapproches_croissent_aussi() {
-        let dossier = crate::config::dossier_du_personnage("blob")
-            .expect("le personnage de référence doit exister");
-
         let demande: Demande = nouvelle_demande();
-        let v1 = preparer(&demande, &dossier).expect("premier");
-        // Sans `take()` : deux clics plus rapides que la boucle.
-        let v2 = preparer(&demande, &dossier).expect("second");
+        let roster = vec!["blob".to_string()];
 
-        assert!(v2 > v1, "deux clics rapprochés doivent différer");
+        let v1 = preparer_roster(&demande, &roster, false).expect("premier");
+        let v2 = preparer_roster(&demande, &roster, false).expect("second");
+        assert!(v2 > v1);
+    }
+
+    /// Un pack demandé trois fois n'est LU qu'une fois.
+    ///
+    /// C'est ce qui rend les doublons gratuits : trois blob à l'écran, c'est
+    /// un seul `mascot.json` lu et trois `Manifest::clone`.
+    #[test]
+    fn un_pack_en_triple_n_est_charge_qu_une_fois() {
+        let demande: Demande = nouvelle_demande();
+        let roster = vec!["blob".to_string(), "blob".to_string(), "blob".to_string()];
+
+        preparer_roster(&demande, &roster, false).expect("rechargement");
+
+        let boite = demande.lock().unwrap();
+        let r = boite.as_ref().expect("une demande déposée");
+        assert_eq!(r.personnages.len(), 1, "un seul manifeste lu");
+        assert_eq!(r.voulus.len(), 3, "mais trois exemplaires voulus");
+    }
+
+    /// Un nom introuvable est ignoré, et les autres vivent.
+    ///
+    /// Échouer sur un seul pack effacé à la main rendrait toute la
+    /// bibliothèque inutilisable.
+    #[test]
+    fn un_nom_introuvable_est_ignore_et_les_autres_vivent() {
+        let demande: Demande = nouvelle_demande();
+        let roster = vec![
+            "blob".to_string(),
+            "ce-pack-n-existe-pas-du-tout".to_string(),
+        ];
+
+        preparer_roster(&demande, &roster, false).expect("rechargement");
+
+        let boite = demande.lock().unwrap();
+        let r = boite.as_ref().expect("une demande déposée");
+        assert_eq!(r.personnages.len(), 1);
+        assert_eq!(r.personnages[0].nom, "blob");
+        // Le nom mort est retiré du roster voulu : sans ce filtre, la
+        // réconciliation redemanderait sa création à chaque passage à 8 Hz,
+        // indéfiniment.
+        assert_eq!(r.voulus, vec!["blob".to_string()]);
+    }
+
+    /// Une liste vide est un SUCCÈS, pas une erreur.
+    #[test]
+    fn un_roster_vide_est_un_succes() {
+        let demande: Demande = nouvelle_demande();
+        preparer_roster(&demande, &[], false).expect("un roster vide est valide");
+
+        let boite = demande.lock().unwrap();
+        let r = boite.as_ref().expect("une demande déposée");
+        assert!(r.personnages.is_empty());
+        assert!(r.voulus.is_empty());
     }
 }

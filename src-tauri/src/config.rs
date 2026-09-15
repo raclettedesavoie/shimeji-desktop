@@ -557,6 +557,32 @@ pub fn ecrire_personnages(chemin: &Path, noms: &[String]) -> Result<(), String> 
     std::fs::write(chemin, texte).map_err(|e| format!("écriture de config.json : {e}"))
 }
 
+/// Ce pack vit-il dans la bibliothèque `%APPDATA%` ?
+///
+/// **C'est LA règle de suppressibilité** (design §7) : on ne supprime que ce
+/// que le catalogue a installé, jamais un fichier versionné du dépôt.
+///
+/// La règle est **générale**, et surtout pas un cas particulier nommé
+/// « blob » : `blob` n'est pas supprimable pour la raison qui vaudra aussi
+/// pour tout futur pack de référence. Le dossier livré n'est d'ailleurs
+/// peut-être même pas inscriptible — une installation ordinaire le pose à
+/// côté de l'exe, dans `Program Files`.
+///
+/// Le cas de l'homonyme est assumé : un pack présent dans les DEUX racines
+/// est supprimable, on efface la copie de la bibliothèque, et **celle du
+/// dépôt réapparaît alors dans la liste**. C'est la conséquence directe de la
+/// règle de résolution « bibliothèque d'abord, dépôt ensuite ». Ça peut
+/// surprendre ; ça ne peut pas détruire de données.
+pub fn est_dans_la_bibliotheque(nom: &str) -> bool {
+    match dossier_bibliotheque() {
+        // Le `mascot.json` et pas seulement le dossier : c'est le même test
+        // qu'ailleurs pour « ceci est un personnage », et il écarte d'un coup
+        // les dossiers `.partiel` d'une installation interrompue.
+        Some(b) => b.join(nom).join("mascot.json").is_file(),
+        None => false,
+    }
+}
+
 /// Enregistre la liste des personnages dans le `config.json` réellement
 /// chargé, ou en crée un dans `%APPDATA%` s'il n'y en avait aucun.
 pub fn definir_personnages(noms: &[String]) -> Result<(), String> {

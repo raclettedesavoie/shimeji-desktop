@@ -31,7 +31,6 @@
 
 use crate::rechargement::Demande;
 use crate::tray::Visibilite;
-use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use tauri::menu::CheckMenuItem;
@@ -116,17 +115,22 @@ pub struct Actions {
     pub demande: Demande,
     pub commande: BoiteCommande,
 
-    /// Le personnage courant et son dossier.
+    /// Le roster **voulu** : la liste des personnages qui doivent vivre,
+    /// avec ses doublons (design §4).
     ///
-    /// `Mutex` parce qu'ils **changent maintenant en cours d'exécution** : la
-    /// fenêtre du catalogue peut en choisir un autre. Ils étaient constants
-    /// tant qu'un seul personnage était fixé au démarrage.
+    /// `Mutex` parce qu'il change en cours d'exécution — la fenêtre de la
+    /// bibliothèque en ajoute et en retire.
+    roster: Mutex<Vec<String>>,
+
+    /// Les personnages **réellement présents** à l'écran, publiés par la
+    /// boucle 60 Hz à chaque réconciliation.
     ///
-    /// Les deux ensemble dans UN verrou et non deux : ils doivent changer
-    /// d'un coup, sinon un rechargement pourrait lire le nouveau nom avec
-    /// l'ancien dossier — et servir les images de l'un sous le manifeste de
-    /// l'autre.
-    perso: Mutex<(String, PathBuf)>,
+    /// ⚠️ **Distinct de `roster`, et c'est tout son intérêt.** `roster` dit
+    /// ce qu'on veut ; celui-ci dit où en est la boucle. C'est la seule
+    /// façon pour la suppression d'un pack de savoir que les fenêtres ont
+    /// vraiment disparu avant d'effacer les PNG — plutôt que de le supposer
+    /// après un délai fixe (design §7).
+    presents: Mutex<Vec<String>>,
 
     /// Renseignées par `tray::installer` **après** la construction du menu :
     /// les cases n'existent pas avant. `Mutex<Option<…>>` et non un champ
@@ -139,37 +143,75 @@ impl Actions {
     pub fn nouvelles(
         visibilite: Visibilite,
         demande: Demande,
-        dossier: PathBuf,
-        personnage: String,
+        roster: Vec<String>,
         commande: BoiteCommande,
     ) -> Arc<Actions> {
         Arc::new(Actions {
             visibilite,
             demande,
             commande,
-            perso: Mutex::new((personnage, dossier)),
+            // Les présents sont vides au départ : la boucle les publiera à
+            // sa première image. Rien ne les lit avant.
+            presents: Mutex::new(Vec::new()),
+            roster: Mutex::new(roster),
             cases: Mutex::new(None),
         })
     }
 
-    /// Change le personnage courant et demande son chargement.
+    /// Remplace la liste des personnages voulus et demande le chargement.
     ///
     /// Rend la version du rechargement, que la boucle 60 Hz comparera à la
     /// sienne pour savoir qu'il y a du nouveau.
-    pub fn changer_personnage(&self, nom: &str, dossier: PathBuf) -> Result<u64, String> {
-        // Les entrées-sorties D'ABORD, verrou non tenu : si le manifeste est
-        // illisible, on sort sans avoir rien touché et le personnage courant
-        // continue avec ce qu'il avait. Tenir le verrou pendant une lecture
-        // de fichier bloquerait en plus la boucle 60 Hz pour rien.
-        let version = crate::rechargement::preparer(&self.demande, &dossier)?;
+    ///
+    /// `sans_animation` : les retraits sautent-ils l'animation de départ ?
+    /// Vrai pour la seule suppression d'un pack du disque — voir le champ du
+    /// même nom sur `Rechargement`.
+    pub fn definir_roster(&self, voulus: &[String], sans_animation: bool) -> Result<u64, String> {
+        // Les entrées-sorties D'ABORD, verrou non tenu : si un manifeste est
+        // illisible, on sort sans avoir rien touché et les personnages
+        // continuent avec ce qu'ils avaient. Tenir le verrou pendant une
+        // lecture de fichier bloquerait en plus la boucle 60 Hz pour rien.
+        let version = crate::rechargement::preparer_roster(&self.demande, voulus, sans_animation)?;
 
-        match self.perso.lock() {
-            Ok(mut p) => {
-                *p = (nom.to_string(), dossier);
+        match self.roster.lock() {
+            Ok(mut r) => {
+                *r = voulus.to_vec();
                 Ok(version)
             }
-            Err(_) => Err("verrou du personnage empoisonné".to_string()),
+            Err(_) => Err("verrou du roster empoisonné".to_string()),
         }
+    }
+
+    /// La liste voulue en ce moment, doublons compris.
+    ///
+    /// `unwrap_or_default` : un verrou empoisonné rend une liste vide, et
+    /// l'appelant affichera une bibliothèque vide plutôt que de paniquer
+    /// dans un gestionnaire de menu — ce qui tuerait le thread d'interface.
+    pub fn roster(&self) -> Vec<String> {
+        self.roster.lock().map(|r| r.clone()).unwrap_or_default()
+    }
+
+    /// La boucle publie ici ce qui vit RÉELLEMENT à l'écran.
+    ///
+    /// Appelé à chaque réconciliation, donc au plus 8 fois par seconde, et
+    /// jamais à 60 Hz : le verrou n'est pas sur le chemin chaud.
+    pub fn publier_presents(&self, noms: Vec<String>) {
+        if let Ok(mut p) = self.presents.lock() {
+            *p = noms;
+        }
+    }
+
+    /// Combien d'exemplaires de ce nom vivent réellement à l'écran.
+    ///
+    /// C'est ce qu'attend la suppression avant d'effacer les fichiers.
+    pub fn acteurs_nommes(&self, nom: &str) -> usize {
+        self.presents
+            .lock()
+            .map(|p| p.iter().filter(|n| n.as_str() == nom).count())
+            // Verrou empoisonné : on rend 0 plutôt que de bloquer la
+            // suppression à jamais. Le pire cas est d'effacer un peu tôt, ce
+            // qui n'arrive que si la boucle a déjà paniqué.
+            .unwrap_or(0)
     }
 
     pub fn enregistrer_cases(&self, cases: CasesTray) {
