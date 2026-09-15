@@ -40,6 +40,7 @@ mod probe;
 mod rechargement;
 mod render;
 mod rng;
+mod roster;
 mod signals;
 mod sim;
 mod tray;
