@@ -410,6 +410,87 @@ pub fn placer(app: &AppHandle, label: &str, coin: Point) -> Result<(), String> {
     .map_err(|e| format!("set_position : {e}"))
 }
 
+// ── SPIKE (2026-09-16) — À SUPPRIMER APRÈS MESURE ──────────────────────
+//
+// La question : `placer` passe aujourd'hui par `win.set_position`, donc par
+// `send_user_message` de tauri-runtime-wry, donc par un `PostMessageW` vers
+// le thread principal (tao `event_loop.rs:570`). À 11 personnages qui
+// marchent, cette file déborde — c'est la cause mesurée du « failed to send
+// message to the webview » et de l'application qui ne répond plus.
+//
+// L'alternative évidente est d'appeler `SetWindowPos` nous-mêmes. Mais entre
+// threads, `SetWindowPos` **bloque l'appelant** jusqu'à ce que le thread
+// propriétaire traite la demande — sauf avec `SWP_ASYNCWINDOWPOS`, qui la
+// reposte. On échangerait alors une file qui déborde contre une boucle 60 Hz
+// qui rame. **Ce spike mesure laquelle des trois voies tient.**
+
+/// Les trois façons de déplacer la fenêtre, comparées par le spike.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModeDeplacement {
+    /// Ce que fait le code aujourd'hui : `win.set_position`.
+    Tauri,
+    /// `SetWindowPos` direct — susceptible de bloquer sur le thread
+    /// propriétaire de la fenêtre.
+    Direct,
+    /// `SetWindowPos` avec `SWP_ASYNCWINDOWPOS`.
+    Asynchrone,
+}
+
+impl ModeDeplacement {
+    /// Lue une seule fois au démarrage : `SHIMEJI_DEPLACEMENT=direct|async`.
+    pub fn depuis_environnement() -> ModeDeplacement {
+        match std::env::var("SHIMEJI_DEPLACEMENT").as_deref() {
+            Ok("direct") => ModeDeplacement::Direct,
+            Ok("async") => ModeDeplacement::Asynchrone,
+            // Tout le reste, variable absente comprise : le comportement
+            // actuel, qui sert de référence à la mesure.
+            _ => ModeDeplacement::Tauri,
+        }
+    }
+}
+
+/// `placer`, mais par la voie demandée.
+pub fn placer_par(
+    app: &AppHandle,
+    label: &str,
+    coin: Point,
+    mode: ModeDeplacement,
+) -> Result<(), String> {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SetWindowPos, SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOSIZE,
+        SWP_NOZORDER,
+    };
+
+    if mode == ModeDeplacement::Tauri {
+        return placer(app, label, coin);
+    }
+
+    let Some(win) = app.get_webview_window(label) else {
+        return Err(format!("fenêtre « {label} » absente"));
+    };
+    let hwnd = win.hwnd().map_err(|e| format!("hwnd indisponible : {e}"))?;
+
+    // Les mêmes arrondis que `placer` : c'est la position qui doit être
+    // identique d'une voie à l'autre, sinon la comparaison ne compare rien.
+    let x = coin.x.round() as i32;
+    let y = coin.y.round() as i32;
+
+    // `NOSIZE` et `NOZORDER` : on ne touche QUE la position — la taille est
+    // posée ailleurs, et le z-order est ce qui garde le personnage au premier
+    // plan (décision n° 2). `NOACTIVATE` : jamais voler le focus.
+    let mut drapeaux = SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_NOACTIVATE;
+    if mode == ModeDeplacement::Asynchrone {
+        drapeaux |= SWP_ASYNCWINDOWPOS;
+    }
+
+    // `unsafe` : Rust ne peut pas garantir que `hwnd` est un handle valide —
+    // c'est Tauri qui vient de nous le rendre, il l'est.
+    unsafe {
+        SetWindowPos(hwnd, None, x, y, 0, 0, drapeaux)
+            .map_err(|e| format!("SetWindowPos : {e}"))
+    }
+}
+
 /// Redimensionne la fenêtre. **À n'appeler que sur changement.**
 ///
 /// Séparée de `placer` pour une raison mesurée, pas esthétique : voir

@@ -67,6 +67,51 @@ pub enum Commande {
     SeLacher,
 }
 
+/// À qui revient la commande choisie dans le menu, et à qui elle ne revient
+/// PAS.
+///
+/// # Le bug que cette fonction remplace
+///
+/// La commande était donnée à l'acteur **sous le curseur** au moment où elle
+/// arrivait. Ça marchait tant qu'il n'y avait qu'un personnage : la boîte aux
+/// lettres était vidée dans ses `Entrees` sans condition. Avec plusieurs
+/// acteurs, il a fallu choisir un destinataire — et « celui sous le
+/// curseur » est faux, parce qu'au moment où l'utilisateur relâche le clic
+/// sur une entrée, **le curseur est sur le menu**, pas sur le personnage. Il
+/// n'y avait donc aucun élu, la commande était consommée par personne, et
+/// aucune entrée de menu ne faisait plus rien — sans le moindre message.
+///
+/// Le bon destinataire est celui **qui a ouvert le menu**, mémorisé à
+/// l'ouverture ; c'est ce que porte `demandeur`.
+///
+/// `label` et non l'index dans le `Vec` : entre l'ouverture du menu et le
+/// clic, un acteur a pu partir et décaler tous les suivants. Un label n'est
+/// jamais réutilisé (voir `Acteur::label`), donc au pire il ne correspond
+/// plus à personne — et la commande est ignorée, ce qui est exactement ce
+/// qu'on veut d'un menu dont le personnage s'en est allé.
+pub fn commande_pour(
+    demandeur: &mut Option<String>,
+    boite: &mut Option<Commande>,
+    label: &str,
+) -> Option<Commande> {
+    // `as_deref` : emprunte le contenu du `Option<String>` en `Option<&str>`
+    // pour le comparer au label sans rien cloner.
+    if demandeur.as_deref() != Some(label) {
+        return None;
+    }
+
+    // `?` : la boîte est vide tant que l'utilisateur n'a pas encore choisi —
+    // le menu bloque le thread de la boucle, mais le clic revient par la
+    // boucle d'événements de Tauri, donc quelques images plus tard. On sort
+    // en laissant `demandeur` en place, pour le retrouver à l'image suivante.
+    let commande = boite.take()?;
+
+    // Servie : le demandeur est oublié, sans quoi une commande déposée plus
+    // tard (menu du tray, par exemple) lui reviendrait par erreur.
+    *demandeur = None;
+    Some(commande)
+}
+
 /// L'endroit d'où l'on fait un clic droit, simplifié aux trois cas qui
 /// changent le menu proposé (spec §4, design du plan menu).
 ///

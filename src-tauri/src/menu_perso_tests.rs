@@ -231,3 +231,54 @@ fn ou_de_lit_correctement_les_quatre_etats() {
     );
     assert_eq!(ou_de(&Attachment::Dragged), Ou::Sol);
 }
+
+
+// ── Le destinataire de la commande (correction du 2026-09-16) ───────────
+//
+// Ces trois tests décrivent le défaut rapporté à l'écran : « quand je fais un
+// clic droit sur un personnage, il ne fait plus ses actions quand je les
+// lance ». Voir l'en-tête de `commande_pour`.
+
+/// Le cas nominal, et le seul qui comptait vraiment : la commande revient à
+/// celui qui a ouvert le menu, **même si le curseur est ailleurs** — et il
+/// l'est toujours, puisqu'il est sur l'entrée de menu qu'on vient de cliquer.
+#[test]
+fn la_commande_revient_a_celui_qui_a_ouvert_le_menu() {
+    let mut demandeur = Some("pet-3".to_string());
+    let mut boite = Some(Commande::ResterAccroche);
+
+    assert_eq!(
+        commande_pour(&mut demandeur, &mut boite, "pet-3"),
+        Some(Commande::ResterAccroche)
+    );
+    // Servie une fois et une seule : ni la boîte ni le demandeur ne
+    // resserviraient l'image suivante.
+    assert_eq!(boite, None);
+    assert_eq!(demandeur, None);
+}
+
+/// Et pas à un autre : sans quoi N personnages joueraient l'entrée choisie
+/// pour un seul.
+#[test]
+fn un_autre_acteur_ne_recoit_rien() {
+    let mut demandeur = Some("pet-3".to_string());
+    let mut boite = Some(Commande::SeLacher);
+
+    assert_eq!(commande_pour(&mut demandeur, &mut boite, "pet-7"), None);
+    // ⚠️ La boîte n'est PAS vidée : la commande attend son destinataire, qui
+    // vient peut-être plus loin dans le même parcours du `Vec`.
+    assert_eq!(boite, Some(Commande::SeLacher));
+    assert_eq!(demandeur, Some("pet-3".to_string()));
+}
+
+/// Le menu est ouvert, rien n'a encore été choisi : on garde le demandeur
+/// pour les images suivantes, parce que le clic met quelques images à
+/// revenir par la boucle d'événements de Tauri.
+#[test]
+fn sans_commande_le_demandeur_est_garde() {
+    let mut demandeur = Some("pet-3".to_string());
+    let mut boite: Option<Commande> = None;
+
+    assert_eq!(commande_pour(&mut demandeur, &mut boite, "pet-3"), None);
+    assert_eq!(demandeur, Some("pet-3".to_string()));
+}

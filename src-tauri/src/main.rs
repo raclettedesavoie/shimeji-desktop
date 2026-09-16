@@ -1164,6 +1164,14 @@ fn boucle(
     let trace_cadence = std::env::var("SHIMEJI_CADENCE").is_ok();
     let mut images_depuis_trace: u32 = 0;
     let mut placements_depuis_trace: u32 = 0;
+
+    // ── SPIKE (2026-09-16) — À SUPPRIMER APRÈS MESURE ───────────────────
+    // La voie de déplacement à comparer, lue une seule fois, et de quoi
+    // chiffrer ce qu'elle coûte : le temps passé DANS l'appel (c'est lui qui
+    // dirait qu'on bloque) et le nombre d'échecs (la file qui déborde).
+    let mode_deplacement = render::ModeDeplacement::depuis_environnement();
+    let mut duree_placements = Duration::ZERO;
+    let mut echecs_placement: u32 = 0;
     let mut travail_cumule = Duration::ZERO;
     let mut derniere_trace = Duration::ZERO;
 
@@ -1189,6 +1197,19 @@ fn boucle(
     // n'arrive qu'une fois. Sans lui, maintenir le bouton rouvrirait le menu
     // en boucle dès sa fermeture.
     let mut bouton_droit_precedent = false;
+
+    // Le label de l'acteur **qui a ouvert le dernier menu contextuel**.
+    //
+    // ⚠️ **C'est lui, et pas l'acteur sous le curseur, qui reçoit la
+    // commande choisie.** Au moment où l'utilisateur relâche le clic sur une
+    // entrée, le curseur est sur le MENU : aucun personnage n'est élu, et
+    // router la commande sur l'élu revenait à la jeter — plus aucune entrée
+    // de menu ne faisait quoi que ce soit. Voir `menu_perso::commande_pour`.
+    //
+    // Persistant d'une image à l'autre parce que le clic revient par la
+    // boucle d'événements de Tauri, donc quelques images après la fermeture
+    // du menu.
+    let mut demandeur_du_menu: Option<String> = None;
 
     loop {
         // `Instant` ici et non l'horloge injectée : c'est la CADENCE, pas le
@@ -1631,7 +1652,15 @@ fn boucle(
                                 echelle_affichage,
                                 acteur.ch.facing,
                             );
-                            let _ = render::placer(&handle, &acteur.label, coin);
+                            // SPIKE : même voie que la boucle normale, sans
+                            // quoi la mesure mélangerait les deux.
+                            let avant = Instant::now();
+                            if render::placer_par(&handle, &acteur.label, coin, mode_deplacement)
+                                .is_err()
+                            {
+                                echecs_placement += 1;
+                            }
+                            duree_placements += avant.elapsed();
                             placements_depuis_trace += 1;
                         }
 
@@ -1731,6 +1760,10 @@ fn boucle(
                 // d'abandon, durée de pose) sur un instant périmé — et à N
                 // personnages, un simple `continue` de la boucle `for`
                 // étendrait ce défaut aux N−1 autres au lieu de le corriger.
+                // Mémorisé MAINTENANT : c'est la seule image où l'on sait
+                // encore qui a fait le clic droit.
+                demandeur_du_menu = Some(acteur.label.clone());
+
                 menu_ouvert = true;
                 break;
             }
@@ -1743,15 +1776,16 @@ fn boucle(
             // Recalculés à 2 Hz ci-dessus, transportés tels quels à 60 Hz.
             biais,
             utilisateur_actif,
-                // `take()` : la commande n'est donnée qu'à l'acteur ÉLU, et
-                // une seule fois. La donner à tous ferait exécuter l'entrée
-                // de menu par N personnages — dont N−1 qui n'ont rien
-                // demandé.
-                commande: if sur_le_personnage {
-                    commande_du_menu.take()
-                } else {
-                    None
-                },
+                // La commande n'est donnée qu'à l'acteur qui a OUVERT le
+                // menu, et une seule fois. La donner à tous ferait exécuter
+                // l'entrée par N personnages — dont N−1 qui n'ont rien
+                // demandé ; la donner à l'acteur sous le curseur ne la
+                // donnait à personne, le curseur étant sur le menu.
+                commande: menu_perso::commande_pour(
+                    &mut demandeur_du_menu,
+                    &mut commande_du_menu,
+                    &acteur.label,
+                ),
             };
 
             // ── 60 Hz : le comportement ────────────────────────────────
@@ -1865,7 +1899,14 @@ fn boucle(
                     let coin_entier = (coin.x.round() as i32, coin.y.round() as i32);
 
                     if acteur.dernier_coin != Some(coin_entier) {
-                        if render::placer(&handle, &acteur.label, coin).is_err() {
+                        // SPIKE : l'appel est chronométré, et l'échec compté
+                        // au lieu d'être seulement ignoré.
+                        let avant = Instant::now();
+                        let resultat =
+                            render::placer_par(&handle, &acteur.label, coin, mode_deplacement);
+                        duree_placements += avant.elapsed();
+                        if resultat.is_err() {
+                            echecs_placement += 1;
                             continue;
                         }
                         acteur.dernier_coin = Some(coin_entier);
@@ -1953,6 +1994,19 @@ fn boucle(
                     placements_depuis_trace as f64 * 100.0
                         / (images_depuis_trace as f64 * acteurs_ici)
                 );
+                // SPIKE : le coût moyen d'UN déplacement, et les échecs.
+                // `max(1)` : aucun placement sur la tranche, pas de division
+                // par zéro.
+                println!(
+                    "  [spike] mode {:?} : {:.0} µs par déplacement, {} échecs sur la tranche",
+                    mode_deplacement,
+                    duree_placements.as_micros() as f64
+                        / placements_depuis_trace.max(1) as f64,
+                    echecs_placement
+                );
+                duree_placements = Duration::ZERO;
+                echecs_placement = 0;
+
                 placements_depuis_trace = 0;
                 images_depuis_trace = 0;
                 travail_cumule = Duration::ZERO;
