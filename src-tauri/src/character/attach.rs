@@ -18,7 +18,7 @@
 //! éviter de recalculer ». Le recalcul est trois additions ; le champ
 //! ramènerait les quatre bugs ci-dessus d'un coup.
 
-use super::manifest::{Manifest, Pose};
+use super::manifest::Manifest;
 use super::Facing;
 use crate::geom::{Face, Point, Rect, Vec2};
 use crate::world::{PlatformId, World};
@@ -120,8 +120,8 @@ pub fn hors_bornes(att: &Attachment, world: &World) -> bool {
     }
 }
 
-/// Le coin supérieur gauche où placer la **fenêtre** de 128×128, pour que
-/// l'ancre de la pose tombe exactement sur `pos`.
+/// Le coin supérieur gauche où placer la **fenêtre**, pour que l'ancre de
+/// l'image affichée tombe exactement sur `pos`.
 ///
 /// « Positionner » devient ainsi « place l'ancre ici » (spec §8.3).
 ///
@@ -132,9 +132,18 @@ pub fn hors_bornes(att: &Attachment, world: &World) -> bool {
 /// > donnée, elle se règle sans recompiler. Le prototype VSCode contenait un
 /// > tel bricolage, asymétrique selon le sens de marche ; il disparaît ici
 /// > (spec §8.3).
+///
+/// # Pourquoi `frame` et non plus la `&Pose`
+///
+/// La taille et l'ancre sont des propriétés de l'**image**, pas de la pose
+/// (voir `manifest::InfoFrame`) : un pack tiers a souvent des frames de
+/// tailles différentes. On passe donc le numéro de l'image affichée et le
+/// nom de la pose, et les deux replis — image → pose → défaut — sont faits
+/// par `Manifest::ancre_de_frame`.
 pub fn window_top_left(
     pos: Point,
-    pose: &Pose,
+    frame: u32,
+    pose_nom: &str,
     manifest: &Manifest,
     scale_affichage: f32,
     facing: Facing,
@@ -144,7 +153,12 @@ pub fn window_top_left(
     // il ne convertit jamais une coordonnée.
     let echelle = manifest.scale * scale_affichage;
 
-    let largeur_boite = manifest.frame_size[0] as f32;
+    // ⚠️ La largeur de **cette image**, et non `manifest.frame_size` qui est
+    // la plus grande du pack. Miroiter sur la plus grande décalerait le
+    // personnage de la différence à chaque demi-tour (mesuré le 2026-09-20 :
+    // 85 px sur `the-simba-cub`).
+    let largeur_boite = manifest.taille_de_frame(frame)[0] as f32;
+    let ancre = manifest.ancre_de_frame(frame, pose_nom);
 
     // Quand le sprite est retourné, l'ancre l'est aussi : une ancre à 100 px
     // du bord gauche se retrouve à `largeur - 100` du bord gauche.
@@ -154,13 +168,13 @@ pub fn window_top_left(
     // compensation : on retourne l'ancre avec l'image, on ne corrige pas
     // après coup.
     let ancre_x = if facing.flipped() {
-        largeur_boite - pose.anchor[0]
+        largeur_boite - ancre[0]
     } else {
-        pose.anchor[0]
+        ancre[0]
     };
 
     // Le miroir est horizontal : `y` n'est pas concerné.
-    let ancre_y = pose.anchor[1];
+    let ancre_y = ancre[1];
 
     Point::new(pos.x - ancre_x * echelle, pos.y - ancre_y * echelle)
 }
@@ -187,39 +201,92 @@ pub fn window_top_left(
 /// compense donc de lui-même.
 pub fn position_conservant_le_sprite(
     pos: Point,
-    pose_avant: &Pose,
-    pose_apres: &Pose,
+    frame_avant: u32,
+    pose_avant: &str,
+    frame_apres: u32,
+    pose_apres: &str,
     manifest: &Manifest,
     scale_affichage: f32,
     facing: Facing,
 ) -> Point {
-    let coin = window_top_left(pos, pose_avant, manifest, scale_affichage, facing);
+    let coin = window_top_left(pos, frame_avant, pose_avant, manifest, scale_affichage, facing);
 
-    // L'inverse de `window_top_left`, avec la pose d'arrivée.
+    // L'inverse de `window_top_left`, avec la pose d'arrivée — et donc avec
+    // la boîte de SON image, qui n'a pas forcément la même largeur.
     let echelle = manifest.scale * scale_affichage;
-    let largeur_boite = manifest.frame_size[0] as f32;
+    let largeur_boite = manifest.taille_de_frame(frame_apres)[0] as f32;
+    let ancre = manifest.ancre_de_frame(frame_apres, pose_apres);
     let ancre_x = if facing.flipped() {
-        largeur_boite - pose_apres.anchor[0]
+        largeur_boite - ancre[0]
     } else {
-        pose_apres.anchor[0]
+        ancre[0]
     };
 
-    Point::new(
-        coin.x + ancre_x * echelle,
-        coin.y + pose_apres.anchor[1] * echelle,
-    )
+    Point::new(coin.x + ancre_x * echelle, coin.y + ancre[1] * echelle)
+}
+
+/// Le facteur d'échelle du **moniteur**, arrondi à l'entier le plus proche
+/// et jamais inférieur à 1.
+///
+/// # Pourquoi arrondir
+///
+/// Le sprite est agrandi par le webview avec `image-rendering: pixelated`
+/// (index.html) : un agrandissement au **plus proche voisin**. À un facteur
+/// fractionnaire comme 1,25, un pixel source sur quatre occupe deux pixels
+/// écran et les trois autres un seul — les contours deviennent des escaliers
+/// irréguliers, ce qui est exactement ce qu'on cherche à éviter sur du
+/// pixel-art. À un facteur entier, chaque pixel source occupe le même carré :
+/// c'est net.
+///
+/// Le défaut ne s'est vu qu'en changeant d'écran, d'un 27 pouces à 100 % à
+/// celui d'un portable à 125 % (2026-09-20) — le même `blob`, soudain
+/// crénelé.
+///
+/// # Ce qui n'est PAS arrondi, et pourquoi
+///
+/// Ni `manifest.scale`, ni l'`echelle` de `config.json`. Ce sont des choix
+/// délibérés d'un auteur de pack ou de l'utilisateur (« je veux ce
+/// personnage à moitié moins gros ») ; les arrondir les annulerait purement
+/// et simplement. Seule la conversion imposée par le DPI de l'écran est
+/// contrainte à l'entier, et elle l'est **en amont**, dans `main`, là où les
+/// deux facteurs sont combinés. Les fonctions ci-dessous reçoivent le
+/// produit et ne réarrondissent rien.
+///
+/// # Le minimum de 1
+///
+/// Réduire du pixel-art au plus proche voisin **jette** des pixels : un trait
+/// d'un pixel de large peut disparaître entièrement. On préfère un
+/// personnage un peu trop grand à un personnage troué. Et `0.0`, que
+/// rendrait une sonde muette, ne doit pas le faire disparaître.
+pub fn echelle_ecran_entiere(scale_moniteur: f32) -> f32 {
+    let arrondi = scale_moniteur.round();
+    if arrondi < 1.0 {
+        1.0
+    } else {
+        arrondi
+    }
 }
 
 /// La taille en pixels physiques de la fenêtre d'un personnage.
 ///
-/// Séparée de `window_top_left` parce qu'elle ne change qu'au chargement du
-/// manifeste ou au changement d'écran, alors que le coin change 60 fois par
-/// seconde.
-pub fn window_size(manifest: &Manifest, scale_affichage: f32) -> (u32, u32) {
+/// ⚠️ **Elle suit l'image AFFICHÉE, pas le pack.** `manifest.frame_size`
+/// déclare la plus grande frame ; s'en servir pour toutes rendait la fenêtre
+/// trop grande pour les autres, et comme `index.html` étire le sprite à
+/// `100%` de la fenêtre, l'image était déformée ET l'ancre ne tombait plus
+/// sur les pieds. Mesuré le 2026-09-20 : la fenêtre de `the-simba-cub`
+/// descendait 79 px sous la zone de travail, donc tout le bas du personnage
+/// était caché derrière la barre des tâches.
+///
+/// Elle ne change qu'au **changement d'image** (≈ 7 fois par seconde), alors
+/// que le coin change 60 fois par seconde : c'est pourquoi les deux restent
+/// séparées, et pourquoi la boucle ne rappelle `render::dimensionner` que
+/// sur changement (voir l'avertissement de `render::placer`).
+pub fn window_size(manifest: &Manifest, frame: u32, scale_affichage: f32) -> (u32, u32) {
     let echelle = manifest.scale * scale_affichage;
+    let taille = manifest.taille_de_frame(frame);
     (
-        (manifest.frame_size[0] as f32 * echelle).round() as u32,
-        (manifest.frame_size[1] as f32 * echelle).round() as u32,
+        (taille[0] as f32 * echelle).round() as u32,
+        (taille[1] as f32 * echelle).round() as u32,
     )
 }
 
@@ -231,16 +298,17 @@ pub fn window_size(manifest: &Manifest, scale_affichage: f32) -> (u32, u32) {
 /// compris.
 pub fn hitbox_ecran(
     pos: Point,
+    frame: u32,
     pose_nom: &str,
-    pose: &Pose,
     manifest: &Manifest,
     scale_affichage: f32,
     facing: Facing,
 ) -> Rect {
     let echelle = manifest.scale * scale_affichage;
-    let coin = window_top_left(pos, pose, manifest, scale_affichage, facing);
+    let coin = window_top_left(pos, frame, pose_nom, manifest, scale_affichage, facing);
     let hb = manifest.hitbox_de(pose_nom);
-    let largeur_boite = manifest.frame_size[0] as f32;
+    // Même boîte que pour l'ancre : celle de l'image affichée.
+    let largeur_boite = manifest.taille_de_frame(frame)[0] as f32;
 
     // Même miroir que pour l'ancre : le bord gauche de la hitbox retournée
     // est à `largeur - (x + l)` du bord gauche de la boîte.

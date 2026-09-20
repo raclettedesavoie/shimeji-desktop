@@ -415,7 +415,13 @@ fn lancer_application() {
             // L'échelle d'AFFICHAGE : celle du moniteur, multipliée par le
             // réglage de l'utilisateur. Les fonctions de `attach` n'ont pas à
             // savoir que le second existe — elles reçoivent un seul facteur.
-            let echelle_affichage = ecrans[0].scale * configuration.echelle;
+            //
+            // ⚠️ Le facteur du moniteur passe par `echelle_ecran_entiere` :
+            // du pixel-art agrandi d'un facteur fractionnaire est crénelé.
+            // Le réglage de l'utilisateur, lui, n'est PAS arrondi — voir le
+            // pourquoi sur cette fonction.
+            let echelle_affichage =
+                character::attach::echelle_ecran_entiere(ecrans[0].scale) * configuration.echelle;
 
             // ── Un acteur, et une fenêtre, par personnage du roster ──────
             //
@@ -433,7 +439,14 @@ fn lancer_application() {
                     continue;
                 };
 
-                let taille = character::attach::window_size(manifeste, echelle_affichage);
+                // La taille de départ se prend sur l'image de départ : les
+                // frames d'un pack n'ont pas toutes la même taille, et c'est
+                // désormais celle AFFICHÉE qui dimensionne la fenêtre.
+                let taille = character::attach::window_size(
+                    manifeste,
+                    manifeste.frame_initiale(),
+                    echelle_affichage,
+                );
 
                 // `let … else` : sans écran, il n'y a nulle part où le faire
                 // apparaître. Un monde vide est un cas normal (session
@@ -996,6 +1009,10 @@ fn avancer_le_depart(
 /// contrôlions.
 fn elire_sous_le_curseur(
     acteurs: &[Acteur],
+    // L'instant courant, pour dériver l'image affichée — la hitbox se lit
+    // désormais dans la boîte de CETTE image, dont la taille varie d'une
+    // frame à l'autre sur les packs tiers.
+    maintenant: std::time::Duration,
     monde: &world::World,
     souris: geom::Point,
     echelle: f32,
@@ -1015,17 +1032,20 @@ fn elire_sous_le_curseur(
         // manifeste : on ne peut pas savoir. On passe au suivant plutôt que
         // de décider à sa place — les clics continuent de traverser, ce qui
         // ne gêne personne.
-        let (Some(pos), Some(pose)) = (
-            character::attach::world_position(&a.ch.attachment, monde, souris),
-            a.ch.manifest.pose(&a.ch.pose),
-        ) else {
+        let Some(pos) = character::attach::world_position(&a.ch.attachment, monde, souris) else {
             continue;
         };
+        // Pose absente du manifeste : on ne peut rien situer. On passe au
+        // suivant plutôt que de décider à sa place — les clics continuent de
+        // traverser, ce qui ne gêne personne.
+        if !a.ch.manifest.has_pose(&a.ch.pose) {
+            continue;
+        }
 
         if character::attach::hitbox_ecran(
             pos,
+            a.ch.frame_courante(maintenant),
             &a.ch.pose,
-            pose,
             &a.ch.manifest,
             echelle,
             a.ch.facing,
@@ -1331,7 +1351,9 @@ fn boucle(
                 // Gardée à part : le rechargement à chaud doit pouvoir
                 // recombiner l'échelle du moniteur avec la NOUVELLE échelle
                 // de la config, sans redemander les écrans.
-                ecrans_echelle = ecrans[0].scale;
+                // Même arrondi qu'au démarrage : brancher un écran d'un
+                // autre DPI ne doit pas rendre le personnage crénelé.
+                ecrans_echelle = character::attach::echelle_ecran_entiere(ecrans[0].scale);
                 echelle_affichage = ecrans_echelle * echelle_config;
             }
 
@@ -1427,6 +1449,7 @@ fn boucle(
 
                                 let taille = character::attach::window_size(
                                     &charge.manifeste,
+                                    charge.manifeste.frame_initiale(),
                                     echelle_affichage,
                                 );
 
@@ -1554,7 +1577,7 @@ fn boucle(
         // personnage serait un trou noir de 128 px avalant les clics dans
         // ses zones transparentes. `elire_sous_le_curseur` le fait pour
         // chaque acteur, et n'en retient qu'un.
-        let elu = elire_sous_le_curseur(&acteurs, &monde, m.pos, echelle_affichage);
+        let elu = elire_sous_le_curseur(&acteurs, maintenant, &monde, m.pos, echelle_affichage);
 
         // Le front descendant du bouton droit : calculé UNE fois, avant la
         // boucle, parce qu'il n'y a qu'une souris.
@@ -1644,10 +1667,11 @@ fn boucle(
                     // exactement la compensation que l'ancre existe pour
                     // rendre inutile (spec §8.3).
                     if visible {
-                        if let Some(pose) = acteur.ch.manifest.pose(&acteur.ch.pose) {
+                        if acteur.ch.manifest.has_pose(&acteur.ch.pose) {
                             let coin = character::attach::window_top_left(
                                 acteur.ch.pos_connue,
-                                pose,
+                                acteur.ch.frame_courante(maintenant),
+                                &acteur.ch.pose,
                                 &acteur.ch.manifest,
                                 echelle_affichage,
                                 acteur.ch.facing,
@@ -1854,10 +1878,21 @@ fn boucle(
         }
 
             // ── Sur changement seulement : la taille de la fenêtre ─────
-            // Elle ne dépend que du manifeste et de l'échelle de l'écran.
-            // L'appeler à 60 Hz coûtait 8 points de pourcentage de CPU pour
-            // rien (voir l'avertissement de `render::placer`).
-            let taille = character::attach::window_size(&acteur.ch.manifest, echelle_affichage);
+            // Elle dépend du manifeste, de l'échelle de l'écran — et depuis
+            // le 2026-09-20 de l'IMAGE affichée, les frames d'un pack tiers
+            // n'ayant pas toutes la même taille.
+            //
+            // Le `if` en dessous reste donc indispensable : l'appeler à
+            // 60 Hz coûtait 8 points de pourcentage de CPU pour rien (voir
+            // l'avertissement de `render::placer`). Avec le test, un pack
+            // homogène — `blob`, et la plupart — ne paie toujours qu'un
+            // seul `set_size`, au chargement ; un pack hétérogène en paie
+            // un par changement d'image, soit ~7 par seconde.
+            let taille = character::attach::window_size(
+                &acteur.ch.manifest,
+                acteur.ch.frame_courante(maintenant),
+                echelle_affichage,
+            );
             if acteur.derniere_taille != Some(taille) {
                 // `continue` et non `return` : voir la traversée des clics
                 // plus haut — la fenêtre d'un acteur peut disparaître sans
@@ -1884,10 +1919,11 @@ fn boucle(
             if let Some(pos) =
                 character::attach::world_position(&acteur.ch.attachment, &monde, m.pos)
             {
-                if let Some(pose) = acteur.ch.manifest.pose(&acteur.ch.pose) {
+                if acteur.ch.manifest.has_pose(&acteur.ch.pose) {
                     let coin = character::attach::window_top_left(
                         pos,
-                        pose,
+                        acteur.ch.frame_courante(maintenant),
+                        &acteur.ch.pose,
                         &acteur.ch.manifest,
                         echelle_affichage,
                         acteur.ch.facing,

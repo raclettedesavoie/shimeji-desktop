@@ -182,11 +182,20 @@ pub fn appliquer(
             // les pieds : garder `pos = curseur` ferait **repartir le
             // personnage 120 px plus haut** que là où on le tenait. C'est un
             // saut bien visible, et c'était le cas avant cette conversion.
-            let pos = match (ch.manifest.pose(&ch.pose), ch.manifest.pose(POSE_FALL)) {
-                (Some(avant), Some(apres)) => position_conservant_le_sprite(
+            //
+            // Les ancres étant désormais lues PAR IMAGE, la conversion a
+            // besoin des deux numéros de frames : celle affichée à l'instant
+            // du lâcher, et la première de la chute.
+            let pos = match (
+                ch.manifest.has_pose(&ch.pose),
+                ch.manifest.premiere_frame(POSE_FALL),
+            ) {
+                (true, Some(frame_apres)) => position_conservant_le_sprite(
                     e.souris,
-                    avant,
-                    apres,
+                    ch.frame_courante(maintenant),
+                    &ch.pose,
+                    frame_apres,
+                    POSE_FALL,
                     &ch.manifest,
                     e.echelle_affichage,
                     ch.facing,

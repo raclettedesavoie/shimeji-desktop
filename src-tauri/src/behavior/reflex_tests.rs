@@ -399,7 +399,8 @@ fn relacher_le_bouton_ne_fait_pas_sauter_le_sprite() {
 
     let coin_avant = window_top_left(
         Point::new(1200.0, 400.0),
-        ch.manifest.pose(POSE_DRAGGED).unwrap(),
+        ch.frame_courante(Duration::ZERO),
+        POSE_DRAGGED,
         &ch.manifest,
         1.0,
         ch.facing,
@@ -423,7 +424,8 @@ fn relacher_le_bouton_ne_fait_pas_sauter_le_sprite() {
     };
     let coin_apres = window_top_left(
         pos,
-        ch.manifest.pose(POSE_FALL).unwrap(),
+        ch.manifest.premiere_frame(POSE_FALL).unwrap(),
+        POSE_FALL,
         &ch.manifest,
         1.0,
         ch.facing,

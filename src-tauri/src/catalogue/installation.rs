@@ -186,8 +186,9 @@ pub fn ecrire_mascot_json(
     }
 
     // La toile déclarée est la PLUS GRANDE des frames : c'est le repli pour
-    // les images absentes de la table `frames`, et tant que la fenêtre
-    // adaptative n'est pas branchée, c'est elle que le moteur emploie.
+    // les images absentes de la table `frames`. Depuis la fenêtre adaptative
+    // (2026-09-20), le moteur n'y recourt que pour ces images-là — il prend
+    // sinon la taille réelle de chacune dans la table.
     let mut tl = 0u32;
     let mut th = 0u32;
     for [l, h] in tailles.values() {

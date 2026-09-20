@@ -191,11 +191,18 @@ fn frame_size_par_defaut() -> [u32; 2] {
 /// frame de `walk` et la pose `dragged`. Les porter sur la pose les
 /// dupliquerait, donc les ferait diverger à la première correction.
 ///
-/// ⚠️ **Cette table n'est pas encore consommée par le moteur.** Elle est
-/// écrite dès maintenant par l'installation du catalogue pour que les packs
-/// déjà installés deviennent corrects **sans être retéléchargés**, le jour
-/// où la fenêtre adaptative arrivera. Ce jour-là, `attach.rs` lira ces
-/// valeurs au lieu de `frame_size` et de `Pose::anchor`.
+/// ✅ **Consommée par le moteur depuis le 2026-09-20** : `attach.rs` lit
+/// cette table (via `taille_de_frame` et `ancre_de_frame`) au lieu de
+/// `frame_size` et de `Pose::anchor`. C'est la « fenêtre adaptative » que
+/// l'installation du catalogue anticipait en l'écrivant — les packs déjà
+/// installés sont donc devenus corrects **sans être retéléchargés**.
+///
+/// Le défaut qu'elle corrige : `frame_size` déclare la PLUS GRANDE frame du
+/// pack. Dimensionner toutes les fenêtres dessus étirait les autres images
+/// (`index.html` pose le sprite à `100%` de la fenêtre) et enfonçait le
+/// personnage sous le sol de la différence. Mesuré sur `the-simba-cub` :
+/// 79 px de fenêtre sous la zone de travail, donc tout le bas du corps
+/// derrière la barre des tâches.
 #[derive(Debug, Clone, Deserialize)]
 pub struct InfoFrame {
     /// Dimensions réelles du PNG, lues à l'installation dans son en-tête.
@@ -492,6 +499,34 @@ impl Manifest {
         match self.poses.get(pose) {
             Some(p) => p.anchor,
             None => ancre_par_defaut(),
+        }
+    }
+
+    /// La **première** image d'une pose, ou `None` si la pose est absente.
+    ///
+    /// Sert partout où il faut connaître la boîte d'une pose qu'on n'affiche
+    /// pas encore : la taille de la fenêtre à sa création, et la conversion
+    /// de position au changement de pose (`attach::position_conservant_le_sprite`).
+    ///
+    /// `Option` plutôt qu'un repli sur `1` : l'appelant doit pouvoir
+    /// distinguer « pose absente » (couverture partielle, spec §8.6) de
+    /// « pose dont la première image est la 1 ».
+    pub fn premiere_frame(&self, nom: &str) -> Option<u32> {
+        // `and_then` : la pose peut manquer, ET sa liste de frames pourrait
+        // être vide — `load` retire ces poses, mais un `Manifest` construit
+        // dans un test n'est pas passé par `load`.
+        self.poses.get(nom).and_then(|p| p.frames.first().copied())
+    }
+
+    /// L'image à afficher **avant la première itération de la boucle** :
+    /// celle de `stand` si le pack l'a, sinon la 1 — ce que `pet.js` affiche
+    /// déjà tout seul au chargement (`poser(1, false)`).
+    ///
+    /// C'est elle qui dimensionne la fenêtre à sa création.
+    pub fn frame_initiale(&self) -> u32 {
+        match self.premiere_frame(POSE_STAND) {
+            Some(n) => n,
+            None => 1,
         }
     }
 
