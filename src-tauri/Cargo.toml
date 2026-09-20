@@ -31,6 +31,14 @@ serde_json = "1"
 # Pas `image` : on ne veut que le PNG, et l'exe release fait 2,7 Mo — un
 # objectif tenu de la spec §4. `image` tirerait JPEG, GIF, TIFF et le reste.
 png = "0.17"
+# Le toast de fin d'assistant (spec §4). UNE seule notification dans tout le
+# programme — mais l'écrire à la main demanderait du WinRT, là où la crate
+# `windows` que nous avons n'expose que du Win32. Elle tire d'ailleurs
+# `tauri-winrt-notification`, ce qui le confirme.
+#
+# Les dépendances `zbus` qu'elle amène sont le chemin LINUX du plugin : elles
+# sont écartées par `cfg` et ne compilent pas ici.
+tauri-plugin-notification = "2"
 
 # Épinglé en 0.61 : c'est la version dont dépend Tauri 2.11.5, et deux versions
 # majeures de cette crate donnent deux types `HWND` DISTINCTS. Prendre 0.62

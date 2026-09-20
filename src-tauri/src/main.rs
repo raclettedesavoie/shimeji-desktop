@@ -44,6 +44,7 @@ mod rng;
 mod roster;
 mod signals;
 mod sim;
+mod toast;
 mod tray;
 mod world;
 
@@ -354,7 +355,15 @@ fn lancer_application() {
     let echelle_config = configuration.echelle;
 
     tauri::Builder::default()
-        // ── Les trois commandes de la fenêtre du catalogue (spec §9) ────
+        // Le plugin de notification (spec §4). Enregistré même si le toast
+        // n'est émis qu'une fois dans la vie de l'application : sans lui,
+        // `app.notification()` échoue au lieu de rendre une erreur utile.
+        //
+        // Aucune permission à déclarer : le système de capabilities gouverne
+        // l'API JAVASCRIPT du plugin. Ici l'émission vient de Rust, où rien
+        // ne la filtre.
+        .plugin(tauri_plugin_notification::init())
+        // ── Les commandes des fenêtres (spec §9) ────────────────────────
         // `generate_handler!` engendre la table de routage à la
         // compilation. Attention : une commande oubliée ici est
         // introuvable côté JS **sans erreur de compilation** — d'où la

@@ -382,7 +382,15 @@ pub fn onboarding_terminer(
     // sur deux coercitions enchaînées, qui compilent mal selon le contexte.
     crate::actions::appliquer_ecran(&**actions, &app, choisi);
 
-    // ── 4. Le toast — branché à la tâche 6 ──────────────────────────────
+    // ── 4. Le toast (spec §4) ───────────────────────────────────────────
+    // Best-effort : il ne peut pas s'afficher hors d'une installation NSIS,
+    // faute d'AppUserModelID, et ce n'est pas une raison de faire échouer
+    // l'assistant.
+    //
+    // Il ne se joue qu'une fois parce qu'il est ICI : `onboarding_terminer`
+    // n'est appelée qu'une fois. Aucune clé de configuration dédiée —
+    // remettre `premiereConfigurationFaite` à `false` rejoue les deux.
+    crate::toast::arriere_plan(&app);
 
     // ── 5. La fenêtre se ferme ──────────────────────────────────────────
     // `if let Some` : si elle a déjà été fermée à la croix pendant l'appel,
