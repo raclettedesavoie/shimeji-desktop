@@ -690,12 +690,42 @@ fn lancer_application() {
                 });
             }
 
-            // `SHIMEJI_CATALOGUE=1` ouvre la fenêtre du catalogue au
-            // démarrage — l'équivalent scriptable de l'entrée de menu que la
-            // tâche 11 ajoutera, et ce qui a prouvé que l'IPC répondait
-            // avant qu'on bâtisse une interface dessus (tâche 8).
+            // ── L'écran de démarrage, et l'assistant (spec §2, §3) ───────
+            //
+            // L'ordre est celui de la spec : au PREMIER lancement l'assistant
+            // prime, et l'écran enregistré n'est appliqué qu'ensuite, par
+            // `onboarding_terminer`. Appliquer les deux ouvrirait deux
+            // fenêtres au tout premier démarrage.
+            //
+            // Les personnages, eux, vivent DÉJÀ : la boucle 60 Hz est lancée
+            // juste au-dessus. C'est délibéré — l'utilisateur voit
+            // immédiatement ce qu'il a installé, au lieu d'un bureau vide en
+            // se demandant si ça marche.
+            //
+            // `configuration` est toujours vivante ici : la boucle n'en a
+            // pris qu'un CLONE (`configuration_boucle`), pas la propriété.
+            let poignee = tauri::Manager::app_handle(app).clone();
+
+            // `SHIMEJI_ONBOARDING=1` force l'assistant sans toucher au
+            // fichier : l'équivalent scriptable du premier lancement, qui
+            // évite d'avoir à supprimer `config.json` entre deux essais.
+            let force_assistant = std::env::var("SHIMEJI_ONBOARDING").is_ok();
+
+            if force_assistant || !configuration.premiere_configuration_faite {
+                actions::ouvrir_onboarding(&poignee);
+            } else {
+                // `&actions` : `actions` est un `Arc<Actions>`, et
+                // `&Arc<Actions>` se déréférence tout seul en `&Actions`
+                // (coercition de déréférencement).
+                actions::appliquer_ecran(&actions, &poignee, configuration.ecran_au_demarrage);
+            }
+
+            // `SHIMEJI_CATALOGUE=1` ouvre la fenêtre du gestionnaire au
+            // démarrage — l'équivalent scriptable de l'entrée de menu, et ce
+            // qui a prouvé que l'IPC répondait avant qu'on bâtisse une
+            // interface dessus (tâche 8 du catalogue).
             if std::env::var("SHIMEJI_CATALOGUE").is_ok() {
-                actions::ouvrir_catalogue(&tauri::Manager::app_handle(app).clone());
+                actions::ouvrir_catalogue(&poignee);
             }
 
             Ok(())

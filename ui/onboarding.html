@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<title>Bienvenue</title>
+<style>
+  /* Les mêmes jetons que catalogue.html : les deux fenêtres appartiennent
+     visiblement à la même application. */
+  :root {
+    --fond: rgb(36, 36, 36);
+    --texte: rgb(201, 201, 201);
+  }
+
+  body {
+    margin: 0;
+    padding: 28px 32px;
+    background: var(--fond);
+    color: var(--texte);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                 "Helvetica Neue", Arial, sans-serif;
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    box-sizing: border-box;
+  }
+
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  p  { line-height: 1.5; margin: 0 0 16px; }
+  .discret { opacity: 0.65; font-size: 13px; }
+
+  /* Un seul écran visible à la fois. `hidden` seul ne suffit pas face à
+     `display: flex` hérité, d'où la règle explicite. */
+  section { flex: 1; }
+  section[hidden] { display: none; }
+
+  fieldset {
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    margin: 0 0 18px;
+    padding: 12px 14px;
+  }
+  legend { padding: 0 6px; font-size: 13px; opacity: 0.8; }
+  label { display: block; padding: 5px 0; cursor: pointer; }
+
+  footer { display: flex; justify-content: flex-end; gap: 10px; }
+
+  button {
+    background: rgba(255, 255, 255, 0.12);
+    color: var(--texte);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    padding: 8px 18px;
+    cursor: pointer;
+    font: inherit;
+  }
+  button:hover { background: rgba(255, 255, 255, 0.2); }
+  button:disabled { opacity: 0.5; cursor: default; }
+
+  #erreur { color: rgb(255, 140, 140); font-size: 13px; min-height: 18px; }
+</style>
+</head>
+<body>
+
+<section id="ecran-1">
+  <h1>🐱 Bienvenue</h1>
+  <p>Shimeji Desktop fait vivre de petits personnages sur votre bureau. Ils se
+     déplacent, se reposent, grimpent aux murs — tout seuls.</p>
+  <p class="discret">Un personnage est déjà en train de tomber sur votre
+     écran. Deux questions, et c'est fini.</p>
+</section>
+
+<section id="ecran-2" hidden>
+  <h1>Deux réglages</h1>
+
+  <fieldset>
+    <legend>Au démarrage de Windows</legend>
+    <label>
+      <input type="checkbox" id="demarrage-auto">
+      Lancer Shimeji Desktop avec Windows
+    </label>
+  </fieldset>
+
+  <fieldset>
+    <legend>À l'ouverture de l'application</legend>
+    <label><input type="radio" name="ecran" value="gestionnaire">
+      Ouvrir le gestionnaire de personnages</label>
+    <label><input type="radio" name="ecran" value="personnages" checked>
+      Afficher seulement les personnages</label>
+    <label><input type="radio" name="ecran" value="tray">
+      Rester dans la zone de notification, personnages cachés</label>
+  </fieldset>
+
+  <p id="erreur"></p>
+</section>
+
+<section id="ecran-3" hidden>
+  <h1>C'est prêt</h1>
+  <p>Shimeji Desktop continue de fonctionner <strong>en arrière-plan</strong>,
+     même quand aucune fenêtre n'est ouverte.</p>
+  <p>Retrouvez-le par son icône dans la <strong>zone de notification</strong>,
+     en bas à droite : elle permet d'ouvrir le gestionnaire, de cacher les
+     personnages, et de quitter.</p>
+  <p class="discret">Un clic droit sur un personnage ouvre son propre menu.</p>
+</section>
+
+<footer>
+  <button id="precedent" hidden>Précédent</button>
+  <button id="suivant">Suivant</button>
+</footer>
+
+<script src="onboarding.js"></script>
+</body>
+</html>
