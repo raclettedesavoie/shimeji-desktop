@@ -1,0 +1,6 @@
+{
+  "identifier": "onboarding",
+  "description": "Permet a la fenetre de l'assistant de premiere configuration d'appeler Rust. Portee a CETTE fenetre, comme celle du catalogue. Pas de core:event:allow-listen : l'assistant n'ecoute aucun evenement, il ne fait qu'appeler.",
+  "windows": ["onboarding"],
+  "permissions": ["core:default"]
+}

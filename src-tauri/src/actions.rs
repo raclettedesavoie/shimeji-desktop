@@ -252,6 +252,26 @@ impl Actions {
 
         let _ = cases.afficher.set_checked(visible);
     }
+
+    /// Remet la case « Démarrer avec Windows » du tray d'accord avec la
+    /// réalité.
+    ///
+    /// Le jumeau exact de `resynchroniser_affichage`, et pour la même raison :
+    /// quand l'assistant de première configuration active le démarrage
+    /// automatique, la case du tray doit suivre. Sinon l'utilisateur coche
+    /// dans l'assistant, ouvre le tray, et y lit « Démarrer avec Windows »
+    /// décoché — un mensonge affiché en permanence.
+    pub fn resynchroniser_demarrage(&self, actif: bool) {
+        let Ok(cases) = self.cases.lock() else {
+            return;
+        };
+        // `let … else` : sans tray installé, il n'y a rien à resynchroniser.
+        let Some(cases) = cases.as_ref() else {
+            return;
+        };
+
+        let _ = cases.demarrage.set_checked(actif);
+    }
 }
 
 /// Exécute l'entrée `id`. **Le seul endroit du programme qui le fait.**
@@ -316,7 +336,7 @@ pub fn executer(actions: &Actions, app: &AppHandle, id: &str, cases_du_tray: &Ca
 }
 
 /// Montre ou cache les personnages, et remet la case du tray d'accord.
-fn appliquer_visibilite(actions: &Actions, app: &AppHandle, visible: bool) {
+pub(crate) fn appliquer_visibilite(actions: &Actions, app: &AppHandle, visible: bool) {
     // L'ordre compte : on prévient d'abord la boucle, pour qu'elle arrête de
     // dessiner, puis on cache. L'inverse laisserait une image poussée à une
     // fenêtre déjà masquée — inoffensif, mais gratuit.
@@ -327,7 +347,7 @@ fn appliquer_visibilite(actions: &Actions, app: &AppHandle, visible: bool) {
 
 /// Écrit (ou retire) la clé de démarrage automatique, et rend l'état
 /// **réellement** obtenu — qui diffère du voulu si l'écriture a échoué.
-fn appliquer_demarrage(voulu: bool) -> bool {
+pub(crate) fn appliquer_demarrage(voulu: bool) -> bool {
     let resultat = if voulu {
         crate::autostart::activer()
     } else {
@@ -407,5 +427,71 @@ pub fn ouvrir_catalogue(app: &AppHandle) {
         // On ne panique pas : ne pas pouvoir ouvrir le catalogue n'est pas
         // une raison de tuer le personnage, qui lui tourne très bien.
         eprintln!("catalogue : ouverture impossible — {e}");
+    }
+}
+
+/// Applique un écran de démarrage (spec « application distribuable » §2).
+///
+/// **Aucun mécanisme nouveau** : les trois branches appellent du code qui
+/// existait déjà. C'est ce qui rend ce réglage presque gratuit.
+///
+/// Appelée à DEUX endroits, et c'est pour cela qu'elle est une fonction :
+/// au démarrage (`main.rs`, d'après la config) et à la fin de l'assistant,
+/// pour que le choix se voie tout de suite au lieu d'attendre le prochain
+/// lancement — un réglage qui ne fait rien tant qu'on n'a pas redémarré
+/// paraît cassé.
+pub fn appliquer_ecran(actions: &Actions, app: &AppHandle, ecran: crate::config::EcranDemarrage) {
+    use crate::config::EcranDemarrage;
+
+    match ecran {
+        EcranDemarrage::Gestionnaire => ouvrir_catalogue(app),
+
+        // Rien à faire : les personnages vivent déjà, aucune fenêtre ne
+        // s'ouvre. C'est le comportement de toutes les versions d'avant.
+        EcranDemarrage::Personnages => {}
+
+        // Exactement ce que fait `SHIMEJI_CACHE=1`, et exactement ce que fait
+        // décocher « Afficher » dans le tray — d'où l'appel au même helper,
+        // qui remet aussi la case d'accord.
+        EcranDemarrage::Tray => appliquer_visibilite(actions, app, false),
+    }
+}
+
+/// Ouvre l'assistant de première configuration (spec §3).
+///
+/// Une fenêtre d'application ordinaire, comme le gestionnaire — mais **non
+/// redimensionnable** : ses trois écrans ont une taille fixe, et rien n'y
+/// gagne à être étiré.
+///
+/// ⚠️ Le label `onboarding` doit correspondre EXACTEMENT à celui déclaré
+/// dans `capabilities/onboarding.json`, sinon les appels `invoke` sont
+/// refusés **en silence** — le même piège que pour le catalogue.
+pub fn ouvrir_onboarding(app: &AppHandle) {
+    const LABEL: &str = "onboarding";
+
+    // Déjà ouverte : on la remonte plutôt que d'en créer une seconde.
+    if let Some(existante) = tauri::Manager::get_webview_window(app, LABEL) {
+        let _ = existante.show();
+        let _ = existante.set_focus();
+        return;
+    }
+
+    let resultat = tauri::WebviewWindowBuilder::new(
+        app,
+        LABEL,
+        tauri::WebviewUrl::App("onboarding.html".into()),
+    )
+    .title("Bienvenue")
+    .inner_size(520.0, 460.0)
+    .resizable(false)
+    .center()
+    .build();
+
+    if let Err(e) = resultat {
+        // On ne panique pas : ne pas pouvoir accueillir l'utilisateur n'est
+        // pas une raison de tuer le personnage, qui lui tourne très bien.
+        // L'assistant se représentera au prochain lancement, la clé
+        // `premiereConfigurationFaite` n'ayant pas été écrite.
+        eprintln!("assistant : ouverture impossible — {e}");
     }
 }

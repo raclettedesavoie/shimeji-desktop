@@ -363,7 +363,9 @@ fn lancer_application() {
             commandes::installer,
             commandes::bibliotheque,
             commandes::definir_compte,
-            commandes::supprimer
+            commandes::supprimer,
+            commandes::onboarding_etat,
+            commandes::onboarding_terminer
         ])
         // ── Le schéma URI qui sert les PNG externes ─────────────────────
         // Les personnages sont des fichiers externes au binaire (spec §8.1),

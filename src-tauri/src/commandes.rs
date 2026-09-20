@@ -315,3 +315,91 @@ mod tests {
         assert!(r.is_empty());
     }
 }
+
+// ── L'assistant de première configuration (spec §3) ─────────────────────
+
+/// Ce que l'assistant affiche à son ouverture.
+///
+/// `Serialize` seulement : la donnée ne circule que de Rust vers le webview.
+/// `rename_all = "camelCase"` parce que c'est la convention de l'autre côté —
+/// `demarrage_auto` se lit donc `etat.demarrageAuto` dans `onboarding.js`.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EtatOnboarding {
+    pub demarrage_auto: bool,
+}
+
+/// L'état à afficher à l'ouverture de l'assistant.
+///
+/// ⚠️ Le REGISTRE et non la configuration. Le cas existe vraiment : quelqu'un
+/// qui réinstalle par-dessus une version où il avait activé le démarrage
+/// automatique doit retrouver la case cochée. C'est aussi pourquoi
+/// `Config::demarrage_automatique` a été supprimé — il aurait été une
+/// seconde vérité à tenir d'accord avec celle-ci.
+#[tauri::command]
+pub fn onboarding_etat() -> EtatOnboarding {
+    EtatOnboarding {
+        demarrage_auto: crate::autostart::est_actif(),
+    }
+}
+
+/// Applique les choix de l'assistant et le marque comme fait.
+///
+/// L'ordre des cinq gestes compte, et il est décrit dans la spec §3 :
+/// registre, configuration, écran, toast, fermeture.
+///
+/// `ecran` arrive en `String` depuis le webview plutôt qu'en énumération :
+/// `EcranDemarrage::depuis_json` est **totale** (tout inconnu vaut
+/// `Personnages`), donc il n'y a rien à valider deux fois, et une
+/// désérialisation qui échouerait côté Tauri donnerait un message illisible.
+#[tauri::command]
+pub fn onboarding_terminer(
+    app: AppHandle,
+    actions: tauri::State<'_, std::sync::Arc<crate::actions::Actions>>,
+    demarrage_auto: bool,
+    ecran: String,
+) -> Result<(), String> {
+    // ── 1. Le registre ──────────────────────────────────────────────────
+    // `appliquer_demarrage` rend l'état RÉELLEMENT obtenu, qui diffère du
+    // voulu si l'écriture a échoué.
+    let reel = crate::actions::appliquer_demarrage(demarrage_auto);
+    actions.resynchroniser_demarrage(reel);
+
+    // ── 2. La configuration ─────────────────────────────────────────────
+    // Écrite AVANT d'appliquer l'écran : si elle échoue, on veut le dire
+    // sans avoir déjà changé l'affichage.
+    //
+    // C'est le seul échec FATAL au sens de l'assistant : ne pas pouvoir
+    // écrire la clé, c'est un assistant qui revient au prochain lancement,
+    // et mieux vaut le dire que le laisser boucler en silence.
+    let choisi = crate::config::EcranDemarrage::depuis_json(&ecran);
+    crate::config::definir_onboarding(true, choisi)?;
+
+    // ── 3. L'écran choisi, tout de suite ────────────────────────────────
+    // `&**actions` : `actions` est une `State<Arc<Actions>>`. Un premier
+    // déréférencement donne l'`Arc<Actions>`, un second l'`Actions` — et on
+    // en reprend une référence. Écrit explicitement plutôt que de compter
+    // sur deux coercitions enchaînées, qui compilent mal selon le contexte.
+    crate::actions::appliquer_ecran(&**actions, &app, choisi);
+
+    // ── 4. Le toast — branché à la tâche 6 ──────────────────────────────
+
+    // ── 5. La fenêtre se ferme ──────────────────────────────────────────
+    // `if let Some` : si elle a déjà été fermée à la croix pendant l'appel,
+    // il n'y a rien à fermer et ce n'est pas une erreur.
+    if let Some(fenetre) = tauri::Manager::get_webview_window(&app, "onboarding") {
+        let _ = fenetre.close();
+    }
+
+    // ⚠️ Si le REGISTRE a refusé, on le signale MAINTENANT — après avoir
+    // tout le reste enregistré. Le geste principal (écrire la
+    // configuration) a réussi ; rendre l'erreur plus tôt laisserait
+    // l'assistant ouvert avec une configuration déjà écrite, donc un
+    // assistant qui ne se rouvrirait plus jamais s'il était fermé à la
+    // croix. Le webview décoche la case plutôt que d'afficher un état qui
+    // n'est pas celui du registre — le précédent d'`ID_DEMARRAGE`.
+    if reel != demarrage_auto {
+        return Err("le démarrage avec Windows n'a pas pu être enregistré".to_string());
+    }
+    Ok(())
+}
