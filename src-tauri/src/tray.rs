@@ -130,7 +130,12 @@ pub fn installer(
     let catalogue = MenuItem::with_id(
         app,
         ID_CATALOGUE,
-        "Catalogue de personnages…",
+        // « Ouvrir le gestionnaire » et non plus « Catalogue » : cette
+        // fenêtre est désormais LA fenêtre principale de l'application, et
+        // c'est par cette entrée qu'on la rouvre après l'avoir fermée.
+        // L'identifiant, lui, ne change pas — il relie les deux menus à
+        // `actions::executer`.
+        "Ouvrir le gestionnaire…",
         true,
         None::<&str>,
     )

@@ -698,8 +698,30 @@ fn lancer_application() {
 
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("échec au lancement de l'application Tauri");
+        // `.build()` puis `.run(closure)` au lieu du `.run(context)` d'avant :
+        // c'est la seule façon d'intercepter les événements de la boucle.
+        .build(tauri::generate_context!())
+        .expect("échec au lancement de l'application Tauri")
+        .run(|_app, evenement| {
+            // Tauri termine le processus quand la DERNIÈRE fenêtre se ferme.
+            // Nous vivons dans le tray : avec un roster vide — un état normal,
+            // décocher le dernier personnage est permis — fermer le
+            // gestionnaire tuait l'application entière, tray compris.
+            //
+            // ⚠️ `code: None` est ESSENTIEL. Tauri documente que le code vaut
+            // `None` quand la sortie vient d'une interaction utilisateur, et
+            // `Some` quand elle est demandée par `AppHandle::exit`
+            // (tauri-2.11.5/src/app.rs:226-229). Le « Quitter » des deux menus
+            // appelle `app.exit(0)` : il porte donc un code, et TRAVERSE ce
+            // filtre. Sans lui, on rendrait l'application impossible à
+            // quitter — un défaut bien pire que celui qu'on corrige.
+            if let tauri::RunEvent::ExitRequested {
+                api, code: None, ..
+            } = evenement
+            {
+                api.prevent_exit();
+            }
+        });
 }
 
 /// Sert un PNG de personnage pour le schéma `shime`.
