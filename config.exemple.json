@@ -4,7 +4,10 @@
   "echelle": 1,
   "vitesse": 1,
 
-  "demarrageAutomatique": false,
+  "_note_demarrage": "Le demarrage avec Windows n'est PAS ici : sa seule verite est le registre (HKCU\\...\\Run), lu par autostart::est_actif. La cle demarrageAutomatique qui vivait ici etait du code mort, jamais lue ni ecrite — la retirer evite une seconde verite a tenir d'accord.",
+
+  "premiereConfigurationFaite": false,
+  "ecranAuDemarrage": "personnages",
 
   "envies": {
     "flaner": 5,

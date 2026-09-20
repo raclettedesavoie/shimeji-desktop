@@ -104,7 +104,7 @@ Visual C++ — à **lier statiquement** pour que l'exe soit totalement autonome.
 | cible `x86_64-pc-windows-msvc` | ✅ installée |
 | Charge C++ / MSVC 14.51.36231 / SDK 10.0.26100.0 | ✅ sur **Visual Studio 18 Insiders** |
 | WebView2 | ✅ 152.0.4191.66 |
-| `cargo-tauri` | ⬜ non installé, et **inutile** |
+| `cargo-tauri` | ✅ `tauri-cli 2.11.4` — **indispensable** pour l'installateur (voir plus bas) |
 | Node | ⚠️ v14.17.0 — **délibérément inutilisé** |
 
 **Trois pièges de cette machine, chacun ayant déjà coûté un diagnostic :**
@@ -134,16 +134,30 @@ cargo run -- --sim 30    # 30 min de comportement sans écran (spec §10.3)
 cargo run -- --sim 1440  # 24 h : la preuve d'ensemble de l'étape 2, voir plus bas
 cargo run -- --demarrage etat|on|off   # le démarrage avec Windows, scriptable
 cargo run -- --installer <slug>        # installe un pack du catalogue dans %APPDATA%
+cargo tauri build                      # l'INSTALLATEUR NSIS, voir l'avertissement ci-dessous
 ```
+
+> ⚠️ **`cargo build` ne produit PAS d'installateur, et l'ignore en silence.** Le bloc
+> `bundle` de `tauri.conf.json` n'est lu que par la **CLI** ; `cargo` ne le voit jamais.
+> L'installateur ne sort que de `cargo tauri build`, dans
+> `target/release/bundle/nsis/`. Le tableau d'outillage ci-dessus a longtemps porté
+> « `cargo-tauri` non installé, et **inutile** » — c'était faux sur les deux points.
+>
+> ⚠️ **Et l'installateur ne livre `characters/` que par la clé `resources`** de
+> `tauri.conf.json`. Sans elle, NSIS pose l'exe nu : `resoudre("characters")` ne trouve
+> rien à côté de l'exe, et l'application **installée** démarre avec zéro personnage et
+> aucun moyen d'en obtenir un. Ça se vérifie **sans installer** :
+> `Select-String target/release/nsis/x64/installer.nsi -Pattern characters` — zéro
+> occurrence veut dire pack absent.
 
 > Les personnages se cherchent dans **deux** dossiers : la bibliothèque
 > `%APPDATA%\shimeji-desktop\characters\`, puis le `characters/` du dépôt —
 > qui ne contient plus que `blob`. Voir « Les packs livrés » plus bas.
 
-**Huit variables d'environnement de diagnostic.** Les trois premières ont chacune servi
-à démentir une hypothèse fausse — voir « Mesurer le CPU » plus bas ; les trois dernières
-remplacent un clic dans le tray ou rendent observable un calcul qui, sinon, ne se verrait
-qu'à l'œil et sur plusieurs minutes :
+**Treize variables d'environnement de diagnostic.** Les trois premières ont chacune
+servi à démentir une hypothèse fausse — voir « Mesurer le CPU » plus bas ; les autres
+remplacent un clic dans le tray ou dans une fenêtre, ou rendent observable un calcul qui,
+sinon, ne se verrait qu'à l'œil et sur plusieurs minutes :
 
 | Variable | Ce qu'elle fait |
 |---|---|
@@ -158,6 +172,8 @@ qu'à l'œil et sur plusieurs minutes :
 | `SHIMEJI_CATALOGUE=1` | ouvre la **fenêtre du catalogue** au démarrage — l'équivalent scriptable de l'entrée de menu, et ce qui a prouvé que l'IPC de Tauri répondait |
 | `SHIMEJI_PERSONNAGES=<a>,<b>,…` | le **roster de départ**, doublons compris (`blob,blob` = deux blob) — l'équivalent scriptable des clics dans « Ma bibliothèque » |
 | `SHIMEJI_ROSTER=<s>:<a>,<b>` | un **changement de roster** après *s* secondes. C'est le seul moyen d'observer un **départ** sans qu'un humain clique |
+| `SHIMEJI_ONBOARDING=1` | force **l'assistant de première configuration**, sans toucher au `config.json` — évite d'avoir à le supprimer entre deux essais |
+| `SHIMEJI_TOAST=1` | trace le résultat du **toast** de fin d'assistant, succès comme échec |
 
 **Et un fichier témoin** : créer `characters/recharger.txt` déclenche un rechargement à
 chaud, puis le fichier est supprimé.
@@ -731,6 +747,27 @@ avant d'écrire une ligne de physique, pas après.
 
 ## État actuel
 
+**L'application est distribuable.** `cargo tauri build` produit un installateur
+NSIS qui livre `blob` avec l'exe ; au **premier lancement** un assistant de trois
+écrans demande le démarrage avec Windows et l'écran de départ
+(`gestionnaire` · `personnages` · `tray`), puis un toast annonce que
+l'application continue en arrière-plan. Les deux réponses vivent dans
+`config.json` sous `premiereConfigurationFaite` et `ecranAuDemarrage`, et
+l'assistant ne revient plus. **Fermer le gestionnaire ne quitte plus
+l'application** — seul « Quitter » le fait.
+
+> ⚠️ **Le démarrage avec Windows n'a qu'une seule vérité : le registre.**
+> `Config::demarrage_automatique` a été **supprimé** le 2026-09-20 : il était
+> déclaré, initialisé, et jamais lu ni écrit. Ne pas le réintroduire — ce serait
+> une seconde vérité à tenir d'accord avec `autostart::est_actif()`, la même
+> erreur que l'interrupteur de la bibliothèque s'interdit déjà.
+
+> ⚠️ **Les clés de `config.json` sont en camelCase** (`rename_all`). Écrire un nom
+> de champ Rust dans `config::ecrire_cles` produit une clé que `Config` ne relira
+> **jamais**, sans la moindre erreur — donc, pour l'assistant, un assistant qui
+> revient à chaque lancement. Le test `ce_qu_ecrit_ecrire_cles_est_relu_par_charger_depuis`
+> est le seul qui l'attrape, parce qu'il fait l'aller-**retour** complet.
+
 **Plusieurs personnages vivent à l'écran en même temps.** On les active depuis
 « Ma bibliothèque » (compteur et interrupteur par pack, doublons compris) ;
 chacun **apparaît en tombant** du haut d'un écran tiré au sort, et repart en se
@@ -738,7 +775,7 @@ ramassant, sautant, puis tombant hors de l'écran. Une poubelle supprime un pack
 du disque. Le reste est inchangé — marche, escalade, attrape-souris, tray,
 `config.json`.
 
-**299 tests.** Et le CPU, mesuré sur le programme réel (release, 60 s) :
+**316 tests.** Et le CPU, mesuré sur le programme réel (release, 60 s) :
 
 | Roster | Caché | En marche |
 |---|---|---|
@@ -783,6 +820,8 @@ clic dans `%APPDATA%`. Le dépôt ne versionne plus que `blob`.
 | `docs/plans/2026-09-11-etape-4a-il-grimpe.md` | le plan de l'étape 4a, **soldé** — 7 tâches |
 | `docs/specs/2026-09-15-plusieurs-personnages-design.md` | **le design de « plusieurs personnages »** : la boucle unique, le multi-ensemble, l'apparition, le départ, la suppression — et le CPU mesuré AVANT d'être conçu |
 | `docs/plans/2026-09-15-plusieurs-personnages.md` | son plan, **soldé** — 13 tâches |
+| `docs/specs/2026-09-20-application-distribuable-design.md` | **le design de la distribution** : l'installateur NSIS, l'assistant de première configuration, le toast, et le code mort qu'il a fallu retirer |
+| `docs/plans/2026-09-20-application-distribuable.md` | son plan, **soldé** — 7 tâches |
 | `docs/conception/2026-09-14-cout-des-sessions.md` | **ce que coûte une session d'assistance** : le relevé, et l'hypothèse évidente qui était fausse |
 | `docs/conception/2026-09-14-journal-des-etapes.md` | **le récit de chaque étape** (0, 1a, 1b, 2, 4a) et les réglages « à l'œil » qui se sont révélés faux — extrait de ce fichier le 2026-09-14 |
 | `docs/specs/2026-09-09-mesure-cpu.md` | **le dossier CPU complet** : les quatre hypothèses démenties par la mesure — à lire avant de toucher au chemin 60 Hz |
