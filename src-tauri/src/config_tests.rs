@@ -348,3 +348,108 @@ fn une_config_sans_cle_personnages_garde_le_defaut_blob() {
     let relu = charger_depuis(&chemin);
     assert_eq!(relu.personnages, vec!["blob".to_string()]);
 }
+
+// ── L'état de la première configuration (plan 2026-09-20, tâche 2) ──────
+
+#[test]
+fn par_defaut_la_premiere_configuration_n_est_pas_faite() {
+    // C'est CE défaut qui fait s'ouvrir l'assistant au premier lancement,
+    // y compris quand il n'existe aucun config.json (spec §2).
+    let c = Config::default();
+    assert!(!c.premiere_configuration_faite);
+    assert_eq!(c.ecran_au_demarrage, EcranDemarrage::Personnages);
+}
+
+#[test]
+fn les_deux_cles_se_relisent() {
+    let f = fichier_de_test(
+        r#"{ "premiereConfigurationFaite": true, "ecranAuDemarrage": "gestionnaire" }"#,
+    );
+    let c = charger_depuis(&f);
+    assert!(c.premiere_configuration_faite);
+    assert_eq!(c.ecran_au_demarrage, EcranDemarrage::Gestionnaire);
+}
+
+#[test]
+fn un_ecran_inconnu_retombe_sur_personnages_sans_jeter_le_fichier() {
+    // Le point délicat : `charger_depuis` jette TOUTE la configuration sur
+    // une erreur de parsing. Une valeur inconnue ne doit donc pas être une
+    // erreur de parsing — d'où `ecran_tolerant` (spec §2).
+    let f = fichier_de_test(r#"{ "echelle": 2.5, "ecranAuDemarrage": "sur-la-lune" }"#);
+    let c = charger_depuis(&f);
+    assert_eq!(c.ecran_au_demarrage, EcranDemarrage::Personnages);
+    assert_eq!(c.echelle, 2.5, "le reste du fichier doit survivre");
+}
+
+#[test]
+fn une_config_portant_encore_demarrage_automatique_se_charge() {
+    // Le champ a été supprimé (spec §0) : serde ignore les clés inconnues,
+    // donc un fichier d'avant continue de marcher.
+    let f = fichier_de_test(r#"{ "demarrageAutomatique": true, "echelle": 3 }"#);
+    let c = charger_depuis(&f);
+    assert_eq!(c.echelle, 3.0);
+}
+
+#[test]
+fn ecrire_cles_preserve_les_voisines() {
+    // Le cœur de la technique chirurgicale : on ne re-sérialise JAMAIS
+    // `Config` par-dessus un fichier réglé à la main.
+    let f = fichier_de_test(r#"{ "echelle": 2, "_note": "gardez-moi" }"#);
+    ecrire_cles(
+        &f,
+        &[("premiereConfigurationFaite", serde_json::json!(true))],
+    )
+    .unwrap();
+
+    let texte = lire_json(&f).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&texte).unwrap();
+    assert_eq!(v["echelle"], 2);
+    assert_eq!(v["_note"], "gardez-moi");
+    assert_eq!(v["premiereConfigurationFaite"], true);
+}
+
+#[test]
+fn ecrire_cles_cree_un_fichier_absent_et_refuse_un_illisible() {
+    // Absent : cas NORMAL au premier lancement, on crée.
+    let dossier = std::env::temp_dir().join("shimeji-test-cles-absent");
+    std::fs::create_dir_all(&dossier).unwrap();
+    let neuf = dossier.join("config.json");
+    let _ = std::fs::remove_file(&neuf);
+    ecrire_cles(&neuf, &[("ecranAuDemarrage", serde_json::json!("tray"))]).unwrap();
+    assert_eq!(
+        charger_depuis(&neuf).ecran_au_demarrage,
+        EcranDemarrage::Tray
+    );
+
+    // Illisible : on n'écrit RIEN. L'écraser perdrait des réglages que
+    // l'utilisateur croit avoir.
+    let casse = fichier_de_test("{ ceci n'est pas du json");
+    let avant = std::fs::read_to_string(&casse).unwrap();
+    assert!(ecrire_cles(&casse, &[("echelle", serde_json::json!(9))]).is_err());
+    assert_eq!(std::fs::read_to_string(&casse).unwrap(), avant);
+}
+
+#[test]
+fn ce_qu_ecrit_ecrire_cles_est_relu_par_charger_depuis() {
+    // LE test qui attrape une faute de camelCase. Comparer le JSON ne
+    // l'attraperait pas : il faut faire l'aller-RETOUR complet.
+    let f = fichier_de_test("{}");
+    ecrire_cles(
+        &f,
+        &[
+            ("premiereConfigurationFaite", serde_json::json!(true)),
+            (
+                "ecranAuDemarrage",
+                serde_json::json!(EcranDemarrage::Tray.en_json()),
+            ),
+        ],
+    )
+    .unwrap();
+
+    let c = charger_depuis(&f);
+    assert!(
+        c.premiere_configuration_faite,
+        "clé mal nommée : l'assistant reviendrait à chaque lancement"
+    );
+    assert_eq!(c.ecran_au_demarrage, EcranDemarrage::Tray);
+}

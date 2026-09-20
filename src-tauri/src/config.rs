@@ -237,6 +237,82 @@ pub struct ModifsAppli {
     pub jouer: Option<f32>,
 }
 
+/// Ce qui s'ouvre au démarrage (spec « application distribuable » §2).
+///
+/// Aucune de ces trois valeurs n'introduit de mécanisme : elles choisissent
+/// entre trois chemins qui existaient déjà — `actions::ouvrir_catalogue`,
+/// rien, et la visibilité à `false` que `SHIMEJI_CACHE=1` pose déjà.
+///
+/// Pas de `#[derive(Deserialize)]` : la désérialisation passe par
+/// `ecran_tolerant` ci-dessous, qui ne doit jamais échouer. Pas de
+/// `Serialize` non plus — l'écriture passe par `en_json`, ce qui garde sous
+/// les yeux le fait que les clés du fichier sont en camelCase.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum EcranDemarrage {
+    /// Les personnages vivent, ET la fenêtre du gestionnaire s'ouvre.
+    Gestionnaire,
+    /// Les personnages vivent, aucune fenêtre. Le comportement d'avant.
+    Personnages,
+    /// Les personnages démarrent CACHÉS — l'état exact que produisent
+    /// `SHIMEJI_CACHE=1` et la case « Afficher » décochée.
+    Tray,
+}
+
+impl EcranDemarrage {
+    /// Le texte écrit dans `config.json`.
+    ///
+    /// `&'static str` : les trois chaînes sont des littéraux du programme,
+    /// elles vivent aussi longtemps que lui. Rien à allouer.
+    pub fn en_json(&self) -> &'static str {
+        match self {
+            EcranDemarrage::Gestionnaire => "gestionnaire",
+            EcranDemarrage::Personnages => "personnages",
+            EcranDemarrage::Tray => "tray",
+        }
+    }
+
+    /// L'inverse, **total** : tout ce qui n'est pas reconnu vaut
+    /// `Personnages`. C'est ce qui permet à `ecran_tolerant` de ne jamais
+    /// échouer, et à `onboarding_terminer` d'accepter une chaîne venue du
+    /// webview sans la valider deux fois.
+    pub fn depuis_json(s: &str) -> EcranDemarrage {
+        match s {
+            "gestionnaire" => EcranDemarrage::Gestionnaire,
+            "tray" => EcranDemarrage::Tray,
+            _ => EcranDemarrage::Personnages,
+        }
+    }
+}
+
+/// Lit `ecranAuDemarrage` sans jamais échouer.
+///
+/// **Pourquoi pas `#[serde(other)]`** : serde ne l'accepte que sur les
+/// énumérations *taguées* (`#[serde(tag = …)]`), pas sur une énumération
+/// sérialisée en simple chaîne. Il faut donc un désérialiseur nommé.
+///
+/// On désérialise d'abord une `String` — ça n'échoue que si la valeur n'est
+/// pas une chaîne du tout — puis on traduit nous-mêmes. Une valeur inconnue
+/// devient `Personnages` avec un avertissement, au lieu de faire rejeter le
+/// fichier ENTIER par `charger_depuis`.
+///
+/// `D: Deserializer<'de>` et la durée de vie `'de` sont imposés par serde :
+/// `'de` est celle des données d'entrée, que le désérialiseur peut emprunter.
+fn ecran_tolerant<'de, D>(d: D) -> Result<EcranDemarrage, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let brut = String::deserialize(d)?;
+    let choisi = EcranDemarrage::depuis_json(&brut);
+
+    // Bruyant seulement quand la valeur était vraiment inconnue : dire
+    // « personnages est inconnu » quand l'utilisateur a écrit
+    // « personnages » serait un faux avertissement.
+    if choisi == EcranDemarrage::Personnages && brut != "personnages" {
+        eprintln!("ecranAuDemarrage : « {brut} » inconnu, « personnages » utilisé");
+    }
+    Ok(choisi)
+}
+
 /// Le contenu de `config.json`.
 ///
 /// `#[serde(default)]` **au niveau de la structure** : chaque champ absent
@@ -258,7 +334,27 @@ pub struct Config {
     /// À 1, on est exactement aux valeurs de Shimeji-ee.
     pub vitesse: f32,
 
-    pub demarrage_automatique: bool,
+    /// L'assistant de première configuration a-t-il été mené à son terme ?
+    ///
+    /// **Un seul booléen pour deux effets** (spec §2) : il commande
+    /// l'ouverture de l'assistant ET l'émission du toast. Le remettre à
+    /// `false` à la main rejoue les deux — c'est la contrôlabilité par la
+    /// configuration, sans seconde clé à tenir d'accord avec la première.
+    ///
+    /// ⚠️ La clé dans le fichier est `premiereConfigurationFaite` :
+    /// `Config` est en `rename_all = "camelCase"`.
+    ///
+    /// Il remplace `demarrage_automatique`, qui était du **code mort** —
+    /// déclaré, initialisé, et jamais lu ni écrit. La seule vérité du
+    /// démarrage automatique est le registre, lu par `autostart::est_actif`.
+    /// Le garder aurait invité à le brancher, donc à créer une seconde
+    /// vérité à tenir d'accord pour toujours.
+    pub premiere_configuration_faite: bool,
+
+    /// Ce qui s'ouvre au démarrage. Clé du fichier : `ecranAuDemarrage`.
+    #[serde(deserialize_with = "ecran_tolerant")]
+    pub ecran_au_demarrage: EcranDemarrage,
+
     pub envies: Envies,
     pub allures: Allures,
 
@@ -287,7 +383,8 @@ impl Default for Config {
             personnages: vec!["blob".to_string()],
             echelle: 1.0,
             vitesse: 1.0,
-            demarrage_automatique: false,
+            premiere_configuration_faite: false,
+            ecran_au_demarrage: EcranDemarrage::Personnages,
             envies: Envies::default(),
             allures: Allures::default(),
             escalade: Escalade::default(),
@@ -516,20 +613,19 @@ pub fn chemin_charge() -> Option<PathBuf> {
     CHEMIN_CHARGE.get_or_init(|| resoudre("config.json")).clone()
 }
 
-/// Remplace la clé `personnages` de `chemin`, en laissant tout le reste.
+/// Remplace les clés nommées dans `chemin`, en laissant **tout** le reste.
 ///
 /// Édition **chirurgicale** : on relit en `serde_json::Value`, on ne touche
-/// qu'à une clé, on réécrit. Sérialiser depuis `Config` perdrait toutes les
-/// clés inconnues et remettrait les valeurs par défaut partout (spec §10) —
-/// l'utilisateur verrait son fichier réglé à la main écrasé par un clic.
-/// Prend une **liste** et non un nom : `personnages` est un multi-ensemble
-/// depuis l'étape « plusieurs personnages » (design §4). `["blob", "blob"]`
-/// veut dire deux blob à l'écran, et les doublons doivent survivre à
-/// l'aller-retour.
+/// qu'aux clés visées, on réécrit. Sérialiser depuis `Config` perdrait toutes
+/// les clés inconnues et remettrait les valeurs par défaut partout (spec
+/// §10) — l'utilisateur verrait son fichier réglé à la main écrasé par un
+/// clic.
 ///
-/// La **liste vide est acceptée** : zéro personnage est un état normal —
-/// décocher le dernier est permis, et l'application vit alors dans le tray.
-pub fn ecrire_personnages(chemin: &Path, noms: &[String]) -> Result<(), String> {
+/// ⚠️ Les noms passés ici sont ceux du **fichier**, donc en camelCase
+/// (`premiereConfigurationFaite`), et non ceux des champs Rust. `Config` est
+/// annotée `rename_all = "camelCase"` : une faute produit une clé que
+/// `Config` ne relira jamais, **sans la moindre erreur**.
+pub fn ecrire_cles(chemin: &Path, cles: &[(&str, serde_json::Value)]) -> Result<(), String> {
     // Un fichier absent n'est pas une erreur : c'est le cas normal au
     // premier choix, et on le crée. Un fichier présent mais ILLISIBLE, si —
     // l'écraser perdrait des réglages que l'utilisateur croit avoir.
@@ -544,7 +640,12 @@ pub fn ecrire_personnages(chemin: &Path, noms: &[String]) -> Result<(), String> 
     let Some(objet) = valeur.as_object_mut() else {
         return Err("config.json n'est pas un objet JSON".to_string());
     };
-    objet.insert("personnages".to_string(), serde_json::json!(noms));
+
+    for (nom, contenu) in cles {
+        // `clone` : `contenu` est emprunté à l'appelant, et `insert` veut la
+        // propriété. Les valeurs sont minuscules (un booléen, une chaîne).
+        objet.insert(nom.to_string(), contenu.clone());
+    }
 
     // `to_string_pretty` : le fichier est édité à la main par l'auteur, une
     // seule ligne le rendrait pénible.
@@ -555,6 +656,21 @@ pub fn ecrire_personnages(chemin: &Path, noms: &[String]) -> Result<(), String> 
     // refuse le BOM avec le message trompeur « expected value at line 1
     // column 1 », et c'est nous qui relirions ce fichier.
     std::fs::write(chemin, texte).map_err(|e| format!("écriture de config.json : {e}"))
+}
+
+/// Remplace la clé `personnages` de `chemin`, en laissant tout le reste.
+///
+/// Prend une **liste** et non un nom : `personnages` est un multi-ensemble
+/// depuis l'étape « plusieurs personnages » (design §4). `["blob", "blob"]`
+/// veut dire deux blob à l'écran, et les doublons doivent survivre à
+/// l'aller-retour.
+///
+/// La **liste vide est acceptée** : zéro personnage est un état normal —
+/// décocher le dernier est permis, et l'application vit alors dans le tray.
+pub fn ecrire_personnages(chemin: &Path, noms: &[String]) -> Result<(), String> {
+    // `personnages` s'écrit pareil en snake_case et en camelCase — c'est un
+    // hasard, pas une règle. Voir l'avertissement d'`ecrire_cles`.
+    ecrire_cles(chemin, &[("personnages", serde_json::json!(noms))])
 }
 
 /// Ce pack vit-il dans la bibliothèque `%APPDATA%` ?
@@ -583,24 +699,51 @@ pub fn est_dans_la_bibliotheque(nom: &str) -> bool {
     }
 }
 
+/// Où écrire la configuration : le fichier réellement chargé, ou un fichier
+/// neuf dans `%APPDATA%`.
+///
+/// Jamais dans le dépôt : celui-ci peut être en lecture seule — et il l'est
+/// forcément une fois l'application **installée**, son dossier étant sous
+/// `Program Files`. C'est cette fonction qui rend une application installée
+/// capable d'enregistrer ses préférences.
+///
+/// Extraite de `definir_personnages` le 2026-09-20 : l'assistant de première
+/// configuration a exactement le même besoin, et dupliquer ces dix lignes
+/// aurait garanti qu'elles divergent.
+fn chemin_d_ecriture() -> Result<PathBuf, String> {
+    if let Some(c) = chemin_charge() {
+        return Ok(c);
+    }
+
+    // `let … else` : sans `%APPDATA%` il n'y a nulle part où écrire, et
+    // c'est une vraie erreur — pas un cas à ignorer.
+    let Ok(appdata) = std::env::var("APPDATA") else {
+        return Err("%APPDATA% introuvable".to_string());
+    };
+    let dossier = PathBuf::from(appdata).join("shimeji-desktop");
+    std::fs::create_dir_all(&dossier)
+        .map_err(|e| format!("création de {} : {e}", dossier.display()))?;
+    Ok(dossier.join("config.json"))
+}
+
 /// Enregistre la liste des personnages dans le `config.json` réellement
 /// chargé, ou en crée un dans `%APPDATA%` s'il n'y en avait aucun.
 pub fn definir_personnages(noms: &[String]) -> Result<(), String> {
-    match chemin_charge() {
-        Some(c) => ecrire_personnages(&c, noms),
-        None => {
-            // Aucun config.json nulle part : on en crée un à côté de la
-            // bibliothèque, jamais dans le dépôt — celui-ci peut être en
-            // lecture seule, et y écrire salirait un dossier versionné.
-            let Ok(appdata) = std::env::var("APPDATA") else {
-                return Err("%APPDATA% introuvable".to_string());
-            };
-            let dossier = PathBuf::from(appdata).join("shimeji-desktop");
-            std::fs::create_dir_all(&dossier)
-                .map_err(|e| format!("création de {} : {e}", dossier.display()))?;
-            ecrire_personnages(&dossier.join("config.json"), noms)
-        }
-    }
+    ecrire_personnages(&chemin_d_ecriture()?, noms)
+}
+
+/// Enregistre le résultat de l'assistant de première configuration.
+///
+/// Les deux clés d'un seul coup : elles sont écrites au même instant, et un
+/// seul appel veut dire une seule relecture-réécriture du fichier.
+pub fn definir_onboarding(fait: bool, ecran: EcranDemarrage) -> Result<(), String> {
+    ecrire_cles(
+        &chemin_d_ecriture()?,
+        &[
+            ("premiereConfigurationFaite", serde_json::json!(fait)),
+            ("ecranAuDemarrage", serde_json::json!(ecran.en_json())),
+        ],
+    )
 }
 
 /// Charge la configuration. **Ne peut pas échouer.**
