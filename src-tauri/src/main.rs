@@ -32,6 +32,7 @@ mod autostart;
 mod behavior;
 mod catalogue;
 mod character;
+mod charge;
 mod clock;
 mod commandes;
 mod config;
