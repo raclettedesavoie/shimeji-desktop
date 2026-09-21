@@ -159,6 +159,16 @@ pub struct SignauxReglages {
     pub batterie_seuil: u8,
     pub batterie_se_reposer: f32,
 
+    /// Au-delà de cette latence de la file du thread principal, il se
+    /// repose davantage — la régulation de charge (spec du 2026-09-21).
+    ///
+    /// En **millisecondes** et non en secondes, contrairement à
+    /// `inactivite_secondes` : on parle de dizaines de millisecondes, et
+    /// `0.1` dans un `config.json` serait bien plus facile à mal lire que
+    /// `100`.
+    pub latence_ms_seuil: f32,
+    pub latence_se_reposer: f32,
+
     /// À partir de quel biais de repos il s'affale au lieu de rester assis
     /// (Tâche 4). 2,0 = « il faut qu'un signal ait au moins doublé l'envie
     /// de repos ».
@@ -181,6 +191,7 @@ pub struct SignauxReglages {
 const INACTIVITE_SECONDES_MIN: f32 = 0.0;
 const INACTIVITE_SECONDES_MAX: f32 = 24.0 * 3600.0;
 
+
 impl SignauxReglages {
     /// Ramène les champs qui peuvent faire paniquer un appelant dans une
     /// plage sûre.
@@ -200,6 +211,13 @@ impl SignauxReglages {
         self.inactivite_secondes = self
             .inactivite_secondes
             .clamp(INACTIVITE_SECONDES_MIN, INACTIVITE_SECONDES_MAX);
+
+        // ⚠️ **`latence_ms_seuil` n'est PAS borné ici**, et c'est délibéré :
+        // `signals::biais_de` ne le passe jamais à `Duration::from_secs_f32`
+        // (il compare des millisecondes flottantes), donc aucune panique à
+        // prévenir — et le borner à zéro serait nuisible, un seuil de zéro
+        // endormant tout le monde en permanence. La valeur absurde y éteint
+        // le signal, ce qui est le bon repli.
     }
 }
 
@@ -215,6 +233,12 @@ impl Default for SignauxReglages {
             soir_se_reposer: 3.0,
             batterie_seuil: 20,
             batterie_se_reposer: 2.0,
+            // 100 ms : au-delà, un clic de menu se voit attendre — c'est
+            // le seuil où l'utilisateur SENT le retard. ×4 : plus faible
+            // que l'inactivité (×8) et plus fort que le soir (×3), donc
+            // une pression nette, jamais un ordre.
+            latence_ms_seuil: 100.0,
+            latence_se_reposer: 4.0,
             seuil_sommeil: 2.0,
         }
     }
