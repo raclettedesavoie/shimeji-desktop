@@ -139,7 +139,7 @@ use std::time::{Duration, Instant};
 pub struct Moniteur {
     /// En **microsecondes**. `u64` parce qu'il n'existe pas d'`AtomicDuration`,
     /// et que µs donne largement la finesse utile (on parle de dizaines de ms).
-    dernière_latence_us: AtomicU64,
+    derniere_latence_us: AtomicU64,
 
     /// Vrai pendant qu'un jeton attend son tour dans la file.
     en_vol: AtomicBool,
@@ -148,14 +148,14 @@ pub struct Moniteur {
 impl Moniteur {
     pub fn nouveau() -> Moniteur {
         Moniteur {
-            dernière_latence_us: AtomicU64::new(0),
+            derniere_latence_us: AtomicU64::new(0),
             en_vol: AtomicBool::new(false),
         }
     }
 
     /// La dernière latence connue. Zéro tant que rien n'a été mesuré.
     pub fn latence(&self) -> Duration {
-        Duration::from_micros(self.dernière_latence_us.load(Ordering::Relaxed))
+        Duration::from_micros(self.derniere_latence_us.load(Ordering::Relaxed))
     }
 
     /// Le jeton est revenu : on publie sa durée et on libère la place.
@@ -164,7 +164,7 @@ impl Moniteur {
         // ans de latence) mais `as u64` sur un `u128` tronquerait en silence,
         // et on préfère saturer que mentir.
         let us = u64::try_from(d.as_micros()).unwrap_or(u64::MAX);
-        self.dernière_latence_us.store(us, Ordering::Relaxed);
+        self.derniere_latence_us.store(us, Ordering::Relaxed);
         self.en_vol.store(false, Ordering::Relaxed);
     }
 
@@ -569,15 +569,17 @@ Remplacer le bloc `if let Err(e) = render::pousser(…)` (`main.rs:2008`) par :
                     // thread principal a débordé (voir §2 de la spec). S'il
                     // n'est jamais nul, la régulation n'a pas suffi.
                     echecs_de_rendu += 1;
-                } else {
-                    acteur.dernier_rendu = Some(rendu);
+                    // `continue` conservé tel quel : il était déjà là, et le
+                    // retirer changerait le flux pour rien.
+                    continue;
                 }
+                acteur.dernier_rendu = Some(rendu);
             }
 ```
 
-> ⚠️ Vérifier en écrivant ce bloc que `acteur.dernier_rendu = Some(rendu);`
-> n'est bien affecté que dans la branche de succès — c'est déjà le cas
-> aujourd'hui, et l'inverse ferait sauter à jamais une frame perdue.
+> ⚠️ `acteur.dernier_rendu = Some(rendu);` ne doit rester atteint qu'en cas de
+> succès — c'est déjà le cas aujourd'hui grâce au `continue`. L'affecter malgré
+> l'échec ferait croire la frame poussée, et elle ne serait jamais réessayée.
 
 - [ ] **Étape 5 : afficher le compteur dans `SHIMEJI_CADENCE=1`**
 
