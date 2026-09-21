@@ -1,0 +1,103 @@
+# Construit l'installateur NSIS et le publie sur la page des releases.
+#
+# Responsabilité unique : transformer un tag en un fichier téléchargeable.
+# Rien ici ne teste le code — ça, c'est `cargo test`, joué à la main.
+#
+# ⚠️ Le nom de l'asset publié est FIXE (`shimeji-desktop-setup.exe`), alors que
+# Tauri nomme le fichier avec la version dedans. C'est ce renommage qui rend
+# permanente l'URL du README :
+#   https://github.com/<dépôt>/releases/latest/download/shimeji-desktop-setup.exe
+# Le changer casserait le lien de téléchargement de toutes les versions.
+
+name: release
+
+# Sur un tag `v*` seulement. Rien ne se construit sur un push ordinaire : un
+# installateur ne se fabrique qu'au moment où l'on décide d'en publier un.
+on:
+  push:
+    tags: ["v*"]
+
+# Sans cette ligne, la création de la release est refusée par une 403 : le
+# jeton fourni aux workflows est en LECTURE seule par défaut.
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+
+    # `pwsh` explicitement : les étapes ci-dessous sont du PowerShell, et on ne
+    # veut pas dépendre du shell que GitHub choisirait par défaut.
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Le runner Windows a déjà MSVC et le SDK. Aucun des pièges d'outillage
+      # de la machine de développement ne s'applique ici.
+      - name: Toolchain Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      # Sans ce cache, chaque release recompile Tauri en entier. Le `workspaces`
+      # pointe `src-tauri` parce que le projet Cargo n'est pas à la racine.
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # ⚠️ `cargo build` ignore le bloc `bundle` de tauri.conf.json EN SILENCE :
+      # seule la CLI fabrique l'installateur. Le runner ne l'a pas.
+      # Compter ~4 minutes : `cargo install` compile la CLI, et rien ne la met
+      # en cache (le cache ci-dessus ne couvre que notre propre `target`).
+      - name: Installer la CLI Tauri
+        run: cargo install tauri-cli --locked --version "^2"
+
+      # Le tag et tauri.conf.json doivent dire la MÊME version. Sans ce test,
+      # taguer `v0.2.0` en ayant oublié de monter la version publierait une
+      # release « 0.2.0 » contenant un binaire 0.1.0 — et absolument rien ne le
+      # signalerait, le renommage effaçant justement la version du nom. On
+      # échoue donc AVANT de construire quoi que ce soit.
+      - name: Le tag et tauri.conf.json s'accordent
+        run: |
+          $tag = "${{ github.ref_name }}" -replace '^v', ''
+          $conf = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          "tag = $tag / tauri.conf.json = $conf"
+          if ($tag -ne $conf) {
+            throw "Le tag v$tag ne correspond pas a la version $conf de tauri.conf.json. Montez la version dans tauri.conf.json ET dans Cargo.toml, puis retaguez."
+          }
+
+      # La clé `resources` de tauri.conf.json fait embarquer `characters/blob`.
+      # Sans elle, l'application installée n'aurait AUCUN personnage.
+      - name: Construire l'installateur
+        run: cargo tauri build
+        working-directory: src-tauri
+
+      - name: Renommer l'asset sous un nom stable
+        run: |
+          $trouves = @(Get-ChildItem src-tauri/target/release/bundle/nsis/*-setup.exe)
+          if ($trouves.Count -ne 1) {
+            throw "Attendu exactement 1 installateur, trouve $($trouves.Count)."
+          }
+          Copy-Item $trouves[0].FullName shimeji-desktop-setup.exe
+          "$($trouves[0].Name) -> shimeji-desktop-setup.exe ($([math]::Round($trouves[0].Length/1MB,2)) Mo)"
+
+      # `fail_on_unmatched_files` : sans lui, une release VIDE serait publiée si
+      # le renommage avait échoué — le pire des cas, puisque le lien du README
+      # rendrait alors une 404 sans que rien n'ait signalé d'erreur.
+      - name: Publier la release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: shimeji-desktop-setup.exe
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          body: |
+            ## Installation
+
+            Téléchargez **shimeji-desktop-setup.exe** ci-dessous et lancez-le.
+
+            ⚠️ L'application n'étant pas signée, Windows affichera
+            « Windows a protégé votre ordinateur ». Le bouton pour continuer est
+            caché : cliquez sur **Informations complémentaires**, puis sur
+            **Exécuter quand même**.
