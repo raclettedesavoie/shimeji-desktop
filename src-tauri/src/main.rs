@@ -1248,13 +1248,6 @@ fn boucle(
     let mut images_depuis_trace: u32 = 0;
     let mut placements_depuis_trace: u32 = 0;
 
-    // ── SPIKE (2026-09-16) — À SUPPRIMER APRÈS MESURE ───────────────────
-    // La voie de déplacement à comparer, lue une seule fois, et de quoi
-    // chiffrer ce qu'elle coûte : le temps passé DANS l'appel (c'est lui qui
-    // dirait qu'on bloque) et le nombre d'échecs (la file qui déborde).
-    let mode_deplacement = render::ModeDeplacement::depuis_environnement();
-    let mut duree_placements = Duration::ZERO;
-    let mut echecs_placement: u32 = 0;
     let mut travail_cumule = Duration::ZERO;
     let mut derniere_trace = Duration::ZERO;
 
@@ -1739,15 +1732,7 @@ fn boucle(
                                 echelle_affichage,
                                 acteur.ch.facing,
                             );
-                            // SPIKE : même voie que la boucle normale, sans
-                            // quoi la mesure mélangerait les deux.
-                            let avant = Instant::now();
-                            if render::placer_par(&handle, &acteur.label, coin, mode_deplacement)
-                                .is_err()
-                            {
-                                echecs_placement += 1;
-                            }
-                            duree_placements += avant.elapsed();
+                            let _ = render::placer(&handle, &acteur.label, coin);
                             placements_depuis_trace += 1;
                         }
 
@@ -1998,14 +1983,7 @@ fn boucle(
                     let coin_entier = (coin.x.round() as i32, coin.y.round() as i32);
 
                     if acteur.dernier_coin != Some(coin_entier) {
-                        // SPIKE : l'appel est chronométré, et l'échec compté
-                        // au lieu d'être seulement ignoré.
-                        let avant = Instant::now();
-                        let resultat =
-                            render::placer_par(&handle, &acteur.label, coin, mode_deplacement);
-                        duree_placements += avant.elapsed();
-                        if resultat.is_err() {
-                            echecs_placement += 1;
+                        if render::placer(&handle, &acteur.label, coin).is_err() {
                             continue;
                         }
                         acteur.dernier_coin = Some(coin_entier);
@@ -2093,19 +2071,6 @@ fn boucle(
                     placements_depuis_trace as f64 * 100.0
                         / (images_depuis_trace as f64 * acteurs_ici)
                 );
-                // SPIKE : le coût moyen d'UN déplacement, et les échecs.
-                // `max(1)` : aucun placement sur la tranche, pas de division
-                // par zéro.
-                println!(
-                    "  [spike] mode {:?} : {:.0} µs par déplacement, {} échecs sur la tranche",
-                    mode_deplacement,
-                    duree_placements.as_micros() as f64
-                        / placements_depuis_trace.max(1) as f64,
-                    echecs_placement
-                );
-                duree_placements = Duration::ZERO;
-                echecs_placement = 0;
-
                 placements_depuis_trace = 0;
                 images_depuis_trace = 0;
                 travail_cumule = Duration::ZERO;
