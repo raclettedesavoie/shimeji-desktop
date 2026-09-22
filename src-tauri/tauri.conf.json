@@ -17,6 +17,18 @@
     "active": true,
     "targets": ["nsis"],
     "icon": ["icons/icon.ico"],
-    "resources": { "../characters": "characters" }
+    "resources": { "../characters": "characters" },
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/raclettedesavoie/shimeji-desktop/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEM5MDQ2MEZGN0VBREU1QUQKUldTdDVhMSsvMkFFeVJYNExKWU1wcm00ekxreXh0b1VsR0tySEdWV3dVQ3ZIU3M5QmdmUlNWazgK",
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

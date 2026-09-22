@@ -70,9 +70,17 @@ jobs:
 
       # La clé `resources` de tauri.conf.json fait embarquer `characters/blob`.
       # Sans elle, l'application installée n'aurait AUCUN personnage.
-      - name: Construire l'installateur
+      #
+      # Les deux variables signent la mise à jour. `createUpdaterArtifacts`
+      # étant à `true`, Tauri produit un `.sig` à côté de l'installateur —
+      # et ÉCHOUE si la clé manque, ce qui est le bon comportement : une
+      # release non signée ne serait installable par personne.
+      - name: Construire et signer l'installateur
         run: cargo tauri build
         working-directory: src-tauri
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
       - name: Renommer l'asset sous un nom stable
         run: |
@@ -83,13 +91,59 @@ jobs:
           Copy-Item $trouves[0].FullName shimeji-desktop-setup.exe
           "$($trouves[0].Name) -> shimeji-desktop-setup.exe ($([math]::Round($trouves[0].Length/1MB,2)) Mo)"
 
+      # Tauri produit le `.sig`, mais PAS le manifeste que l'application ira
+      # lire. C'est a nous de le composer — et c'est la que les erreurs se
+      # logent, d'ou les deux verifications.
+      #
+      # La signature porte sur les OCTETS de l'installateur : le renommage
+      # ci-dessus etant une simple copie, elle reste valide.
+      - name: Composer latest.json
+        run: |
+          $sigs = @(Get-ChildItem src-tauri/target/release/bundle/nsis/*-setup.exe.sig)
+          if ($sigs.Count -ne 1) {
+            throw "Attendu exactement 1 signature, trouve $($sigs.Count). Le secret TAURI_SIGNING_PRIVATE_KEY est-il defini ?"
+          }
+          $signature = (Get-Content $sigs[0].FullName -Raw).Trim()
+          if ([string]::IsNullOrWhiteSpace($signature)) {
+            throw "Signature vide : les applications installees refuseraient la mise a jour."
+          }
+
+          $tag = "${{ github.ref_name }}"
+          $version = $tag -replace '^v', ''
+          $url = "https://github.com/${{ github.repository }}/releases/download/$tag/shimeji-desktop-setup.exe"
+
+          $manifeste = [ordered]@{
+            version   = $version
+            notes     = "Voir la page de la release."
+            pub_date  = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+            platforms = [ordered]@{
+              "windows-x86_64" = [ordered]@{
+                signature = $signature
+                url       = $url
+              }
+            }
+          }
+          # ⚠️ `utf8NoBOM` et non `utf8` : PowerShell 5.1 ecrit un BOM avec
+          # `utf8`, et `serde_json` — celui du plugin qui lira ce fichier —
+          # le refuse avec le message trompeur « expected value at line 1
+          # column 1 ». Le runner est en pwsh 7, ou `utf8` est deja sans BOM,
+          # mais la mise a jour de TOUTES les installations ne doit pas
+          # dependre de ce detail.
+          $manifeste | ConvertTo-Json -Depth 5 | Out-File latest.json -Encoding utf8NoBOM
+          "latest.json compose pour la v$version"
+          Get-Content latest.json
+
       # `fail_on_unmatched_files` : sans lui, une release VIDE serait publiée si
       # le renommage avait échoué — le pire des cas, puisque le lien du README
       # rendrait alors une 404 sans que rien n'ait signalé d'erreur.
       - name: Publier la release
         uses: softprops/action-gh-release@v2
         with:
-          files: shimeji-desktop-setup.exe
+          # Les DEUX : sans `latest.json`, aucune application installee ne
+          # verrait jamais cette version — l'endpoint rendrait une 404.
+          files: |
+            shimeji-desktop-setup.exe
+            latest.json
           fail_on_unmatched_files: true
           generate_release_notes: true
           body: |

@@ -57,7 +57,11 @@ réagissent l'un à l'autre. Ajouter un personnage est une **opération de conte
 
 - ❌ **Pas un Tamagotchi** — aucune stat à surveiller, aucune obligation, il ne meurt pas
 - ❌ **Aucune capture de frappe** — on sait seulement si l'utilisateur est actif, jamais quelle touche
-- ❌ **Pas un assistant** — il ne notifie rien, ne rappelle rien, n'a aucune utilité productive
+- ❌ **Pas un assistant** — il ne notifie rien, ne rappelle rien, n'a aucune utilité productive.
+  **Deux exceptions, et deux seulement** : le toast de fin de première configuration, et
+  celui d'une mise à jour disponible. Toutes deux relèvent de la maintenance de
+  l'application, pas du comportement du personnage — et la seconde est émise **une fois
+  par version**, jamais à chaque lancement (`derniereVersionSignalee`)
 - ❌ **Pas un jeu** — pas de score, pas de progression
 - ❌ **Pas de charge CPU comme signal** — écarté explicitement
 - ❌ **Pas de bulles de dialogue**
@@ -154,7 +158,7 @@ cargo tauri build                      # l'INSTALLATEUR NSIS, voir l'avertisseme
 > `%APPDATA%\shimeji-desktop\characters\`, puis le `characters/` du dépôt —
 > qui ne contient plus que `blob`. Voir « Les packs livrés » plus bas.
 
-**Treize variables d'environnement de diagnostic.** Les trois premières ont chacune
+**Quatorze variables d'environnement de diagnostic.** Les trois premières ont chacune
 servi à démentir une hypothèse fausse — voir « Mesurer le CPU » plus bas ; les autres
 remplacent un clic dans le tray ou dans une fenêtre, ou rendent observable un calcul qui,
 sinon, ne se verrait qu'à l'œil et sur plusieurs minutes :
@@ -173,7 +177,8 @@ sinon, ne se verrait qu'à l'œil et sur plusieurs minutes :
 | `SHIMEJI_PERSONNAGES=<a>,<b>,…` | le **roster de départ**, doublons compris (`blob,blob` = deux blob) — l'équivalent scriptable des clics dans « Ma bibliothèque » |
 | `SHIMEJI_ROSTER=<s>:<a>,<b>` | un **changement de roster** après *s* secondes. C'est le seul moyen d'observer un **départ** sans qu'un humain clique |
 | `SHIMEJI_ONBOARDING=1` | force **l'assistant de première configuration**, sans toucher au `config.json` — évite d'avoir à le supprimer entre deux essais |
-| `SHIMEJI_TOAST=1` | trace le résultat du **toast** de fin d'assistant, succès comme échec |
+| `SHIMEJI_TOAST=1` | trace le résultat des **toasts**, succès comme échec |
+| `SHIMEJI_MAJ=1` | trace la **vérification de mise à jour** : version trouvée, déjà à jour, ou pourquoi elle a échoué. Sans elle, une vérification ratée est parfaitement muette — ce qui est voulu pour l'utilisateur, et ingérable pour qui met au point |
 
 **Et un fichier témoin** : créer `characters/recharger.txt` déclenche un rechargement à
 chaud, puis le fichier est supprimé.
@@ -746,6 +751,31 @@ avant d'écrire une ligne de physique, pas après.
 ---
 
 ## État actuel
+
+**L'application se met à jour toute seule.** Au démarrage, une vérification
+silencieuse interroge le `latest.json` publié avec chaque release ; si une
+version existe, l'entrée du tray devient « Mettre à jour vers la vX.Y.Z » et
+un toast le dit **une fois par version**. Rien ne s'installe sans un clic :
+sur Windows, appliquer une mise à jour relance l'installateur NSIS, donc
+ferme l'application — le faire d'autorité ferait disparaître les personnages
+au milieu d'une session.
+
+> ⚠️ **La clé privée de signature ne vit QUE dans les secrets GitHub**
+> (`TAURI_SIGNING_PRIVATE_KEY` et `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`). La
+> perdre veut dire qu'aucune installation existante n'acceptera plus jamais
+> de mise à jour : il faudrait republier une version à installer à la main.
+> La clé **publique** est dans `tauri.conf.json`, et elle y est à sa place.
+
+> ⚠️ **Tauri produit le `.sig`, mais PAS le `latest.json`.** C'est le
+> workflow qui le compose, et c'est là que se logent les erreurs — d'où ses
+> deux garde-fous : signature absente ou vide = le job échoue, plutôt que de
+> publier une release que personne ne pourra installer. Et il l'écrit en
+> **UTF-8 sans BOM** : `serde_json` refuse un BOM avec le message trompeur
+> « expected value at line 1 column 1 ».
+
+> ⚠️ **Une version publiée sans le plugin ne peut pas se mettre à jour.**
+> La v0.1.0 l'a été : la première version capable de se mettre à jour doit
+> donc être installée à la main. C'est une fois, pas à chaque fois.
 
 **L'application est distribuable.** `cargo tauri build` produit un installateur
 NSIS qui livre `blob` avec l'exe ; au **premier lancement** un assistant de trois

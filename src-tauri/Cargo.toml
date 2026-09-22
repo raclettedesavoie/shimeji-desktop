@@ -39,6 +39,16 @@ png = "0.17"
 # Les dépendances `zbus` qu'elle amène sont le chemin LINUX du plugin : elles
 # sont écartées par `cfg` et ne compilent pas ici.
 tauri-plugin-notification = "2"
+# La mise à jour automatique. Elle vérifie une signature **minisign** avant
+# d'installer quoi que ce soit : sans cette vérification, n'importe qui
+# capable de répondre à la place de GitHub pourrait faire installer son
+# propre exécutable. La clé PUBLIQUE est dans `tauri.conf.json` (elle est
+# faite pour ça) ; la privée vit dans les secrets GitHub, jamais ici.
+#
+# ⚠️ À ne pas confondre avec la signature de code Authenticode : celle-ci
+# protège la MISE À JOUR, pas le premier téléchargement. SmartScreen
+# avertira toujours.
+tauri-plugin-updater = "2"
 
 # Épinglé en 0.61 : c'est la version dont dépend Tauri 2.11.5, et deux versions
 # majeures de cette crate donnent deux types `HWND` DISTINCTS. Prendre 0.62

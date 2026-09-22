@@ -141,6 +141,22 @@ pub fn installer(
     )
     .map_err(|e| format!("entrée « catalogue » : {e}"))?;
 
+    // L'entrée de mise à jour, dans son état de REPOS. Son libellé devient
+    // « Mettre à jour vers la vX.Y.Z » dès qu'une version est trouvée, par
+    // `Actions::signaler_maj` — d'où la poignée conservée dans `CasesTray`.
+    //
+    // Une seule entrée, toujours présente et toujours cliquable : au repos
+    // elle relance une vérification, ce qui donne à l'utilisateur un moyen de
+    // demander sans attendre le prochain démarrage.
+    let maj = MenuItem::with_id(
+        app,
+        crate::actions::ID_MAJ,
+        "Vérifier les mises à jour…",
+        true,
+        None::<&str>,
+    )
+    .map_err(|e| format!("entrée « mise à jour » : {e}"))?;
+
     let separateur =
         PredefinedMenuItem::separator(app).map_err(|e| format!("séparateur : {e}"))?;
 
@@ -156,6 +172,7 @@ pub fn installer(
             &afficher,
             &demarrage,
             &catalogue,
+            &maj,
             &separateur,
             &quitter,
         ],
@@ -173,6 +190,7 @@ pub fn installer(
     let cases = crate::actions::CasesTray {
         afficher: afficher.clone(),
         demarrage: demarrage.clone(),
+        maj: maj.clone(),
     };
 
     // Les mêmes cases sont confiées à `actions`, pour que le menu du

@@ -61,3 +61,47 @@ pub fn arriere_plan(app: &AppHandle) {
         }
     }
 }
+
+/// Annonce qu'une nouvelle version est disponible (mise à jour automatique).
+///
+/// ⚠️ **Ce toast s'écarte d'une décision du projet** — « il ne notifie rien,
+/// ne rappelle rien ». Il a été demandé explicitement, et il se défend : il
+/// relève de la maintenance de l'application, pas du comportement du
+/// personnage. La règle reste vraie pour tout ce qui touche au pet.
+///
+/// **Aucun bouton, et c'est délibéré.** Cliquer le toast ne déclenche rien :
+/// une installation lancée par un clic distrait fermerait l'application au
+/// milieu d'une session. C'est l'entrée du menu du tray qui agit, quand
+/// l'utilisateur l'a décidé.
+///
+/// L'appelant est responsable de ne l'émettre **qu'une fois par version**
+/// (voir `config::derniere_version_signalee`) : sans ça, il reviendrait à
+/// chaque lancement — le harcèlement exact que la règle voulait éviter.
+pub fn maj_disponible(app: &AppHandle, version: &str) -> bool {
+    let resultat = app
+        .notification()
+        .builder()
+        .title(format!("Shimeji Desktop v{version} est disponible"))
+        .body(
+            "Ouvrez le menu de l'icône dans la zone de notification              pour l'installer.",
+        )
+        .show();
+
+    let trace = std::env::var("SHIMEJI_TOAST").is_ok();
+
+    match resultat {
+        Ok(()) => {
+            if trace {
+                println!("[toast] mise à jour v{version} signalée");
+            }
+            true
+        }
+        Err(e) => {
+            // On rend `false` : l'appelant n'enregistrera donc PAS la version
+            // comme signalée, et réessaiera au prochain lancement. Un toast
+            // perdu ne doit pas l'être définitivement.
+            eprintln!("[toast] mise à jour non signalée : {e}");
+            false
+        }
+    }
+}

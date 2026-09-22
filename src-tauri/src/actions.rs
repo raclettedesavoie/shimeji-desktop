@@ -33,7 +33,7 @@ use crate::rechargement::Demande;
 use crate::tray::Visibilite;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
-use tauri::menu::CheckMenuItem;
+use tauri::menu::{CheckMenuItem, MenuItem};
 use tauri::{AppHandle, Wry};
 
 // ── Les identifiants ────────────────────────────────────────────────────
@@ -46,6 +46,12 @@ use tauri::{AppHandle, Wry};
 pub const ID_AFFICHER: &str = "afficher";
 pub const ID_DEMARRAGE: &str = "demarrage";
 pub const ID_QUITTER: &str = "quitter";
+
+/// L'entrée de mise à jour du tray. **Une seule entrée pour deux états** :
+/// au repos elle propose de vérifier, et une fois une version trouvée elle
+/// propose de l'installer. Deux entrées diraient deux fois la même chose, et
+/// l'une des deux serait toujours inutile.
+pub const ID_MAJ: &str = "maj";
 
 /// Proposée par les DEUX menus, comme `quitter` : elle fait exactement la
 /// même chose depuis l'un ou l'autre, donc un seul identifiant — et donc un
@@ -104,6 +110,12 @@ pub fn nouvelle_commande() -> BoiteCommande {
 pub struct CasesTray {
     pub afficher: CheckMenuItem<Wry>,
     pub demarrage: CheckMenuItem<Wry>,
+
+    /// L'entrée de mise à jour. Gardée pour la MÊME raison que `afficher` :
+    /// son libellé change quand une version est trouvée, et le menu du tray
+    /// n'est construit qu'une fois. Le reconstruire à chaud pour changer un
+    /// texte serait une source de bugs pour un gain nul.
+    pub maj: MenuItem<Wry>,
 }
 
 /// Tout ce dont les actions ont besoin pour agir.
@@ -272,6 +284,24 @@ impl Actions {
 
         let _ = cases.demarrage.set_checked(actif);
     }
+
+    /// Annonce, dans le menu du tray, qu'une version est disponible.
+    ///
+    /// **Le libellé EST l'état.** On ne stocke la version nulle part
+    /// ailleurs : la garder en double dans `Actions` créerait une seconde
+    /// vérité à tenir d'accord avec ce que l'utilisateur lit — exactement ce
+    /// que l'interrupteur de la bibliothèque s'interdit déjà.
+    pub fn signaler_maj(&self, version: &str) {
+        let Ok(cases) = self.cases.lock() else {
+            return;
+        };
+        // `let … else` : sans tray installé, il n'y a rien à annoncer.
+        let Some(cases) = cases.as_ref() else {
+            return;
+        };
+
+        let _ = cases.maj.set_text(format!("Mettre à jour vers la v{version}"));
+    }
 }
 
 /// Exécute l'entrée `id`. **Le seul endroit du programme qui le fait.**
@@ -318,6 +348,14 @@ pub fn executer(actions: &Actions, app: &AppHandle, id: &str, cases_du_tray: &Ca
         // ── Les entrées communes aux deux menus ─────────────────────────
         ID_CATALOGUE => {
             ouvrir_catalogue(app);
+        }
+
+        ID_MAJ => {
+            // `installer` revérifie d'abord : que l'entrée dise « Vérifier »
+            // ou « Mettre à jour », le geste est le même, et c'est pour ça
+            // qu'il n'y a qu'un identifiant. La seule différence entre les
+            // deux états est ce que l'utilisateur en attend.
+            crate::maj::installer(app.clone());
         }
 
         ID_QUITTER => {

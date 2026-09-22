@@ -355,6 +355,21 @@ pub struct Config {
     #[serde(deserialize_with = "ecran_tolerant")]
     pub ecran_au_demarrage: EcranDemarrage,
 
+    /// La dernière version pour laquelle on a **déjà** affiché le toast de
+    /// mise à jour disponible. Vide tant qu'on n'en a signalé aucune.
+    ///
+    /// **Sans cette clé, le toast reviendrait à CHAQUE lancement** tant que
+    /// l'utilisateur n'a pas mis à jour — précisément le harcèlement que la
+    /// règle « il ne notifie rien, ne rappelle rien » cherche à éviter. Le
+    /// rappel permanent, discret, c'est l'entrée du menu du tray.
+    ///
+    /// Une chaîne et non un booléen : il faut savoir *quelle* version a été
+    /// signalée, sinon une v0.3.0 sortie après une v0.2.0 non installée
+    /// passerait sous silence.
+    ///
+    /// Clé du fichier : `derniereVersionSignalee`.
+    pub derniere_version_signalee: String,
+
     pub envies: Envies,
     pub allures: Allures,
 
@@ -385,6 +400,8 @@ impl Default for Config {
             vitesse: 1.0,
             premiere_configuration_faite: false,
             ecran_au_demarrage: EcranDemarrage::Personnages,
+            // Vide : aucune version n'a encore été signalée.
+            derniere_version_signalee: String::new(),
             envies: Envies::default(),
             allures: Allures::default(),
             escalade: Escalade::default(),
@@ -736,6 +753,18 @@ pub fn definir_personnages(noms: &[String]) -> Result<(), String> {
 ///
 /// Les deux clés d'un seul coup : elles sont écrites au même instant, et un
 /// seul appel veut dire une seule relecture-réécriture du fichier.
+/// Retient qu'on a déjà signalé cette version par un toast.
+///
+/// Écrite tout de suite après l'affichage, et non avant : si l'écriture
+/// échouait, on préfère un toast de trop au prochain lancement plutôt qu'un
+/// toast jamais vu.
+pub fn definir_version_signalee(version: &str) -> Result<(), String> {
+    ecrire_cles(
+        &chemin_d_ecriture()?,
+        &[("derniereVersionSignalee", serde_json::json!(version))],
+    )
+}
+
 pub fn definir_onboarding(fait: bool, ecran: EcranDemarrage) -> Result<(), String> {
     ecrire_cles(
         &chemin_d_ecriture()?,

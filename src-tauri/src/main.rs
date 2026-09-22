@@ -36,6 +36,7 @@ mod clock;
 mod commandes;
 mod config;
 mod geom;
+mod maj;
 mod menu_perso;
 mod probe;
 mod rechargement;
@@ -363,6 +364,10 @@ fn lancer_application() {
         // l'API JAVASCRIPT du plugin. Ici l'émission vient de Rust, où rien
         // ne la filtre.
         .plugin(tauri_plugin_notification::init())
+        // La mise à jour automatique. Le plugin lit `plugins.updater` de
+        // `tauri.conf.json` : l'endpoint, et surtout la clé PUBLIQUE contre
+        // laquelle il vérifie la signature de tout ce qu'il télécharge.
+        .plugin(tauri_plugin_updater::Builder::new().build())
         // ── Les commandes des fenêtres (spec §9) ────────────────────────
         // `generate_handler!` engendre la table de routage à la
         // compilation. Attention : une commande oubliée ici est
@@ -601,6 +606,17 @@ fn lancer_application() {
             ) {
                 eprintln!("tray non installé : {e}");
             }
+
+            // ── La vérification de mise à jour ──────────────────────────
+            //
+            // APRÈS `tray::installer`, et ce n'est pas un détail : c'est lui
+            // qui enregistre les poignées du menu dans `Actions`. Lancée
+            // avant, la vérification n'aurait rien où écrire son libellé —
+            // et `signaler_maj` sortirait en silence.
+            //
+            // Elle ne bloque rien : tout se passe sur l'exécuteur asynchrone
+            // de Tauri. Hors ligne, il ne se passe simplement rien.
+            maj::verifier_en_arriere_plan(app.handle().clone(), actions.clone());
 
             // ── Deux crochets pour les vérifications qui demandent un clic ──
             //

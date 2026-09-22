@@ -57,6 +57,23 @@ vous pose deux questions :
 L'assistant ne revient plus. Vos réponses sont dans `%APPDATA%\shimeji-desktop\config.json` ;
 remettre `premiereConfigurationFaite` à `false` le rejoue.
 
+### Mises à jour
+
+L'application vérifie au démarrage s'il existe une version plus récente. Quand c'est le
+cas, une notification vous le dit **une fois**, et l'entrée « Mettre à jour vers la
+vX.Y.Z » apparaît dans le menu de la zone de notification.
+
+**Rien ne s'installe sans votre clic.** Appliquer une mise à jour ferme et relance
+l'application : ce n'est pas quelque chose à vous imposer au milieu d'une session.
+
+Chaque mise à jour est **signée**, et l'application refuse d'installer un fichier dont
+la signature ne correspond pas. Cette signature garantit l'origine de la *mise à jour* ;
+elle ne change rien à l'avertissement SmartScreen du premier téléchargement, qui, lui,
+demanderait un certificat de signature de code.
+
+> Si vous utilisez la **v0.1.0**, elle ne contient pas encore ce mécanisme : installez la
+> version suivante à la main, et les suivantes se proposeront toutes seules.
+
 ---
 
 ## Au quotidien
@@ -67,6 +84,8 @@ Son icône donne accès à tout :
 - **Afficher les personnages** — les cacher sans quitter
 - **Démarrer avec Windows**
 - **Ouvrir le gestionnaire…** — le catalogue et votre bibliothèque
+- **Vérifier les mises à jour…** — ou « Mettre à jour vers la vX.Y.Z » quand une
+  version est disponible
 - **Quitter** — la seule chose qui ferme vraiment l'application
 
 > **Fermer la fenêtre du gestionnaire ne quitte pas l'application.** Les personnages
