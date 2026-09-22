@@ -21,3 +21,6 @@ desktop.ini
 
 # Généré par tauri-build
 **/gen/schemas/
+
+#other
+todo.txt
