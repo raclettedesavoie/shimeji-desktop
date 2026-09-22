@@ -89,6 +89,19 @@ pub struct Signaux {
     /// Vrai pendant que la session est verrouillée (Win+L, veille avec mot de
     /// passe, changement d'utilisateur).
     pub session_verrouillee: bool,
+
+    /// Le temps qu'un jeton met à traverser la file du thread principal
+    /// (spec « régulation de charge » §5.1).
+    ///
+    /// ⚠️ **Ce n'est PAS la sonde qui la mesure** — elle n'en sait rien, et y
+    /// met `Duration::ZERO`. C'est la boucle qui la renseigne juste après,
+    /// depuis `charge::Moniteur`. Le champ vit ici quand même pour que
+    /// `signals::biais_de` reste une fonction pure d'UNE structure, ce qui est
+    /// ce qui rend les six signaux testables en table.
+    ///
+    /// ⚠️ Et ce n'est pas non plus « la machine est chargée », signal écarté
+    /// explicitement par le besoin : c'est **notre propre** file de rendu.
+    pub latence_file: std::time::Duration,
 }
 
 /// L'état de la batterie.

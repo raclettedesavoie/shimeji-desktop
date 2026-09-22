@@ -32,6 +32,7 @@ mod autostart;
 mod behavior;
 mod catalogue;
 mod character;
+mod charge;
 mod clock;
 mod commandes;
 mod config;
@@ -1229,6 +1230,16 @@ fn boucle(
     // Diagnostic : `SHIMEJI_SIGNAUX=1`.
     let trace_signaux = std::env::var("SHIMEJI_SIGNAUX").is_ok();
 
+    // Le moniteur de la file du thread principal (spec « régulation de
+    // charge » §5.1). `Arc` parce que la fermeture postée sur l'autre
+    // thread doit en posséder une référence comptée.
+    let moniteur_charge = std::sync::Arc::new(charge::Moniteur::nouveau());
+
+    // Combien de fois `pousser` a échoué depuis la dernière trace.
+    // Remplace un `eprintln!` par échec, qui sortait des centaines de fois
+    // par seconde à onze personnages et noyait tout le reste.
+    let mut echecs_de_rendu: u32 = 0;
+
     // L'échelle du moniteur, séparée du réglage de la config : le
     // rechargement à chaud change le second sans redemander le premier.
     let mut ecrans_echelle = if echelle_config != 0.0 {
@@ -1248,13 +1259,6 @@ fn boucle(
     let mut images_depuis_trace: u32 = 0;
     let mut placements_depuis_trace: u32 = 0;
 
-    // ── SPIKE (2026-09-16) — À SUPPRIMER APRÈS MESURE ───────────────────
-    // La voie de déplacement à comparer, lue une seule fois, et de quoi
-    // chiffrer ce qu'elle coûte : le temps passé DANS l'appel (c'est lui qui
-    // dirait qu'on bloque) et le nombre d'échecs (la file qui déborde).
-    let mode_deplacement = render::ModeDeplacement::depuis_environnement();
-    let mut duree_placements = Duration::ZERO;
-    let mut echecs_placement: u32 = 0;
     let mut travail_cumule = Duration::ZERO;
     let mut derniere_trace = Duration::ZERO;
 
@@ -1307,7 +1311,19 @@ fn boucle(
         // `SetWindowPos` par seconde qui coûtent 11 points de CPU : c'est du
         // bruit. Mesuré quand même — voir `CLAUDE.md`.
         if maintenant.saturating_sub(dernier_signal) >= PERIODE_SIGNAUX {
-            let s = sonde.signaux();
+            let mut s = sonde.signaux();
+
+            // La sonde Win32 ne connaît pas ce signal-là : il parle de
+            // NOTRE file, pas du système. On le renseigne ici, juste avant
+            // `biais_de` — c'est le seul endroit du programme qui tient
+            // les deux moitiés.
+            s.latence_file = moniteur_charge.latence();
+
+            // Et on relance un jeton pour la prochaine fois. Posté APRÈS
+            // la lecture : le jeton en vol n'est pas celui qu'on vient de
+            // lire, et attendre son retour ici bloquerait la boucle — à
+            // 2 Hz, la valeur précédente est parfaitement suffisante.
+            charge::sonder(&handle, &moniteur_charge);
 
             // Le biais : de la donnée pure, calculée par une fonction pure.
             biais = signals::biais_de(&s, &config_courante);
@@ -1386,7 +1402,7 @@ fn boucle(
             if trace_signaux {
                 println!(
                     "signaux : inactif {:.0} s · {} · {} h · batterie {} · verrouillé {} \
-                     → flâner ×{:.2} reposer ×{:.2} jouer ×{:.2}",
+                     · latence {:.0} ms → flâner ×{:.2} reposer ×{:.2} jouer ×{:.2}",
                     s.inactivite.as_secs_f32(),
                     s.appli_active.as_deref().unwrap_or("-"),
                     s.heure,
@@ -1395,6 +1411,7 @@ fn boucle(
                         None => "-".to_string(),
                     },
                     s.session_verrouillee,
+                    s.latence_file.as_secs_f32() * 1000.0,
                     biais.flaner,
                     biais.se_reposer,
                     biais.jouer,
@@ -1739,15 +1756,7 @@ fn boucle(
                                 echelle_affichage,
                                 acteur.ch.facing,
                             );
-                            // SPIKE : même voie que la boucle normale, sans
-                            // quoi la mesure mélangerait les deux.
-                            let avant = Instant::now();
-                            if render::placer_par(&handle, &acteur.label, coin, mode_deplacement)
-                                .is_err()
-                            {
-                                echecs_placement += 1;
-                            }
-                            duree_placements += avant.elapsed();
+                            let _ = render::placer(&handle, &acteur.label, coin);
                             placements_depuis_trace += 1;
                         }
 
@@ -1998,14 +2007,7 @@ fn boucle(
                     let coin_entier = (coin.x.round() as i32, coin.y.round() as i32);
 
                     if acteur.dernier_coin != Some(coin_entier) {
-                        // SPIKE : l'appel est chronométré, et l'échec compté
-                        // au lieu d'être seulement ignoré.
-                        let avant = Instant::now();
-                        let resultat =
-                            render::placer_par(&handle, &acteur.label, coin, mode_deplacement);
-                        duree_placements += avant.elapsed();
-                        if resultat.is_err() {
-                            echecs_placement += 1;
+                        if render::placer(&handle, &acteur.label, coin).is_err() {
                             continue;
                         }
                         acteur.dernier_coin = Some(coin_entier);
@@ -2027,11 +2029,17 @@ fn boucle(
             // logique côté front.
             let amorcage = maintenant < AMORCAGE;
             if amorcage || acteur.dernier_rendu != Some(rendu) {
-                if let Err(e) = render::pousser(&handle, &acteur.label, rendu) {
-                    // On imprime : un acteur qui meurt en silence donne un
-                    // personnage figé sans explication, et c'est exactement
-                    // ce qu'on a déjà passé du temps à diagnostiquer.
-                    eprintln!("rendu impossible pour {} : {e}", acteur.label);
+                if render::pousser(&handle, &acteur.label, rendu).is_err() {
+                    // ⚠️ **Compté, pas imprimé.** Ce message sortait des
+                    // centaines de fois par seconde à onze personnages, et il
+                    // noyait tout le reste — y compris les lignes qui auraient
+                    // servi au diagnostic. Le total part dans la trace de
+                    // cadence, une fois toutes les cinq secondes.
+                    //
+                    // Et l'échec n'est PAS anodin : il veut dire que la file du
+                    // thread principal a débordé (spec « régulation de charge »
+                    // §2). S'il n'est jamais nul, la régulation n'a pas suffi.
+                    echecs_de_rendu += 1;
                     continue;
                 }
                 acteur.dernier_rendu = Some(rendu);
@@ -2093,18 +2101,16 @@ fn boucle(
                     placements_depuis_trace as f64 * 100.0
                         / (images_depuis_trace as f64 * acteurs_ici)
                 );
-                // SPIKE : le coût moyen d'UN déplacement, et les échecs.
-                // `max(1)` : aucun placement sur la tranche, pas de division
-                // par zéro.
-                println!(
-                    "  [spike] mode {:?} : {:.0} µs par déplacement, {} échecs sur la tranche",
-                    mode_deplacement,
-                    duree_placements.as_micros() as f64
-                        / placements_depuis_trace.max(1) as f64,
-                    echecs_placement
-                );
-                duree_placements = Duration::ZERO;
-                echecs_placement = 0;
+                // N'afficher que si ce n'est pas zéro : une ligne
+                // « 0 échec » toutes les cinq secondes serait du bruit, et
+                // c'est l'APPARITION du chiffre qui doit sauter aux yeux.
+                if echecs_de_rendu > 0 {
+                    println!(
+                        "  {echecs_de_rendu} images perdues : la file du thread principal a débordé (latence {:.0} ms)",
+                        moniteur_charge.latence().as_secs_f32() * 1000.0
+                    );
+                }
+                echecs_de_rendu = 0;
 
                 placements_depuis_trace = 0;
                 images_depuis_trace = 0;

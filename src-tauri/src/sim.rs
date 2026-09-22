@@ -183,6 +183,9 @@ pub fn signaux_de_la_journee(minute: u32) -> crate::probe::Signaux {
         // Le verrouillage n'est pas un signal de comportement : il porte sur
         // la fenêtre (Tâche 6), que la simulation n'a pas.
         session_verrouillee: false,
+        // La simulation n'a pas de thread principal à saturer : la file y
+        // est toujours fluide, et ce signal n'y joue jamais.
+        latence_file: std::time::Duration::ZERO,
     }
 }
 
