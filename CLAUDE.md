@@ -170,7 +170,7 @@ sinon, ne se verrait qu'à l'œil et sur plusieurs minutes :
 | `SHIMEJI_TRACE=1` | trace chaque image servie par le schéma URI |
 | `SHIMEJI_CACHE=1` | démarre caché, comme si « Afficher » était décoché |
 | `SHIMEJI_QUITTER_APRES=<s>` | appelle `exit(0)` — la ligne de « Quitter » — après *s* secondes |
-| `SHIMEJI_SIGNAUX=1` | imprime, deux fois par seconde, les cinq signaux et le biais qu'ils produisent — étape 2 |
+| `SHIMEJI_SIGNAUX=1` | imprime, deux fois par seconde, les **six** signaux et le biais qu'ils produisent — le sixième est la **latence** du thread principal (régulation de charge) |
 | `SHIMEJI_ESCALADE=1` | force l'intention `Grimper` dès la première image, et trace (phase, face, offset, pose) à chaque changement — étape 4a, voir plus bas « mesurer l'ancre » |
 | `SHIMEJI_MENU=1` | signale quand Windows **refuse le premier plan** à l'ouverture du menu contextuel — la cause du menu qui reste collé à l'écran, voir `render::prendre_le_premier_plan` |
 | `SHIMEJI_CATALOGUE=1` | ouvre la **fenêtre du catalogue** au démarrage — l'équivalent scriptable de l'entrée de menu, et ce qui a prouvé que l'IPC de Tauri répondait |
@@ -822,6 +822,16 @@ du disque. Le reste est inchangé — marche, escalade, attrape-souris, tray,
 > **Aucun plafond n'est imposé**, par décision de l'auteur prise en
 > connaissance de la mesure : la bibliothèque **avertit** à partir de 10, et
 > n'interdit rien.
+>
+> ⚠️ **Et ce qui se perd au-delà n'est pas que du CPU — c'est l'interactivité.**
+> À 15 personnages en debug, la file de messages du thread principal prend
+> **14 s** de retard : le menu ne se ferme plus, les clics traversent, les
+> sprites se figent. C'est une **falaise** (0 ms à 4 personnages, 8 400 ms à 15),
+> pas une pente, et c'est `SetWindowPos` — cachés, 15 personnages coûtent 6 % et
+> 0 ms. La **régulation de charge** y répond : un sixième signal mesure cette
+> latence et biaise vers le repos, ce qui la ramène à 234 ms. Elle ne supprime
+> pas la falaise, elle empêche d'y tomber.
+> → `docs/specs/2026-09-22-mesure-regulation.md`
 
 > ⚠️ **Ce qui n'est PAS fait : le comportement social.** Ils coexistent, ils ne
 > se remarquent pas. Ne pas conclure de « plusieurs personnages » que l'étape 3
@@ -852,6 +862,9 @@ clic dans `%APPDATA%`. Le dépôt ne versionne plus que `blob`.
 | `docs/plans/2026-09-15-plusieurs-personnages.md` | son plan, **soldé** — 13 tâches |
 | `docs/specs/2026-09-20-application-distribuable-design.md` | **le design de la distribution** : l'installateur NSIS, l'assistant de première configuration, le toast, et le code mort qu'il a fallu retirer |
 | `docs/plans/2026-09-20-application-distribuable.md` | son plan, **soldé** — 7 tâches |
+| `docs/specs/2026-09-21-regulation-de-charge-design.md` | **le design de la régulation de charge** : le sixième signal, ce que la mesure a REFUSÉ (`SetWindowPos` direct), et la tension avec « pas de charge CPU comme signal » |
+| `docs/plans/2026-09-21-regulation-de-charge.md` | son plan, **soldé** — 4 tâches |
+| `docs/specs/2026-09-22-mesure-regulation.md` | **la mesure** : la falaise entre 4 et 15 personnages, les 14 s ramenées à 234 ms, et les trois pièges de mesure |
 | `docs/conception/2026-09-14-cout-des-sessions.md` | **ce que coûte une session d'assistance** : le relevé, et l'hypothèse évidente qui était fausse |
 | `docs/conception/2026-09-14-journal-des-etapes.md` | **le récit de chaque étape** (0, 1a, 1b, 2, 4a) et les réglages « à l'œil » qui se sont révélés faux — extrait de ce fichier le 2026-09-14 |
 | `docs/specs/2026-09-09-mesure-cpu.md` | **le dossier CPU complet** : les quatre hypothèses démenties par la mesure — à lire avant de toucher au chemin 60 Hz |

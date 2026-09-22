@@ -418,6 +418,9 @@ impl SystemProbe for Win32Probe {
             heure: heure_locale(),
             batterie: batterie(),
             session_verrouillee: session_verrouillee(),
+            // La sonde ne sait pas la mesurer : c'est la boucle qui la
+            // renseigne (voir le commentaire du champ).
+            latence_file: std::time::Duration::ZERO,
         }
     }
 }

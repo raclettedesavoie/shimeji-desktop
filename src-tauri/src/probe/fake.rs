@@ -49,6 +49,7 @@ impl FakeProbe {
                     sur_secteur: true,
                 },
                 session_verrouillee: false,
+                latence_file: std::time::Duration::ZERO,
             }),
         }
     }
@@ -221,6 +222,7 @@ mod tests {
                 sur_secteur: false,
             },
             session_verrouillee: true,
+            latence_file: std::time::Duration::ZERO,
         });
 
         let s = vue.signaux();

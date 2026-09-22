@@ -127,6 +127,49 @@ pub fn biais_de(s: &Signaux, c: &Config) -> Biais {
         }
     }
 
+    // ── Notre propre file de rendu sature ───────────────────────────────
+    //
+    // Le sixième signal, et le seul qui parle de NOUS et non du système
+    // (spec « régulation de charge » §5). Quand le thread principal prend
+    // du retard, les déplacements, les menus et le hit-testing en prennent
+    // aussi : à onze personnages en debug, l'application devenait
+    // inutilisable.
+    //
+    // ⚠️ **Il multiplie, il n'ordonne pas** (décision n° 3). Des personnages
+    // s'assoient l'un après l'autre — chacun au moment où LUI tire sa
+    // prochaine envie — et un personnage assis ne poste plus rien : la
+    // latence retombe, ce bloc cesse de s'appliquer. Rien à remettre à zéro.
+    // ⚠️ **La comparaison se fait en millisecondes flottantes, pas en
+    // `Duration`.** `Duration::from_secs_f32(0.1)` vaut 100,000001 ms —
+    // `0.1f32` n'est pas exactement un dixième — si bien qu'une latence de
+    // 100 ms tout rond restait SOUS un seuil réglé à 100. Le test
+    // `le_seuil_de_latence_est_inclusif` est là pour ça, et il a échoué.
+    //
+    // Et ce détour évite en prime `from_secs_f32`, qui **panique** sur un
+    // flottant négatif venu d'un `config.json` écrit à la main.
+    //
+    // `> 0.0` : un seuil nul ou négatif **éteint** le signal au lieu de
+    // l'allumer en permanence. C'est le repli inoffensif — un seuil absurde
+    // rend la régulation muette, il n'endort pas tout le monde à jamais.
+    let latence_ms = s.latence_file.as_secs_f32() * 1000.0;
+    if r.latence_ms_seuil > 0.0 && latence_ms >= r.latence_ms_seuil {
+        // ⚠️ **La réponse est GRADUÉE, et la mesure l'a exigé.** Une réponse
+        // binaire (×4 dès le seuil) a été mesurée le 2026-09-21 : elle
+        // divise la latence par deux, ce qui ne suffit pas quand elle vaut
+        // dix secondes. Le signal était « tout allumé » sans aucune notion
+        // de gravité, à 100 ms comme à 10 000.
+        //
+        // `ampleur` vaut 1 au seuil exact — donc le comportement au seuil
+        // est inchangé — et croît avec le dépassement, jusqu'au plafond.
+        let ampleur = (latence_ms / r.latence_ms_seuil).min(r.latence_facteur_max);
+        b.se_reposer *= r.latence_se_reposer * ampleur;
+
+        // Et l'on tarit la source : flâner est l'intention qui MARCHE, donc
+        // celle qui poste un déplacement par image. L'encourager au repos
+        // sans décourager la marche mettrait vingt secondes à converger.
+        b.flaner *= r.latence_flaner;
+    }
+
     // ── L'application au premier plan ───────────────────────────────────
     //
     // `as_ref()` sur l'`Option<String>` pour emprunter la chaîne sans la
@@ -185,6 +228,7 @@ mod tests {
                 sur_secteur: true,
             },
             session_verrouillee: false,
+            latence_file: Duration::ZERO,
         }
     }
 
@@ -365,5 +409,89 @@ mod tests {
         let b = biais_de(&s, &c);
         assert_eq!(b.pour(Intention::Flaner), 0.5);
         assert_eq!(b.pour(Intention::SeReposer), 1.0);
+    }
+
+    // ── Le sixième signal : notre propre file de rendu ──────────────────
+
+    /// En dessous du seuil, le signal n'existe pas — c'est le cas de toute
+    /// machine qui se porte bien, et il doit rester strictement neutre.
+    #[test]
+    fn une_file_fluide_ne_biaise_rien() {
+        let mut s = rien_de_special();
+        s.latence_file = Duration::from_millis(5);
+        assert_eq!(biais_de(&s, &Config::default()), Biais::neutre());
+    }
+
+    /// Au-delà du seuil, le repos est encouragé ET la flânerie découragée —
+    /// c'est elle qui marche, donc elle qui déplace une fenêtre à chaque image.
+    ///
+    /// La réponse est **graduée** : à 250 ms pour un seuil de 100, le
+    /// dépassement vaut 2,5, donc le repos est multiplié par 4 × 2,5 = 10.
+    #[test]
+    fn une_file_saturee_pousse_au_repos() {
+        let mut s = rien_de_special();
+        s.latence_file = Duration::from_millis(250);
+
+        let b = biais_de(&s, &Config::default());
+        assert_eq!(b.se_reposer, 10.0);
+        assert_eq!(b.flaner, 0.25);
+        // `jouer` n'est pas touché : une animation sur place ne déplace rien.
+        assert_eq!(b.jouer, 1.0);
+    }
+
+    /// La graduation est plafonnée. Mesurée à quinze personnages, la latence
+    /// atteint 10 000 ms — sans plafond, le repos serait multiplié par 400 et
+    /// le tirage ne serait plus un tirage mais un ordre (décision n° 3).
+    #[test]
+    fn la_graduation_est_plafonnee() {
+        let mut s = rien_de_special();
+        s.latence_file = Duration::from_secs(10);
+
+        let b = biais_de(&s, &Config::default());
+        // 4 × 8 (le plafond), et non 4 × 100.
+        assert_eq!(b.se_reposer, 32.0);
+    }
+
+    /// Au seuil EXACT, la graduation vaut 1 : le comportement y est celui de la
+    /// réponse binaire d'origine. C'est ce qui rend le plafond et la pente
+    /// réglables sans changer le sens du seuil.
+    #[test]
+    fn au_seuil_exact_la_graduation_est_neutre() {
+        let mut s = rien_de_special();
+        s.latence_file = Duration::from_millis(100);
+        assert_eq!(biais_de(&s, &Config::default()).se_reposer, 4.0);
+    }
+
+    /// Le seuil est une borne INCLUSIVE, comme celui de l'inactivité : deux
+    /// signaux voisins qui se compareraient différemment seraient un piège à
+    /// la relecture.
+    #[test]
+    fn le_seuil_de_latence_est_inclusif() {
+        let mut s = rien_de_special();
+        s.latence_file = Duration::from_millis(100);
+        assert_eq!(biais_de(&s, &Config::default()).se_reposer, 4.0);
+    }
+
+    /// Un seuil nul ou négatif dans un `config.json` écrit à la main **éteint**
+    /// le signal.
+    ///
+    /// Deux défauts évités d'un coup : `Duration::from_secs_f32` panique sur un
+    /// flottant négatif (le défaut déjà corrigé pour `inactiviteSecondes`), et
+    /// surtout un seuil de zéro ferait s'endormir TOUS les personnages en
+    /// permanence — une panne bien pire qu'un signal muet.
+    #[test]
+    fn un_seuil_de_latence_absurde_eteint_le_signal() {
+        let mut s = rien_de_special();
+        s.latence_file = Duration::from_millis(500);
+
+        for seuil in [-5.0, 0.0] {
+            let mut c = Config::default();
+            c.signaux.latence_ms_seuil = seuil;
+            assert_eq!(
+                biais_de(&s, &c),
+                Biais::neutre(),
+                "un seuil de {seuil} doit éteindre le signal, pas l'allumer"
+            );
+        }
     }
 }
