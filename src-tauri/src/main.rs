@@ -45,6 +45,7 @@ mod render;
 mod rng;
 mod roster;
 mod signals;
+mod spike_overlay;
 mod sim;
 mod toast;
 mod tray;
@@ -109,6 +110,25 @@ fn main() {
                 std::process::exit(1);
             }
         }
+    }
+
+    // ── Spike jetable : une fenêtre par écran ───────────────────────────
+    //
+    // Branché ici et non dans `lancer_application` : le spike construit son
+    // PROPRE `tauri::Builder`, sans tray, sans personnages, sans config. Il
+    // doit mesurer les fenêtres et la file, pas l'application autour.
+    //
+    // Une variable d'environnement plutôt qu'un argument, pour la même raison
+    // que les quatorze autres : c'est un outil de diagnostic, pas une
+    // fonctionnalité. Voir `spike_overlay.rs`.
+    if let Ok(v) = std::env::var("SHIMEJI_SPIKE_OVERLAY") {
+        // `unwrap_or(9)` : une valeur illisible tombe sur la branche
+        // « phase inconnue », qui explique l'usage — plutôt que de lancer
+        // silencieusement la phase 0 et de mesurer autre chose que ce qu'on
+        // croit.
+        let phase: u8 = v.trim().parse().unwrap_or(9);
+        spike_overlay::lancer(phase);
+        return;
     }
 
     if let Some(i) = args.iter().position(|a| a == "--sim") {

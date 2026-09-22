@@ -1,0 +1,94 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>spike overlay</title>
+<style>
+  /* Même précaution que `index.html` : si `html` OU `body` garde un fond,
+     WebView2 peint un rectangle opaque et la transparence de la fenêtre ne
+     se voit pas. C'est le faux négatif le plus courant sur ce test. */
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: transparent;
+    overflow: hidden;
+  }
+
+  .perso {
+    position: absolute;
+    /* `left/top` restent à 0 : TOUT le déplacement passe par `transform`.
+       C'est le point mesuré par ce spike — `transform` est composé par le
+       GPU sans refaire la mise en page, alors que `left/top` la referait
+       à chaque image. */
+    left: 0;
+    top: 0;
+    width: 128px;
+    height: 128px;
+    image-rendering: pixelated;
+    user-select: none;
+    -webkit-user-drag: none;
+    pointer-events: none;
+    /* Promesse au compositeur : cet élément va bouger, garde-le sur sa
+       propre couche. Sans ça il repeindrait la zone à chaque image.
+       Retiré quand l'URL porte `#plat` — c'est le levier qui dit si les
+       couches du compositeur aident ou nuisent ici. */
+    will-change: transform;
+  }
+
+  :root.plat .perso {
+    will-change: auto;
+  }
+</style>
+</head>
+<body>
+<script>
+// Afficheur du spike. Il ne calcule RIEN : Rust lui envoie, une fois par
+// image, la liste complète des personnages de CET écran.
+//
+// C'est le point de la mesure n° 2 : un seul appel `eval` porte N positions,
+// là où l'application actuelle fait N `SetWindowPos` distincts.
+
+const IMAGE = 'spike-shime1.png';
+
+// `#plat` dans l'URL retire `will-change` (voir le CSS). Le fragment est lu
+// ici plutôt que côté Rust, parce que c'est une décision de rendu — Rust ne
+// fait que la transmettre, comme il transmet `#<personnage>` à `pet.js`.
+if (window.location.hash === '#plat') {
+  document.documentElement.classList.add('plat');
+}
+
+// Les éléments déjà créés, par identifiant. On ne recrée jamais un sprite :
+// le créer chaque image mesurerait la création du DOM, pas le déplacement.
+const sprites = new Map();
+
+function sprite(id) {
+  let el = sprites.get(id);
+  if (el === undefined) {
+    el = document.createElement('img');
+    el.className = 'perso';
+    el.src = IMAGE;
+    document.body.appendChild(el);
+    sprites.set(id, el);
+  }
+  return el;
+}
+
+// Appelée par Rust via `eval`, une fois par image et par écran.
+//
+// `liste` est un tableau de tableaux plutôt que d'objets : `[id, x, y, flip]`
+// produit une chaîne JavaScript nettement plus courte que
+// `{id:…,x:…,y:…,flip:…}`, et c'est Rust qui paie la construction de cette
+// chaîne 60 fois par seconde.
+window.poserTous = function (liste) {
+  for (let i = 0; i < liste.length; i++) {
+    const [id, x, y, flip] = liste[i];
+    const el = sprite(id);
+    // Une seule écriture de style par sprite. `translate` en pixels entiers :
+    // un pixel fractionnaire ferait lisser le pixel-art par le compositeur.
+    el.style.transform =
+      'translate(' + x + 'px,' + y + 'px)' + (flip ? ' scaleX(-1)' : '');
+  }
+};
+</script>
+</body>
+</html>
