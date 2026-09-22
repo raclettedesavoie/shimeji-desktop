@@ -171,6 +171,15 @@
     font-size: 13px;
   }
 
+  /* La dernière rangée de cartes touchait le bas de la fenêtre : rien ne
+     réservait de place sous elle, et le bandeau `#etat` — qui est `fixed` —
+     la recouvrait en plus quand il s'affichait. Le padding vaut donc la
+     hauteur de ce bandeau (≈29 px) plus une marge de respiration. Il est
+     posé sur `#contenu`, commun aux DEUX onglets, plutôt que sur `.grille` :
+     le catalogue empile plusieurs grilles par franchise, la bibliothèque
+     n'en a qu'une, et seule la dernière devrait alors le porter. */
+  #contenu { padding-bottom: 56px; }
+
   #etat {
     position: fixed;
     bottom: 0; left: 0; right: 0;
