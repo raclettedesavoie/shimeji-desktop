@@ -169,6 +169,23 @@ pub struct SignauxReglages {
     pub latence_ms_seuil: f32,
     pub latence_se_reposer: f32,
 
+    /// Ce que la saturation fait à l'envie de FLÂNER — un facteur < 1, qui
+    /// la décourage. Même forme que le signal d'inactivité, et pour la même
+    /// raison : flâner est l'intention qui MARCHE, donc celle qui déplace
+    /// une fenêtre soixante fois par seconde. C'est elle qu'il faut tarir,
+    /// pas seulement le repos qu'il faut encourager.
+    pub latence_flaner: f32,
+
+    /// Le plafond de l'amplification graduée.
+    ///
+    /// La réponse croît avec le dépassement du seuil, mais pas
+    /// indéfiniment : mesurée à quinze personnages, la latence atteint
+    /// 10 000 ms pour un seuil de 100, soit un facteur 100. Sans plafond, le
+    /// multiplicateur deviendrait absurde et le tirage ne serait plus un
+    /// tirage — ce serait un ordre déguisé, exactement ce que la décision
+    /// n° 3 interdit.
+    pub latence_facteur_max: f32,
+
     /// À partir de quel biais de repos il s'affale au lieu de rester assis
     /// (Tâche 4). 2,0 = « il faut qu'un signal ait au moins doublé l'envie
     /// de repos ».
@@ -239,6 +256,8 @@ impl Default for SignauxReglages {
             // une pression nette, jamais un ordre.
             latence_ms_seuil: 100.0,
             latence_se_reposer: 4.0,
+            latence_flaner: 0.25,
+            latence_facteur_max: 8.0,
             seuil_sommeil: 2.0,
         }
     }

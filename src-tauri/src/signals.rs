@@ -153,7 +153,21 @@ pub fn biais_de(s: &Signaux, c: &Config) -> Biais {
     // rend la régulation muette, il n'endort pas tout le monde à jamais.
     let latence_ms = s.latence_file.as_secs_f32() * 1000.0;
     if r.latence_ms_seuil > 0.0 && latence_ms >= r.latence_ms_seuil {
-        b.se_reposer *= r.latence_se_reposer;
+        // ⚠️ **La réponse est GRADUÉE, et la mesure l'a exigé.** Une réponse
+        // binaire (×4 dès le seuil) a été mesurée le 2026-09-21 : elle
+        // divise la latence par deux, ce qui ne suffit pas quand elle vaut
+        // dix secondes. Le signal était « tout allumé » sans aucune notion
+        // de gravité, à 100 ms comme à 10 000.
+        //
+        // `ampleur` vaut 1 au seuil exact — donc le comportement au seuil
+        // est inchangé — et croît avec le dépassement, jusqu'au plafond.
+        let ampleur = (latence_ms / r.latence_ms_seuil).min(r.latence_facteur_max);
+        b.se_reposer *= r.latence_se_reposer * ampleur;
+
+        // Et l'on tarit la source : flâner est l'intention qui MARCHE, donc
+        // celle qui poste un déplacement par image. L'encourager au repos
+        // sans décourager la marche mettrait vingt secondes à converger.
+        b.flaner *= r.latence_flaner;
     }
 
     // ── L'application au premier plan ───────────────────────────────────
@@ -408,17 +422,44 @@ mod tests {
         assert_eq!(biais_de(&s, &Config::default()), Biais::neutre());
     }
 
-    /// Au-delà du seuil, l'envie de se reposer est multipliée — et RIEN
-    /// d'autre n'est touché : la régulation ne commande pas, elle pousse.
+    /// Au-delà du seuil, le repos est encouragé ET la flânerie découragée —
+    /// c'est elle qui marche, donc elle qui déplace une fenêtre à chaque image.
+    ///
+    /// La réponse est **graduée** : à 250 ms pour un seuil de 100, le
+    /// dépassement vaut 2,5, donc le repos est multiplié par 4 × 2,5 = 10.
     #[test]
     fn une_file_saturee_pousse_au_repos() {
         let mut s = rien_de_special();
         s.latence_file = Duration::from_millis(250);
 
         let b = biais_de(&s, &Config::default());
-        assert_eq!(b.se_reposer, 4.0);
-        assert_eq!(b.flaner, 1.0);
+        assert_eq!(b.se_reposer, 10.0);
+        assert_eq!(b.flaner, 0.25);
+        // `jouer` n'est pas touché : une animation sur place ne déplace rien.
         assert_eq!(b.jouer, 1.0);
+    }
+
+    /// La graduation est plafonnée. Mesurée à quinze personnages, la latence
+    /// atteint 10 000 ms — sans plafond, le repos serait multiplié par 400 et
+    /// le tirage ne serait plus un tirage mais un ordre (décision n° 3).
+    #[test]
+    fn la_graduation_est_plafonnee() {
+        let mut s = rien_de_special();
+        s.latence_file = Duration::from_secs(10);
+
+        let b = biais_de(&s, &Config::default());
+        // 4 × 8 (le plafond), et non 4 × 100.
+        assert_eq!(b.se_reposer, 32.0);
+    }
+
+    /// Au seuil EXACT, la graduation vaut 1 : le comportement y est celui de la
+    /// réponse binaire d'origine. C'est ce qui rend le plafond et la pente
+    /// réglables sans changer le sens du seuil.
+    #[test]
+    fn au_seuil_exact_la_graduation_est_neutre() {
+        let mut s = rien_de_special();
+        s.latence_file = Duration::from_millis(100);
+        assert_eq!(biais_de(&s, &Config::default()).se_reposer, 4.0);
     }
 
     /// Le seuil est une borne INCLUSIVE, comme celui de l'inactivité : deux
