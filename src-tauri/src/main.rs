@@ -2233,7 +2233,38 @@ fn boucle(
         if std::time::Instant::now() >= prochain_envoi {
             prochain_envoi = std::time::Instant::now() + PERIODE_ENVOI;
 
-            for c in &charges {
+            // ⚠️ **On parcourt les fenêtres OUVERTES, pas seulement les écrans
+            // occupés.** Une fenêtre en délai de grâce (écran devenu vide, pas
+            // encore fermée) doit recevoir une charge VIDE : c'est la seule
+            // façon pour `overlay.js` d'apprendre que ses sprites sont partis.
+            //
+            // Sans elle, emporter à la souris le DERNIER personnage d'un écran
+            // laissait son image figée sur l'ancien écran pendant les 3 s du
+            // délai de grâce — constaté à l'écran le 2026-09-23. S'il restait
+            // d'autres personnages, la charge arrivait sans le sprite et il
+            // était retiré normalement : d'où un défaut qui n'apparaissait
+            // qu'avec le dernier.
+            //
+            // Le dédoublonnage ci-dessous fait que la charge vide ne part
+            // qu'UNE fois, puis plus rien jusqu'à la fermeture.
+            let a_envoyer: Vec<overlay::ChargeEcran> = ecrans_ouverts
+                .iter()
+                .map(|id| {
+                    // `cloned()` : `find` rend une référence dans `charges`,
+                    // et on veut une valeur à nous. `unwrap_or_else` fabrique
+                    // la charge vide seulement quand l'écran n'en a pas.
+                    charges
+                        .iter()
+                        .find(|c| c.ecran == *id)
+                        .cloned()
+                        .unwrap_or_else(|| overlay::ChargeEcran {
+                            ecran: *id,
+                            sprites: Vec::new(),
+                        })
+                })
+                .collect();
+
+            for c in &a_envoyer {
                 // §5.4 : un `eval` coûte ~2,9 ms de CPU. Ne rien envoyer
                 // quand rien n'a changé rend gratuit le cas « tout le monde
                 // dort », qui est celui de la nuit et de l'utilisateur parti.
