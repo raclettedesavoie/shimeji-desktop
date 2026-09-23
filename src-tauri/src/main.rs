@@ -1281,6 +1281,22 @@ fn boucle(
     let mut amorcage_ecran: std::collections::HashMap<u64, std::time::Instant> =
         std::collections::HashMap::new();
 
+    // Depuis quand l'écran est vide, pour ne pas fermer sa fenêtre aussitôt.
+    //
+    // ⚠️ **Un délai de grâce, et il n'est pas cosmétique.** Créer une fenêtre
+    // WebView2 coûte des centaines de millisecondes, pendant lesquelles les
+    // personnages de cet écran ne sont PAS dessinés. Sans ce délai, un
+    // personnage qui fait des allers-retours sur un bord d'écran ferait
+    // battre la fenêtre voisine — et clignoter les personnages qu'elle porte.
+    //
+    // Le coût de l'attente est nul ou presque : une fenêtre sans sprite
+    // n'anime rien, et le péage de ~34 % se paie au CONTENU qui change, pas à
+    // l'existence de la fenêtre (mesuré : 2,9 % pour trois fenêtres
+    // immobiles).
+    let mut vide_depuis: std::collections::HashMap<u64, std::time::Instant> =
+        std::collections::HashMap::new();
+    const GRACE_ECRAN_VIDE: Duration = Duration::from_secs(3);
+
     // Le prochain instant d'envoi. 15 Hz, mesuré comme le meilleur compromis
     // (spike du 2026-09-22) : 44 eval/s tiennent 3 ms de latence, là où 174
     // en coûtaient 157 % de CPU.
@@ -2084,13 +2100,26 @@ fn boucle(
         //
         // `collect` en `Vec` d'abord : on ne peut pas modifier
         // `ecrans_ouverts` pendant qu'on l'itère.
-        let a_fermer: Vec<u64> = ecrans_ouverts.difference(&occupes).copied().collect();
-        for id in a_fermer {
+        // Un écran de nouveau occupé n'est plus candidat à la fermeture.
+        for id in &occupes {
+            vide_depuis.remove(id);
+        }
+
+        let candidats: Vec<u64> = ecrans_ouverts.difference(&occupes).copied().collect();
+        for id in candidats {
+            // Premier tour où il est vide : on note l'heure et on attend.
+            let depuis = *vide_depuis
+                .entry(id)
+                .or_insert_with(std::time::Instant::now);
+            if depuis.elapsed() < GRACE_ECRAN_VIDE {
+                continue;
+            }
             render::detruire_fenetre_ecran(&handle, id);
             ecrans_ouverts.remove(&id);
             derniere_charge.remove(&id);
             clics_traversent.remove(&id);
             amorcage_ecran.remove(&id);
+            vide_depuis.remove(&id);
         }
 
         // Ouvrir celles qui viennent d'être occupées.
