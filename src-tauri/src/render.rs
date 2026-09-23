@@ -10,6 +10,8 @@
 //! hachage par image est négligeable.
 
 use crate::geom::Point;
+use crate::overlay::ChargeEcran;
+use crate::probe::ScreenInfo;
 use serde::Serialize;
 use tauri::{AppHandle, Manager, PhysicalPosition, PhysicalSize, WebviewWindow};
 
@@ -483,4 +485,137 @@ mod tests {
         .unwrap();
         assert_eq!(json, r#"{"image":7,"flip":true}"#);
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// L'overlay : une fenêtre par écran occupé
+//
+// Conception : `docs/specs/2026-09-23-fenetre-par-ecran-design.md`
+// ─────────────────────────────────────────────────────────────────────────
+
+/// Le label Tauri de la fenêtre d'un écran.
+///
+/// Dérivé de l'identité **stable** de l'écran (`ScreenInfo::id`, issue du
+/// `HMONITOR`) et non de son index : un écran débranché puis rebranché
+/// changerait d'index, et la fenêtre suivante hériterait du label de la
+/// précédente pendant que Windows détruit encore celle-ci. C'est le même
+/// piège que celui des labels d'acteurs (design « plusieurs personnages »
+/// §3, piège n° 3).
+pub fn label_ecran(id: u64) -> String {
+    format!("ecran-{id}")
+}
+
+/// Crée la fenêtre d'un écran : à la taille de sa zone de travail,
+/// transparente, au premier plan, traversante — et qui **ne bougera jamais**.
+///
+/// C'est tout l'objet de l'architecture : cette fenêtre ne reçoit aucun
+/// `SetWindowPos` après sa création. Les personnages se déplacent en CSS à
+/// l'intérieur, ce qui retire de la file du thread principal les 900 messages
+/// par seconde qui la bouchaient.
+pub fn creer_fenetre_ecran(app: &AppHandle, ecran: &ScreenInfo) -> Result<(), String> {
+    let label = label_ecran(ecran.id);
+
+    let win = tauri::WebviewWindowBuilder::new(
+        app,
+        &label,
+        tauri::WebviewUrl::App("overlay.html".into()),
+    )
+    .title("shimeji-desktop")
+    .decorations(false)
+    .transparent(true)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .resizable(false)
+    .shadow(false)
+    .focused(false)
+    .build()
+    .map_err(|e| format!("fenêtre « {label} » : {e}"))?;
+
+    // Position et taille en pixels PHYSIQUES. Les passer au builder les ferait
+    // interpréter en pixels LOGIQUES, donc faux sur un écran à 125 % — la
+    // fenêtre couvrirait 80 % de l'écran et les personnages seraient coupés.
+    // C'est le piège n° 4 des « coordonnées » de CLAUDE.md, et il serait ici
+    // beaucoup plus visible qu'avec une fenêtre de 128 px.
+    win.set_position(PhysicalPosition::new(
+        ecran.work_area.x as i32,
+        ecran.work_area.y as i32,
+    ))
+    .map_err(|e| format!("set_position sur « {label} » : {e}"))?;
+
+    win.set_size(PhysicalSize::new(
+        ecran.work_area.w as u32,
+        ecran.work_area.h as u32,
+    ))
+    .map_err(|e| format!("set_size sur « {label} » : {e}"))?;
+
+    // Les clics traversent par défaut. La boucle ne les absorbe que quand le
+    // curseur est sur un personnage de CET écran (conception §4).
+    //
+    // ⚠️ C'est LA propriété qui rend l'idée vivable : sans elle, une fenêtre
+    // plein écran au premier plan rendrait la machine inutilisable.
+    win.set_ignore_cursor_events(true)
+        .map_err(|e| format!("clics traversants sur « {label} » : {e}"))?;
+
+    // **Les deux découvertes de l'étape 0.** Sans elles, la fenêtre volerait
+    // le focus de l'éditeur et apparaîtrait dans Alt+Tab.
+    match appliquer_styles_etendus(&win) {
+        Ok(()) => println!("styles étendus posés sur {label} (NOACTIVATE, TOOLWINDOW)"),
+        // Non bloquant : la fenêtre marche sans, elle est seulement moins
+        // polie. Mieux vaut un overlay impoli qu'aucun personnage.
+        Err(e) => eprintln!("styles étendus NON appliqués sur {label} : {e}"),
+    }
+
+    println!(
+        "fenêtre {label} : {}×{} @ ({}, {})",
+        ecran.work_area.w, ecran.work_area.h, ecran.work_area.x, ecran.work_area.y
+    );
+    Ok(())
+}
+
+/// Ferme la fenêtre d'un écran devenu vide (conception §5.1).
+///
+/// Silencieuse si la fenêtre n'existe pas : l'appelant peut le demander deux
+/// fois sans que ce soit une erreur.
+pub fn detruire_fenetre_ecran(app: &AppHandle, id: u64) {
+    // `let … else` : rien à fermer, on sort. Équivalent d'un `match` dont la
+    // branche `None` ferait `return`.
+    let Some(win) = app.get_webview_window(&label_ecran(id)) else {
+        return;
+    };
+    let _ = win.close();
+}
+
+/// Envoie toute la charge d'un écran, en un seul `eval`.
+///
+/// ⚠️ **C'est l'appel dont le spike a mesuré le coût : ~2,9 ms de CPU
+/// chacun.** Il ne doit être émis que lorsque quelque chose a changé
+/// (conception §5.4), et jamais plus de ~15 fois par seconde et par écran.
+/// L'appeler à 60 Hz coûtait 157 % de CPU au lieu de 30.
+pub fn pousser_ecran(app: &AppHandle, charge: &ChargeEcran) -> Result<(), String> {
+    let label = label_ecran(charge.ecran);
+    let Some(win) = app.get_webview_window(&label) else {
+        return Err(format!("fenêtre « {label} » absente"));
+    };
+    win.eval(crate::overlay::js_de(charge))
+        .map_err(|e| format!("eval sur « {label} » : {e}"))
+}
+
+/// Publie la table `id -> pack` dans la fenêtre d'un écran.
+///
+/// `table_js` est un littéral objet JavaScript déjà formé par l'appelant
+/// (`{"3":"blob","4":"naruto-kakashi"}`), parce que c'est lui qui connaît le
+/// roster. Appelée **au changement de roster seulement**, jamais dans la
+/// boucle : c'est la seule donnée non numérique qui traverse.
+pub fn declarer_packs(
+    app: &AppHandle,
+    id_ecran: u64,
+    table_js: &str,
+    version: u32,
+) -> Result<(), String> {
+    let label = label_ecran(id_ecran);
+    let Some(win) = app.get_webview_window(&label) else {
+        return Err(format!("fenêtre « {label} » absente"));
+    };
+    win.eval(format!("window.declarer({table_js}, {version})"))
+        .map_err(|e| format!("eval sur « {label} » : {e}"))
 }
