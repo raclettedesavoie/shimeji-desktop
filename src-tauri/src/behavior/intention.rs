@@ -20,7 +20,7 @@
 use crate::character::attach::Attachment;
 use crate::character::manifest::{
     POSE_CLIMB_CEILING, POSE_CLIMB_WALL, POSE_GRAB_CEILING, POSE_GRAB_WALL, POSE_RUN, POSE_SIT,
-    POSE_SIT_DANGLE, POSE_SLEEP, POSE_SPIN_HEAD, POSE_STAND, POSE_WAKE, POSE_WALK,
+    POSE_SIT_DANGLE, POSE_SLEEP, POSE_SPIN_HEAD, POSE_SPRAWL, POSE_STAND, POSE_WAKE, POSE_WALK,
 };
 use crate::config::Reglages;
 use crate::character::Character;
@@ -229,6 +229,23 @@ pub enum PhaseRepos {
     /// sens du signal — si le réveil était une phase `Endormi`, il serait
     /// coupé à la première image et l'on ne verrait rien.
     Selevant,
+
+    /// Étalé par terre après une chute, puis il se relève (2026-09-23).
+    ///
+    /// **La jumelle exacte de `Selevant`**, à la pose près : `sprawl` au lieu
+    /// de `sleep`, puis la même animation `wake`. Posée de l'extérieur, par
+    /// le réflexe d'atterrissage (`reflex.rs`), via `ActiveIntention::etale`
+    /// — jamais tirée.
+    ///
+    /// **Une phase de repos et non un réflexe qui s'allonge** : la durée est
+    /// tirée au sort dans `dureeAuSol`, et seule la couche 2 a l'aléatoire et
+    /// les réglages sous la main. Le réflexe se contente de la poser, comme
+    /// il pose déjà `accroche` après un lancer contre un mur.
+    ///
+    /// Ininterruptible par l'utilisateur qui revient, pour la même raison que
+    /// `Selevant` : l'interruption ne vise que `Endormi`. Attrapable en
+    /// revanche, puisque le réflexe « porté » passe avant toute intention.
+    Etale,
 }
 
 /// Où en est une escalade.
@@ -247,12 +264,18 @@ pub enum PhaseGrimpe {
     /// `ActiveIntention::nouvelle` reste **sans `World` ni `Rng`** — c'est
     /// déjà le parti pris des autres intentions, dont l'état initial est
     /// délibérément périmé pour que la première image décide.
-    Choisir,
+    ///
+    /// `presse` : vrai quand l'escalade a été ORDONNÉE (menu du personnage ou
+    /// « Tout le monde grimpe au mur ») — il court alors jusqu'au mur au lieu d'y
+    /// marcher. Porté par la phase et non par l'intention, parce que seule
+    /// `Rejoindre` s'en sert : le mettre sur `EtatIntention::Grimpe` le
+    /// ferait recopier par chacune des autres phases.
+    Choisir { presse: bool },
 
     /// Marcher vers le mur retenu. On mémorise **son identité**, jamais sa
     /// position : le monde est reconstruit à 8 Hz, et une position serait
     /// périmée (décision n° 1).
-    Rejoindre { mur: PlatformId },
+    Rejoindre { mur: PlatformId, presse: bool },
 
     /// Se déplacer le long de la paroi vers `cible`.
     ///
@@ -347,8 +370,11 @@ impl ActiveIntention {
             // état volontairement « pas encore décidé », que la première
             // image de `grimper` tranchera — c'est ce qui dispense cette
             // fonction d'un `World` et d'un `Rng`.
+            //
+            // `presse: false` : une escalade tirée au sort est une envie, pas
+            // un ordre — il marche jusqu'au mur. Voir `grimper_sur_ordre`.
             Intention::Grimper => EtatIntention::Grimpe {
-                phase: PhaseGrimpe::Choisir,
+                phase: PhaseGrimpe::Choisir { presse: false },
                 jusqu_a: Duration::ZERO,
             },
         };
@@ -401,6 +427,42 @@ impl ActiveIntention {
             depuis: maintenant,
             etat: EtatIntention::Grimpe {
                 phase: PhaseGrimpe::Accroche,
+                jusqu_a: Duration::ZERO,
+            },
+        }
+    }
+
+    /// L'escalade ORDONNÉE : la même que `nouvelle(Grimper)`, sauf qu'il
+    /// court jusqu'au mur.
+    ///
+    /// Posée par `behavior::pas` pour toute commande `Grimper` — elle vient
+    /// toujours d'un clic, sur ce personnage ou sur « Tout le monde grimpe au mur ».
+    /// La différence est purement visuelle, mais c'est elle qui donne
+    /// l'impression qu'il a entendu (demande de l'auteur, 2026-09-23). Le
+    /// tirage aléatoire, lui, garde `nouvelle` : une envie ne presse pas.
+    pub fn grimper_sur_ordre(maintenant: Duration) -> Self {
+        ActiveIntention {
+            kind: Intention::Grimper,
+            depuis: maintenant,
+            etat: EtatIntention::Grimpe {
+                phase: PhaseGrimpe::Choisir { presse: true },
+                jusqu_a: Duration::ZERO,
+            },
+        }
+    }
+
+    /// L'intention « étalé au sol », posée par le réflexe d'atterrissage à la
+    /// fin de la pose `land` (2026-09-23).
+    ///
+    /// Même motif que `reveil` : `jusqu_a` à zéro, donc la première image de
+    /// `se_reposer` tirera la durée dans `dureeAuSol`. C'est ce qui permet à
+    /// `reflex.rs` de la construire sans générateur ni réglages.
+    pub fn etale(maintenant: Duration) -> Self {
+        ActiveIntention {
+            kind: Intention::SeReposer,
+            depuis: maintenant,
+            etat: EtatIntention::Repos {
+                phase: PhaseRepos::Etale,
                 jusqu_a: Duration::ZERO,
             },
         }
@@ -668,7 +730,7 @@ fn grimper(
 
     match phase {
         // ── Choisir le mur — ou reprendre l'escalade en cours ───────────
-        PhaseGrimpe::Choisir => {
+        PhaseGrimpe::Choisir { presse } => {
             // `let … else` : s'il n'est pas posé quelque part, il n'y a pas
             // d'écran de référence. Les réflexes s'occupent de lui.
             let Attachment::On { platform, face, .. } = ch.attachment else {
@@ -714,7 +776,7 @@ fn grimper(
                         return Issue::Echouee;
                     };
 
-                    phase = PhaseGrimpe::Rejoindre { mur };
+                    phase = PhaseGrimpe::Rejoindre { mur, presse };
                 }
 
                 Face::Left | Face::Right => {
@@ -776,7 +838,7 @@ fn grimper(
         }
 
         // ── Marcher jusqu'au pied du mur ────────────────────────────────
-        PhaseGrimpe::Rejoindre { mur } => {
+        PhaseGrimpe::Rejoindre { mur, presse } => {
             let Some(plat_mur) = world.get(mur) else {
                 // Écran débranché en cours de route.
                 ch.intention = None;
@@ -804,9 +866,21 @@ fn grimper(
             } else {
                 Facing::Right
             };
-            ch.set_pose(POSE_WALK, maintenant);
+            // Sur ordre, il court — mais seulement s'il en a la pose : courir
+            // en pose de marche aurait l'air d'un glissement, et la couverture
+            // partielle (spec §8.6) veut qu'une pose absente retire l'option,
+            // pas qu'elle la déguise. Sans `run`, l'ordre est obéi à pied.
+            //
+            // Le délai d'abandon ne bouge pas : courir ne fait qu'arriver
+            // plus tôt, jamais plus tard.
+            let (pose, vitesse) = if presse && ch.manifest.has_pose(POSE_RUN) {
+                (POSE_RUN, reglages.vitesse_course)
+            } else {
+                (POSE_WALK, reglages.vitesse_marche)
+            };
+            ch.set_pose(pose, maintenant);
 
-            let pas = reglages.vitesse_marche * dt;
+            let pas = vitesse * dt;
 
             if (x_mur - pos.x).abs() <= pas {
                 // Arrivé : on s'accroche au BAS du mur. L'offset d'une face
@@ -1442,7 +1516,11 @@ fn se_reposer(
     // position assise. Un pack sans `sit` ne doit pas être empêché de se
     // réveiller au déverrouillage — il n'a simplement pas le droit de
     // *choisir* de se reposer, ce qui est une autre question.
-    if phase != PhaseRepos::Selevant && !ch.manifest.has_pose(POSE_SIT) {
+    //
+    // Et sauf en phase `Etale`, pour la même raison : tomber n'est pas
+    // choisir de se reposer.
+    let exige_sit = phase != PhaseRepos::Selevant && phase != PhaseRepos::Etale;
+    if exige_sit && !ch.manifest.has_pose(POSE_SIT) {
         ch.intention = None;
         return Issue::Echouee;
     }
@@ -1552,6 +1630,15 @@ fn se_reposer(
                 let anim = duree_reveil(ch).as_secs_f32();
                 (2.5 + anim, 4.0 + anim)
             }
+
+            // Etale : `dureeAuSol` (déjà bornée par `Reglages::depuis`),
+            // plus l'animation pour se relever — même construction que
+            // `Selevant`, pour que `wake` se joue en entier.
+            PhaseRepos::Etale => {
+                let anim = duree_reveil(ch).as_secs_f32();
+                let [min, max] = reglages.duree_au_sol;
+                (min + anim, max + anim)
+            }
         };
         jusqu_a = maintenant + Duration::from_secs_f32(rng.range(min, max));
         ai.etat = EtatIntention::Repos { phase, jusqu_a };
@@ -1593,6 +1680,17 @@ fn se_reposer(
                 // Absente du pack : `set_pose` ne fait rien et il reste
                 // affalé jusqu'au bout. C'est la couverture partielle, et
                 // c'est pourquoi il n'y a pas de `has_pose` ici.
+                POSE_WAKE
+            }
+        }
+
+        // Même départage que `Selevant`, étalé au lieu d'endormi. Un pack
+        // sans `sprawl` n'arrive jamais ici : le réflexe ne pose cette phase
+        // que si la pose existe.
+        PhaseRepos::Etale => {
+            if jusqu_a.saturating_sub(maintenant) > duree_reveil(ch) {
+                POSE_SPRAWL
+            } else {
                 POSE_WAKE
             }
         }

@@ -33,6 +33,8 @@
     "dureeAccroche": [0.5, 1.5]
   },
 
+  "dureeAuSol": [1, 2],
+
   "signaux": {
     "inactiviteSecondes": 120,
     "inactifFlaner": 0.2,

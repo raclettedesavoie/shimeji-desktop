@@ -1,8 +1,8 @@
 //! Le menu du **clic droit sur le personnage** (spec §3.3, §9.1).
 //!
-//! Responsabilité unique : construire ce menu et l'afficher au curseur. Ce
-//! qu'une entrée *fait* est dans `actions.rs` — ici on ne décide rien, on
-//! propose.
+//! Responsabilité unique : **décrire** ce menu (`lignes`). L'afficher est
+//! l'affaire de `menu_natif.rs`, et ce qu'une entrée *fait* celle
+//! d'`actions.rs` — ici on ne décide rien, on propose.
 //!
 //! # Le menu est reconstruit à chaque clic droit
 //!
@@ -13,19 +13,17 @@
 //! manifeste **courant** — donc juste après un rechargement à chaud aussi
 //! (spec §8.6).
 //!
-//! Le coût est une poignée d'objets créés sur un clic humain : invisible.
+//! Le coût est un petit `Vec` construit sur un clic humain : invisible.
 //! Mémoriser le menu économiserait cela et coûterait toute la logique
 //! « remettre les entrées d'accord avec l'état », qui est exactement la
 //! classe de bugs que ce projet évite ailleurs par recalcul (décision n° 1).
 
-use crate::actions::{ID_CATALOGUE, ID_P_CACHER, ID_QUITTER};
+use crate::actions::{ID_CATALOGUE, ID_P_CACHER, ID_P_CACHER_CE, ID_QUITTER, ID_TOUS_AU_MUR};
 use crate::behavior::desire::TableEnvies;
 use crate::behavior::intention::{Intention, Jeu};
 use crate::character::attach::Attachment;
 use crate::character::manifest::Manifest;
 use crate::geom::Face;
-use tauri::menu::{IsMenuItem, Menu, MenuItem, PredefinedMenuItem};
-use tauri::{AppHandle, WebviewWindow};
 
 /// Ce que demande une entrée du menu — pas toujours une intention.
 ///
@@ -112,11 +110,27 @@ pub fn commande_pour(
     Some(commande)
 }
 
+/// La commande que reçoit un acteur à cette image : la sienne d'abord, et
+/// sinon celle adressée à tous (« Tout le monde grimpe au mur »).
+///
+/// **La personnelle gagne**, parce qu'elle est plus précise : l'utilisateur
+/// qui vient de choisir « S'asseoir » pour CE personnage ne doit pas le voir
+/// partir au mur parce qu'un ordre collectif est tombé dans la même image.
+///
+/// `or` : rend `personnelle` si elle est `Some`, sinon `pour_tous` — le
+/// `match` à deux bras qu'on écrirait à la main.
+pub fn commande_de_l_acteur(
+    personnelle: Option<Commande>,
+    pour_tous: Option<Commande>,
+) -> Option<Commande> {
+    personnelle.or(pour_tous)
+}
+
 /// L'endroit d'où l'on fait un clic droit, simplifié aux trois cas qui
 /// changent le menu proposé (spec §4, design du plan menu).
 ///
 /// Dérivé de `Attachment` par `ou_de` plutôt que testé à la volée dans
-/// `ouvrir` : la correspondance face → contexte de menu ne doit vivre qu'à
+/// `lignes` : la correspondance face → contexte de menu ne doit vivre qu'à
 /// UN endroit, sans quoi elle finirait par diverger de celle utilisée par la
 /// physique.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -133,7 +147,7 @@ pub enum Ou {
 /// personnage — ou `Sol` s'il ne l'est pas du tout.
 ///
 /// **La seule fonction qui connaît cette correspondance.** `main.rs` l'appelle
-/// juste avant `ouvrir`, depuis `ch.attachment` : c'est le seul endroit où la
+/// juste avant `lignes`, depuis `ch.attachment` : c'est le seul endroit où la
 /// boucle 60 Hz sait où en est CE personnage-là.
 pub fn ou_de(attachment: &Attachment) -> Ou {
     match attachment {
@@ -258,17 +272,29 @@ pub fn commande_de(id: &str) -> Option<Commande> {
         .map(|(_, _, _, c)| *c)
 }
 
-/// Construit et affiche le menu au curseur. **Bloque** jusqu'à sa fermeture.
+/// Une ligne du menu : une entrée cliquable, ou un séparateur.
 ///
-/// Appelée depuis le thread de la boucle 60 Hz, qui est donc figé pendant que
-/// le menu est ouvert — le personnage s'immobilise. C'est voulu : c'est ce
-/// que fait Shimeji-ee, et un personnage qui continuerait de marcher sous un
-/// menu ouvert sur lui serait plus déroutant qu'amusant.
+/// Le menu est **décrit** ici et **affiché** ailleurs (`menu_natif.rs`) :
+/// la description est une fonction pure, donc testable sans écran, et
+/// l'affichage ne sait rien des envies ni des packs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ligne {
+    /// `id` est l'identifiant que reçoit `actions::executer`, exactement
+    /// comme s'il venait d'un menu Tauri ; `libelle` est le texte affiché.
+    Entree {
+        id: &'static str,
+        libelle: &'static str,
+    },
+    Separateur,
+}
+
+/// Le menu d'un personnage, ligne par ligne, **tel qu'il doit être LÀ où il
+/// est**.
 ///
 /// # Ce que `manifeste`, `table` et `ou` servent
 ///
 /// `manifeste` et `table` retirent les envies injouables (spec §8.6) — ils
-/// viennent du personnage **de cette fenêtre-là**, ce qui est la raison pour
+/// viennent du personnage **qui a été cliqué**, ce qui est la raison pour
 /// laquelle cette fonction est appelée depuis la boucle et non depuis
 /// `setup` : c'est le seul endroit où le manifeste courant est connu.
 ///
@@ -279,26 +305,11 @@ pub fn commande_de(id: &str) -> Option<Commande> {
 ///
 /// Aucun `Actions` en paramètre, et c'est la conséquence directe du
 /// gestionnaire unique : ce fichier ne déclenche **rien**, il propose. Le
-/// clic repart dans la boucle d'événements de Tauri et atterrit dans
-/// `actions::executer`.
-///
-/// Rend `Err` si la construction ou l'affichage échoue. L'appelant se
-/// contente de le signaler — un menu qui ne s'ouvre pas n'empêche pas le
-/// personnage de vivre.
-pub fn ouvrir(
-    app: &AppHandle,
-    win: &WebviewWindow,
-    manifeste: &Manifest,
-    table: &TableEnvies,
-    ou: Ou,
-) -> Result<(), String> {
+/// choix atterrit dans `actions::executer`.
+pub fn lignes(manifeste: &Manifest, table: &TableEnvies, ou: Ou) -> Vec<Ligne> {
+    let mut lignes: Vec<Ligne> = Vec::new();
+
     // ── Les envies jouables par CE personnage, LÀ où il est ─────────────
-    //
-    // On construit d'abord un `Vec` de valeurs possédées, puis un second de
-    // références de trait. En un seul passage, les `MenuItem` seraient
-    // temporaires et les références pendantes — c'est l'emprunt de Rust qui
-    // l'impose, et c'est une erreur qu'on ne peut pas commettre par accident.
-    let mut entrees: Vec<MenuItem<tauri::Wry>> = Vec::new();
     for (id, libelle, contextes, commande) in ENVIES {
         if !contextes.contains(&ou) {
             continue;
@@ -312,11 +323,14 @@ pub fn ouvrir(
             Commande::ResterAccroche | Commande::Redescendre | Commande::SeLacher => true,
         };
         if jouable {
-            entrees.push(
-                MenuItem::with_id(app, *id, *libelle, true, None::<&str>)
-                    .map_err(|e| format!("entrée « {libelle} » : {e}"))?,
-            );
+            lignes.push(Ligne::Entree { id, libelle });
         }
+    }
+
+    // Pas de séparateur si aucune envie n'est jouable : un menu qui
+    // commencerait par une barre horizontale aurait l'air cassé.
+    if !lignes.is_empty() {
+        lignes.push(Ligne::Separateur);
     }
 
     // ── Les entrées communes avec le tray ───────────────────────────────
@@ -325,29 +339,31 @@ pub fn ouvrir(
     // système, pas une humeur du personnage, et il n'a rien à faire au milieu
     // de « Flâner » et « S'asseoir ». Il reste dans le tray, qui est
     // justement l'endroit des réglages.
-    let cacher = MenuItem::with_id(
-        app,
-        ID_P_CACHER,
-        "Cacher les personnages",
-        true,
-        None::<&str>,
-    )
-    .map_err(|e| format!("entrée « cacher » : {e}"))?;
+    //
+    // « Tout le monde grimpe au mur » : un ordre à TOUS, donc rangé avec les
+    // entrées communes et non parmi les envies de CE personnage. Toujours
+    // proposé, même à un pack sans escalade : il s'adresse aux AUTRES
+    // aussi, et chacun le refuse s'il ne peut pas l'exécuter.
+    lignes.push(Ligne::Entree {
+        id: ID_TOUS_AU_MUR,
+        libelle: "Tout le monde grimpe au mur",
+    });
 
-    let catalogue = MenuItem::with_id(
-        app,
-        ID_CATALOGUE,
-        "Catalogue de personnages…",
-        true,
-        None::<&str>,
-    )
-    .map_err(|e| format!("entrée « catalogue » : {e}"))?;
-
-    // **Deux séparateurs distincts et non un réutilisé** : une entrée de menu
-    // ne peut occuper qu'une position, la poser deux fois ne la duplique pas.
-    let separateur = PredefinedMenuItem::separator(app).map_err(|e| format!("séparateur : {e}"))?;
-    let separateur_final =
-        PredefinedMenuItem::separator(app).map_err(|e| format!("séparateur final : {e}"))?;
+    // Deux « Cacher », et le libellé doit dire lequel est lequel : « ce
+    // personnage » s'en va seul (voir `actions::ID_P_CACHER_CE`), « tous »
+    // cache tout le monde jusqu'au prochain « Afficher » du tray.
+    lignes.push(Ligne::Entree {
+        id: ID_P_CACHER_CE,
+        libelle: "Cacher ce personnage",
+    });
+    lignes.push(Ligne::Entree {
+        id: ID_P_CACHER,
+        libelle: "Cacher tous les personnages",
+    });
+    lignes.push(Ligne::Entree {
+        id: ID_CATALOGUE,
+        libelle: "Catalogue de personnages…",
+    });
 
     // « Quitter » en dernier, derrière son propre séparateur.
     //
@@ -355,86 +371,13 @@ pub fn ouvrir(
     // surtout pas cliquer de travers en visant « Catalogue ». La
     // mettre à part et tout en bas est la convention de toutes les
     // applications, pour cette raison exacte.
-    let quitter = MenuItem::with_id(app, ID_QUITTER, "Quitter", true, None::<&str>)
-        .map_err(|e| format!("entrée « quitter » : {e}"))?;
+    lignes.push(Ligne::Separateur);
+    lignes.push(Ligne::Entree {
+        id: ID_QUITTER,
+        libelle: "Quitter",
+    });
 
-    // `&[&dyn IsMenuItem<R>]` : les entrées n'ont pas le même type concret
-    // (`MenuItem`, `CheckMenuItem`, `PredefinedMenuItem`), donc on passe par
-    // des références de trait. C'est la raison du `&` devant chacune.
-    let mut refs: Vec<&dyn IsMenuItem<tauri::Wry>> = Vec::new();
-    for e in &entrees {
-        refs.push(e);
-    }
-    // Pas de séparateur si aucune envie n'est jouable : un menu qui
-    // commencerait par une barre horizontale aurait l'air cassé.
-    if !entrees.is_empty() {
-        refs.push(&separateur);
-    }
-    refs.push(&cacher);
-    refs.push(&catalogue);
-    refs.push(&separateur_final);
-    refs.push(&quitter);
-
-    let menu = Menu::with_items(app, &refs).map_err(|e| format!("menu : {e}"))?;
-
-    // ── L'affichage ─────────────────────────────────────────────────────
-    //
-    // `autoriser_activation` retire `WS_EX_NOACTIVATE` le temps du menu :
-    // sans ça le menu resterait collé à l'écran. Le pourquoi complet est dans
-    // le commentaire de cette fonction — il n'est pas devinable.
-    // À qui rendre le focus après le menu — retenu AVANT de l'avoir pris.
-    // Voir `fenetre_au_premier_plan` : sans cette restitution, un clic droit
-    // sur le personnage laisserait l'éditeur muet.
-    let precedente = crate::render::fenetre_au_premier_plan();
-
-    let _ = crate::render::autoriser_activation(win, true);
-
-    // Puis on prend RÉELLEMENT le premier plan, et on vérifie que Windows a
-    // accepté — `muda` le demande aussi mais ignore son refus, et un refus
-    // donne précisément le menu qui ne se referme pas quand on clique
-    // ailleurs. Tout le raisonnement est dans `prendre_le_premier_plan`.
-    let devant = crate::render::prendre_le_premier_plan(win).unwrap_or(false);
-
-    // Un diagnostic plutôt qu'un `if` : on ne peut RIEN faire d'utile d'un
-    // refus ici — afficher quand même vaut mieux que ne rien afficher. Mais
-    // si le menu se recolle un jour à l'écran, cette ligne dit en une seconde
-    // si la cause est là ou ailleurs, au lieu de relire trois crates.
-    if !devant && std::env::var_os("SHIMEJI_MENU").is_some() {
-        eprintln!(
-            "menu : Windows a refusé le premier plan — le menu risque de ne pas se refermer au clic"
-        );
-    }
-
-    // `popup_menu` place le menu au curseur et **bloque** jusqu'au choix.
-    // Vérifié : `WebviewWindow::popup_menu`
-    // (`tauri-2.11.5/src/webview/webview_window.rs:1681`), qui délègue à
-    // `Window::popup_menu` (`src/window/mod.rs:1454`).
-    let resultat = win
-        .popup_menu(&menu)
-        .map_err(|e| format!("affichage du menu : {e}"));
-
-    // **Remis quoi qu'il arrive**, y compris si l'affichage a échoué : voir
-    // l'avertissement de `autoriser_activation`. C'est la raison pour
-    // laquelle le résultat est mis de côté au lieu d'être propagé par `?`.
-    let _ = crate::render::autoriser_activation(win, false);
-
-    // La seconde moitié de la recette : sans ce message vide, c'est le menu
-    // SUIVANT qui se comporte mal. Voir `reveiller_la_file`.
-    crate::render::reveiller_la_file(win);
-
-    // Puis on rend le focus. Après avoir remis `WS_EX_NOACTIVATE`, pour que
-    // notre fenêtre ne puisse plus le reprendre entre les deux appels.
-    //
-    // `if let Some` : il n'y avait pas forcément de premier plan à l'ouverture
-    // (bureau sécurisé), auquel cas il n'y a rien à restaurer.
-    if let Some(hwnd) = precedente {
-        crate::render::rendre_le_premier_plan(hwnd);
-    }
-
-    // L'action, elle, ne s'exécute pas ici : le clic est parti dans la boucle
-    // d'événements de Tauri et atterrira dans l'unique gestionnaire installé
-    // par `tray.rs`. Voir l'avertissement en tête d'`actions.rs`.
-    resultat
+    lignes
 }
 
 // Les tests de ce module vivent dans `menu_perso_tests.rs`

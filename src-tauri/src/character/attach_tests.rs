@@ -86,12 +86,14 @@ fn deplacer_la_plateforme_deplace_le_personnage_sans_code() {
     let avant = World::from_screens(&[ScreenInfo {
         id: 42,
         work_area: Rect::new(0.0, 0.0, 1920.0, 1032.0),
+        bounds: Rect::new(0.0, 0.0, 1920.0, 1032.0),
         scale: 1.0,
     }]);
     let apres = World::from_screens(&[ScreenInfo {
         id: 42,
         // L'écran a « bougé » de 500 px vers la droite et 100 vers le bas.
         work_area: Rect::new(500.0, 100.0, 1920.0, 1032.0),
+        bounds: Rect::new(500.0, 100.0, 1920.0, 1032.0),
         scale: 1.0,
     }]);
 
@@ -119,11 +121,13 @@ fn redimensionner_la_plateforme_conserve_la_distance_au_bord() {
     let etroit = World::from_screens(&[ScreenInfo {
         id: 42,
         work_area: Rect::new(0.0, 0.0, 800.0, 1032.0),
+        bounds: Rect::new(0.0, 0.0, 800.0, 1032.0),
         scale: 1.0,
     }]);
     let large = World::from_screens(&[ScreenInfo {
         id: 42,
         work_area: Rect::new(0.0, 0.0, 1920.0, 1032.0),
+        bounds: Rect::new(0.0, 0.0, 1920.0, 1032.0),
         scale: 1.0,
     }]);
 

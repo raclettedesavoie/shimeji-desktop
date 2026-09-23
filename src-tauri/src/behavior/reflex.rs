@@ -22,7 +22,7 @@ use crate::character::attach::{
 };
 use crate::character::manifest::{
     POSES_DRAGGED_LEFT, POSES_DRAGGED_RIGHT, POSE_DRAGGED, POSE_FALL, POSE_GRAB_CEILING,
-    POSE_GRAB_WALL, POSE_LAND, POSE_STAND,
+    POSE_GRAB_WALL, POSE_LAND, POSE_SPRAWL, POSE_STAND,
 };
 use crate::character::physics::{
     borner_lancer, contact, integrer_balancier, integrer_chute, lisser_vitesse_curseur,
@@ -377,7 +377,25 @@ pub fn appliquer(
     // laisse se jouer, puis on rend la main.
     if ch.pose == POSE_LAND {
         if ch.pose_terminee(maintenant) {
-            ch.set_pose(POSE_STAND, maintenant);
+            // ── Puis il reste étalé un moment (2026-09-23) ──────────────
+            //
+            // Après TOUTE chute — lancer, lâcher d'un mur, apparition — et
+            // non seulement après un lancer : c'est le choix de l'auteur.
+            //
+            // Le réflexe ne fait que POSER l'intention : la durée est tirée
+            // par la couche 2, qui seule a l'aléatoire et les réglages (voir
+            // `PhaseRepos::Etale`). C'est le même partage que pour
+            // `accroche`, plus haut dans ce fichier.
+            //
+            // Sans `sprawl`, il se relève tout de suite, comme avant :
+            // couverture partielle (spec §8.6), aucun cas particulier.
+            if ch.manifest.has_pose(POSE_SPRAWL) {
+                ch.set_pose(POSE_SPRAWL, maintenant);
+                ch.intention =
+                    Some(crate::behavior::intention::ActiveIntention::etale(maintenant));
+            } else {
+                ch.set_pose(POSE_STAND, maintenant);
+            }
         } else {
             // Toujours en train d'atterrir : les couches 2 et 3 attendent.
             return Reflexe::Atterrissage;

@@ -165,6 +165,34 @@ pub fn definir_compte(
     Ok(())
 }
 
+/// Retire UN exemplaire de `nom` du roster voulu, et l'enregistre — le
+/// « Cacher ce personnage » du clic droit (2026-09-23).
+///
+/// C'est le « − » de la bibliothèque, par le même chemin que
+/// `definir_compte` : charger d'abord, enregistrer ensuite. **Quel**
+/// exemplaire part n'est pas décidé ici : la boucle l'a déjà mis en départ
+/// avant d'appeler, et un acteur en départ ne compte plus comme présent — la
+/// réconciliation qui suit ne trouve donc rien de plus à retirer.
+///
+/// ⚠️ **Fait des entrées-sorties** (manifestes, `config.json`) : à appeler
+/// depuis un thread à part, jamais depuis la boucle 60 Hz.
+pub fn retirer_un_exemplaire(
+    actions: &crate::actions::Actions,
+    nom: &str,
+) -> Result<(), String> {
+    let actuel = actions.roster();
+    // `saturating_sub` : 0 − 1 reste 0 au lieu de déborder. Un nom absent
+    // du roster (déjà retiré par la bibliothèque entre-temps) ne change rien.
+    let reste = crate::roster::compte_de(&actuel, nom).saturating_sub(1);
+    let voulus = roster_avec(&actuel, nom, reste);
+
+    actions.definir_roster(&voulus, false)?;
+    crate::config::definir_personnages(&voulus)?;
+
+    println!("roster : {voulus:?}");
+    Ok(())
+}
+
 /// À partir de combien de personnages la bibliothèque avertit.
 ///
 /// La loi mesurée est `CPU ~= 0,9 + 0,3 x placements/s` : à 10 personnages,

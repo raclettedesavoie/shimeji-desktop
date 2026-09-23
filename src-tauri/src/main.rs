@@ -38,6 +38,7 @@ mod commandes;
 mod config;
 mod geom;
 mod maj;
+mod menu_natif;
 mod menu_perso;
 mod overlay;
 mod probe;
@@ -225,7 +226,8 @@ fn main() {
 /// ⚠️ **Les bords BAS et DROIT appartiennent à l'écran** (`<=` et non `<`), et
 /// ce n'est pas un détail de confort : `pos_connue` est l'**ancre** du
 /// personnage, c'est-à-dire le sol sous ses pieds. Un personnage debout sur le
-/// plancher a donc `y` **exactement égal** à `work_area.bottom`.
+/// plancher a donc `y` **exactement égal** à `work_area.bottom` — qui vaut
+/// `bounds.bottom` quand la barre des tâches est masquée ou sur le côté.
 ///
 /// Avec une comparaison stricte, `ecran_sous` rendait `None` pour tout
 /// personnage au sol — donc **aucun menu contextuel au sol**, alors qu'il
@@ -240,7 +242,10 @@ fn ecran_sous(ecrans: &[probe::ScreenInfo], p: geom::Point) -> Option<u64> {
     ecrans
         .iter()
         .find(|e| {
-            let z = e.work_area;
+            // `bounds` : la fenêtre de l'écran le couvre en entier, barre des
+            // tâches comprise — un personnage porté au-dessus d'elle doit
+            // encore absorber ses clics, sinon on le lâcherait en y passant.
+            let z = e.bounds;
             p.x >= z.left() && p.x <= z.right() && p.y >= z.top() && p.y <= z.bottom()
         })
         .map(|e| e.id)
@@ -1146,9 +1151,6 @@ fn boucle(
 ) {
     use behavior::Entrees;
     use std::time::{Duration, Instant};
-    // `get_webview_window` est une méthode du trait `Manager` : sans cet
-    // import, l'`AppHandle` ne l'expose pas.
-    use tauri::Manager;
 
     let sonde = probe::win32::Win32Probe::new();
     let horloge = clock::SystemClock::new();
@@ -1333,6 +1335,24 @@ fn boucle(
     // boucle d'événements de Tauri, donc quelques images après la fermeture
     // du menu.
     let mut demandeur_du_menu: Option<String> = None;
+
+    // Le menu contextuel **en cours d'affichage**, s'il y en a un : l'id de
+    // l'acteur sur qui il a été ouvert, le drapeau que le thread du menu
+    // lève en se refermant, et l'instant de l'ouverture — auquel son image
+    // reste figée (voir `instant_fige`).
+    //
+    // ⚠️ **Seul CET acteur s'arrête** (2026-09-23). Le menu vit sur son
+    // propre thread (`menu_natif`), la boucle continue donc de tourner :
+    // les autres personnages vivent pendant qu'on choisit. Avant, le menu
+    // bloquait la boucle, et tout le monde se figeait.
+    //
+    // `Arc<AtomicBool>` : partagé entre deux threads, et un booléen n'a pas
+    // besoin d'un verrou — `load`/`store` sont atomiques par construction.
+    let mut menu_en_cours: Option<(
+        u32,
+        std::sync::Arc<std::sync::atomic::AtomicBool>,
+        std::time::Duration,
+    )> = None;
 
     loop {
         // `Instant` ici et non l'horloge injectée : c'est la CADENCE, pas le
@@ -1769,7 +1789,76 @@ fn boucle(
         // ainsi consommée une fois et une seule. **Lue avant la boucle, et
         // donnée au seul acteur élu** : la donner à tous ferait exécuter
         // l'entrée de menu par N personnages.
-        let mut commande_du_menu = match commande.try_lock() {
+        //
+        // ── Le menu contextuel s'est-il refermé ? ──────────────────────
+        //
+        // `Ordering::Acquire` : fait voir à ce thread tout ce que le thread
+        // du menu a écrit AVANT de lever le drapeau (son `Release`).
+        if let Some((_, ferme, _)) = &menu_en_cours {
+            if ferme.load(std::sync::atomic::Ordering::Acquire) {
+                menu_en_cours = None;
+            }
+        }
+
+        // ⚠️ **Rien n'est pris dans la boîte tant que le menu est ouvert.**
+        // La commande lue ici est jetée si son destinataire ne la consomme
+        // pas dans l'image ; or l'acteur du menu est à l'arrêt, et ne
+        // consomme rien. Elle attend donc la fermeture, dans sa boîte.
+        let mut commande_du_menu = if menu_en_cours.is_some() {
+            None
+        } else {
+            match commande.try_lock() {
+                Ok(mut boite) => boite.take(),
+                Err(_) => None,
+            }
+        };
+
+        // ── « Cacher ce personnage » ────────────────────────────────────
+        //
+        // Même règle que la commande : servi au DEMANDEUR du menu, et
+        // seulement une fois le menu refermé. `swap(false)` lit et remet à
+        // zéro en une seule opération — deux lectures séparées laisseraient
+        // passer un second clic entre les deux.
+        if menu_en_cours.is_none()
+            && actions
+                .cacher_le_demandeur
+                .swap(false, std::sync::atomic::Ordering::Relaxed)
+        {
+            // `take()` : le demandeur est servi, il est oublié — comme dans
+            // `menu_perso::commande_pour`.
+            let cible = demandeur_du_menu.take();
+            let acteur = acteurs.iter_mut().find(|a| {
+                a.depart.is_none() && Some(a.id.to_string()) == cible
+            });
+            // `if let Some` : il a pu partir entre le clic droit et le choix
+            // (bibliothèque, suppression du pack). Il n'y a alors plus rien
+            // à cacher.
+            if let Some(a) = acteur {
+                // Le départ D'ABORD, à cette image : un acteur en départ ne
+                // compte plus comme présent, et la réconciliation déclenchée
+                // par le nouveau roster ne trouvera donc rien de plus à
+                // retirer — c'est bien CELUI-CI qui s'en va, pas le dernier
+                // arrivé de son nom (voir `ActionRoster::RetirerUn`).
+                a.depart = Some(Depart::commence(maintenant, a.ch.pos_connue));
+                println!("« {} » s'en va (id {}), demandé au menu", a.nom, a.id);
+
+                // Puis le roster, sur un thread à lui : il lit les
+                // manifestes et écrit `config.json`, deux entrées-sorties
+                // qui n'ont rien à faire sur le chemin des 60 Hz.
+                let actions_du_roster = actions.clone();
+                let nom = a.nom.clone();
+                std::thread::spawn(move || {
+                    if let Err(e) = commandes::retirer_un_exemplaire(&actions_du_roster, &nom) {
+                        eprintln!("« cacher ce personnage » : {e}");
+                    }
+                });
+            }
+        }
+
+        // L'ordre adressé à TOUS (« Tout le monde grimpe au mur »), lu de la même
+        // façon. `Commande` est `Copy` : chaque acteur en reçoit une copie,
+        // sans que la boîte ait à être relue pour chacun.
+        let commande_pour_tous = match actions.pour_tous.try_lock() {
             Ok(mut boite) => boite.take(),
             Err(_) => None,
         };
@@ -1789,10 +1878,6 @@ fn boucle(
         // `Ordering::Relaxed` : il n'y a aucune autre donnée à synchroniser
         // avec ce booléen, seulement sa propre valeur.
         let visible = visibilite.load(std::sync::atomic::Ordering::Relaxed) && !verrouille;
-
-        // Un menu contextuel a-t-il été ouvert pendant cette image ? Voir
-        // pourquoi ce drapeau existe, plus bas, là où il est posé.
-        let mut menu_ouvert = false;
 
         // Les sprites de cette image, tous acteurs confondus. Remplace les
         // trois appels Windows par personnage (`dimensionner`, `placer`,
@@ -1919,56 +2004,76 @@ fn boucle(
             //    pendant que Windows suit toujours un clic droit en cours.
             //    Le menu hérite alors d'un suivi de souris qui ne lui
             //    appartient pas, et se referme mal.
-            if front_descendant_droit && sur_le_personnage {
-                // La fenêtre à qui le menu s'accroche est celle de l'ÉCRAN
-                // du personnage, pas la sienne — il n'en a plus.
-                //
-                // `let … else` : si l'écran n'a pas (ou plus) de fenêtre,
-                // il n'y a pas de menu à ouvrir. On passe au suivant plutôt
-                // que de chercher un repli : `label_ecran(0)` désignerait
-                // une fenêtre qui n'existe pas, donc un menu muet.
-                let Some(id_ecran) = ecran_sous(&ecrans_courants, acteur.ch.pos_connue) else {
-                    continue;
-                };
-                let Some(win) = handle.get_webview_window(&render::label_ecran(id_ecran)) else {
-                    continue;
-                };
-
-                // **Cet appel bloque** jusqu'à la fermeture du menu : le
-                // personnage s'immobilise pendant ce temps, ce qui est voulu
-                // (voir `menu_perso::ouvrir`).
-                //
+            // `menu_en_cours.is_none()` : un seul menu à la fois. Le menu
+            // natif est modal pour la souris, un second clic droit ne
+            // devrait pas arriver jusqu'ici — mais s'il arrivait, deux
+            // menus superposés se disputeraient le premier plan.
+            if front_descendant_droit && sur_le_personnage && menu_en_cours.is_none() {
                 // `ou_de` : le menu proposé dépend de l'endroit où il est
                 // accroché — voir `menu_perso::Ou`. C'est ce qui corrige le
                 // bug rapporté à l'écran : un menu de sol proposé à un
                 // personnage accroché à un mur le faisait tomber au premier
                 // clic, quelle que soit l'entrée choisie.
                 let ou = menu_perso::ou_de(&acteur.ch.attachment);
-                if let Err(e) =
-                    menu_perso::ouvrir(&handle, &win, &acteur.ch.manifest, &table, ou)
-                {
-                    eprintln!("menu du personnage : {e}");
-                }
+                let lignes = menu_perso::lignes(&acteur.ch.manifest, &table, ou);
 
-                // ⚠️ **On sort de la boucle `for`, et l'image entière est
-                // abandonnée** — pas seulement ce personnage.
+                // ── Le menu, sur son propre thread ──────────────────────
                 //
-                // `maintenant` a été lu AVANT le menu, il a donc plusieurs
-                // secondes de retard, et `dt` vaut toujours 16,7 ms.
-                // Poursuivre ferait juger toutes les échéances (délai
-                // d'abandon, durée de pose) sur un instant périmé — et à N
-                // personnages, un simple `continue` de la boucle `for`
-                // étendrait ce défaut aux N−1 autres au lieu de le corriger.
-                // Mémorisé MAINTENANT : c'est la seule image où l'on sait
-                // encore qui a fait le clic droit.
-                // L'identité, puisqu'il n'y a plus de label de fenêtre.
-                // C'est une clé opaque pour `menu_perso` : il ne fait que la
-                // comparer, il n'en tire rien.
-                demandeur_du_menu = Some(acteur.id.to_string());
+                // `menu_natif::choisir` BLOQUE jusqu'au choix : sur ce
+                // thread-ci, il figerait tout le monde. Sur le sien, seul
+                // l'acteur cliqué s'arrête (voir `fige`, plus bas) — et le
+                // pourquoi d'un menu Win32 plutôt que celui de Tauri est en
+                // tête de `menu_natif.rs`.
+                //
+                // `move` : la fermeture emporte ce dont elle a besoin. Tout
+                // est cloné ou possédé — les `lignes` sont un `Vec` à elle,
+                // et un `AppHandle`/`Arc` se clone pour trois fois rien.
+                let ferme = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let ferme_du_menu = ferme.clone();
+                let actions_du_menu = actions.clone();
+                let app_du_menu = handle.clone();
+                std::thread::spawn(move || {
+                    let choix = menu_natif::choisir(&lignes);
+                    if let Some(id) = choix {
+                        actions_du_menu.executer_choix_du_menu(app_du_menu, id);
+                    }
+                    // `Release` : fait voir à la boucle (son `Acquire`) tout
+                    // ce qui a été fait avant — la commande déjà confiée au
+                    // thread principal, notamment.
+                    ferme_du_menu.store(true, std::sync::atomic::Ordering::Release);
+                });
 
-                menu_ouvert = true;
-                break;
+                // Mémorisé MAINTENANT : c'est la seule image où l'on sait
+                // encore qui a fait le clic droit. C'est lui, et pas l'acteur
+                // sous le curseur, qui recevra la commande choisie. L'id sert
+                // de clé opaque à `menu_perso` : il ne fait que la comparer.
+                demandeur_du_menu = Some(acteur.id.to_string());
+                menu_en_cours = Some((acteur.id, ferme, maintenant));
             }
+
+            // ── L'acteur du menu reste immobile ─────────────────────────
+            //
+            // Tant que son menu est ouvert, il ne fait rien — c'est ce que
+            // fait Shimeji-ee, et un personnage qui partirait en marchant
+            // sous un menu ouvert sur lui serait plus déroutant qu'amusant.
+            // Il reste DESSINÉ : on ne saute que le comportement, pas le
+            // rendu plus bas.
+            //
+            // ⚠️ **L'image aussi est figée**, pas seulement le comportement :
+            // elle est calculée depuis l'heure, et sans cela un personnage
+            // arrêté en pleine marche « marchait sur place » (constaté à
+            // l'écran le 2026-09-23). On la calcule donc à l'instant de
+            // l'ouverture du menu, sans toucher à sa pose : la remplacer par
+            // `stand` serait faux au mur, et la marche reprendrait ensuite
+            // dans une pose qui ne lui correspond plus.
+            //
+            // `match` avec garde `if` : l'instant, si un menu est en cours ET
+            // qu'il est le sien ; `None` sinon.
+            let instant_fige = match &menu_en_cours {
+                Some((id, _, ouvert_a)) if *id == acteur.id => Some(*ouvert_a),
+                _ => None,
+            };
+            let fige = instant_fige.is_some();
 
             let entrees = Entrees {
             souris: m.pos,
@@ -1983,25 +2088,34 @@ fn boucle(
                 // l'entrée par N personnages — dont N−1 qui n'ont rien
                 // demandé ; la donner à l'acteur sous le curseur ne la
                 // donnait à personne, le curseur étant sur le menu.
-                commande: menu_perso::commande_pour(
-                    &mut demandeur_du_menu,
-                    &mut commande_du_menu,
-                    &acteur.id.to_string(),
+                //
+                // Et à défaut, l'ordre adressé à tous — voir
+                // `menu_perso::commande_de_l_acteur` pour qui l'emporte.
+                commande: menu_perso::commande_de_l_acteur(
+                    menu_perso::commande_pour(
+                        &mut demandeur_du_menu,
+                        &mut commande_du_menu,
+                        &acteur.id.to_string(),
+                    ),
+                    commande_pour_tous,
                 ),
             };
 
             // ── 60 Hz : le comportement ────────────────────────────────
-            // La MÊME fonction que le mode simulation.
-            behavior::pas(
-                &mut acteur.ch,
-                &monde,
-                &entrees,
-                &table,
-                &reglages,
-                maintenant,
-                dt,
-                &mut rng,
-            );
+            // La MÊME fonction que le mode simulation — sauf pour l'acteur
+            // dont le menu est ouvert (voir `fige`).
+            if !fige {
+                behavior::pas(
+                    &mut acteur.ch,
+                    &monde,
+                    &entrees,
+                    &table,
+                    &reglages,
+                    maintenant,
+                    dt,
+                    &mut rng,
+                );
+            }
 
         // ── Diagnostic : `SHIMEJI_ESCALADE=1` ───────────────────────────
         // Rien qu'une intention `Grimper` en cours ne trace : c'est
@@ -2084,7 +2198,9 @@ fn boucle(
                 continue;
             }
 
-            let image = acteur.ch.frame_courante(maintenant);
+            // `unwrap_or` : l'instant figé pour l'acteur du menu, l'heure
+            // courante pour tous les autres.
+            let image = acteur.ch.frame_courante(instant_fige.unwrap_or(maintenant));
 
             // La taille dépend du manifeste, de l'échelle de l'écran — et
             // depuis le 2026-09-20 de l'IMAGE affichée, les frames d'un pack
@@ -2276,13 +2392,6 @@ fn boucle(
             }
         }
 
-        // Un menu contextuel a été ouvert : il a bloqué plusieurs secondes,
-        // `maintenant` est périmé. On repart sur une image neuve plutôt que
-        // de juger les échéances de tout le monde sur un instant faux.
-        if menu_ouvert {
-            continue;
-        }
-
         // ── Diagnostic de cadence ───────────────────────────────────────
         // `SHIMEJI_CADENCE=1` imprime toutes les 5 s les images par seconde
         // réellement atteintes et le temps de travail par image. C'est la
@@ -2366,6 +2475,7 @@ mod tests_main {
             // Zone de travail : 1032 et non 1080, la barre des tâches prenant
             // les 48 derniers pixels.
             work_area: Rect::new(0.0, 0.0, 1920.0, 1032.0),
+            bounds: Rect::new(0.0, 0.0, 1920.0, 1032.0),
             scale: 1.0,
         }]
     }

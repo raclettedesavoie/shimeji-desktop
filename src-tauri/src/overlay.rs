@@ -87,12 +87,16 @@ pub fn repartir(sprites: &[SpriteRendu], ecrans: &[ScreenInfo]) -> Vec<ChargeEcr
     let mut charges: Vec<ChargeEcran> = Vec::new();
 
     for e in ecrans {
-        let z = e.work_area;
+        // `bounds` : le rectangle de la FENÊTRE de l'écran (`render.rs`),
+        // barre des tâches comprise. Les coordonnées relatives doivent partir
+        // de son coin à elle, sinon tout serait décalé de la hauteur d'une
+        // barre des tâches posée en haut ou à gauche.
+        let z = e.bounds;
         let mut dedans: Vec<SpriteRelatif> = Vec::new();
 
         for s in sprites {
             // Intersection de deux rectangles, en flottants parce que
-            // `work_area` l'est. Les sprites, eux, sont déjà arrondis par la
+            // `bounds` l'est. Les sprites, eux, sont déjà arrondis par la
             // boucle : c'est l'entier qu'elle compare pour savoir si quelque
             // chose a bougé.
             let sx = s.x as f32;

@@ -69,6 +69,25 @@ pub const ID_CATALOGUE: &str = "catalogue";
 /// commentaire dans `executer`.
 pub const ID_P_CACHER: &str = "perso.cacher";
 
+/// « Cacher ce personnage » — le SEUL personnage qui a ouvert le menu
+/// (2026-09-23).
+///
+/// Il n'est pas rendu invisible sur place : il **s'en va** par l'animation de
+/// départ, et un exemplaire de son nom est retiré de `config.personnages`.
+/// C'est exactement le « − » de la bibliothèque, qui est donc aussi l'endroit
+/// d'où on le rappelle. Un drapeau « caché » propre à chaque acteur aurait
+/// été une seconde vérité à tenir d'accord avec le roster — la même erreur
+/// que l'interrupteur de la bibliothèque s'interdit (CLAUDE.md).
+pub const ID_P_CACHER_CE: &str = "perso.cacher_ce";
+
+/// « Tout le monde grimpe au mur » — proposée par les DEUX menus (2026-09-23).
+///
+/// Un identifiant propre et **non une ligne d'`ENVIES`** (`menu_perso.rs`) :
+/// les envies vont au seul personnage qui a ouvert le menu, celle-ci va à
+/// tous. Elle a donc sa propre boîte, `Actions::pour_tous`, et c'est ce qui
+/// empêche les deux destinations de se mélanger.
+pub const ID_TOUS_AU_MUR: &str = "tous.grimper";
+
 /// La boîte aux lettres qui porte une commande choisie au menu jusqu'à la
 /// boucle 60 Hz.
 ///
@@ -127,6 +146,29 @@ pub struct Actions {
     pub demande: Demande,
     pub commande: BoiteCommande,
 
+    /// La boîte des commandes adressées à TOUS les personnages — « Tout le
+    /// monde au mur ».
+    ///
+    /// ⚠️ **Distincte de `commande`, et c'est tout son intérêt.** `commande`
+    /// n'est servie qu'au demandeur du menu (`menu_perso::commande_pour`) :
+    /// y déposer un ordre collectif depuis le tray, où il n'y a aucun
+    /// demandeur, le ferait consommer par personne. Et le donner à tous
+    /// depuis cette même boîte referait le bug qu'elle corrige — N
+    /// personnages exécutant l'envie d'un seul.
+    ///
+    /// Même type, même discipline : la boucle la vide une fois par image
+    /// (`take()`), avant de servir les acteurs.
+    pub pour_tous: BoiteCommande,
+
+    /// « Cacher ce personnage » a été choisi, et attend que la boucle le
+    /// donne au **demandeur du menu** — qu'elle seule connaît.
+    ///
+    /// Un booléen et non une `Commande` : ce n'est pas une affaire de
+    /// comportement (`behavior::pas` n'a rien à en faire), c'est le roster
+    /// qui change. `AtomicBool` : la boucle le lit par `swap(false)`, qui le
+    /// consomme en une seule opération, sans verrou.
+    pub cacher_le_demandeur: std::sync::atomic::AtomicBool,
+
     /// Le roster **voulu** : la liste des personnages qui doivent vivre,
     /// avec ses doublons (design §4).
     ///
@@ -162,6 +204,10 @@ impl Actions {
             visibilite,
             demande,
             commande,
+            // Créée ici et non passée en paramètre : seule la boucle la lit,
+            // et elle la trouve dans `Actions`, qu'elle reçoit déjà.
+            pour_tous: nouvelle_commande(),
+            cacher_le_demandeur: std::sync::atomic::AtomicBool::new(false),
             // Les présents sont vides au départ : la boucle les publiera à
             // sa première image. Rien ne les lit avant.
             presents: Mutex::new(Vec::new()),
@@ -241,6 +287,46 @@ impl Actions {
             // suppression à jamais. Le pire cas est d'effacer un peu tôt, ce
             // qui n'arrive que si la boucle a déjà paniqué.
             .unwrap_or(0)
+    }
+
+    /// Exécute le choix fait dans le menu **natif** du personnage
+    /// (`menu_natif.rs`), par le même `executer` que le tray.
+    ///
+    /// Ce n'est **pas** un second `on_menu_event` : le menu natif n'est pas
+    /// un menu Tauri, aucun événement n'est émis, et c'est donc à nous de
+    /// porter l'identifiant choisi jusqu'au gestionnaire unique.
+    ///
+    /// `run_on_main_thread` : `executer` a été écrit pour le thread
+    /// principal, d'où le tray l'appelle — il ouvre des fenêtres, coche des
+    /// cases, quitte l'application. L'appeler depuis le thread du menu
+    /// marcherait peut-être ; le renvoyer là où il a toujours tourné évite
+    /// d'avoir à le vérifier cas par cas.
+    ///
+    /// `self: Arc<Self>` : la fermeture part vers un autre thread et doit
+    /// posséder ce qu'elle emporte — une référence `&self` n'y survivrait pas.
+    pub fn executer_choix_du_menu(self: Arc<Self>, app: AppHandle, id: &'static str) {
+        let app_pour_executer = app.clone();
+        let envoi = app.run_on_main_thread(move || {
+            // Les cases CLONÉES puis le verrou relâché, AVANT `executer` :
+            // « Cacher tous les personnages » finit par
+            // `resynchroniser_affichage`, qui reprend ce même verrou — le
+            // tenir encore serait un interblocage (un `Mutex` de la
+            // bibliothèque standard n'est pas réentrant).
+            let cases = match self.cases.lock() {
+                Ok(c) => c.clone(),
+                Err(_) => None,
+            };
+            match cases {
+                Some(cases) => executer(&self, &app_pour_executer, id, &cases),
+                // Sans tray, `executer` n'a pas de quoi être appelé. C'était
+                // déjà le cas avant le menu natif : ses clics arrivaient par
+                // le gestionnaire… du tray.
+                None => eprintln!("menu du personnage : tray absent, « {id} » ignoré"),
+            }
+        });
+        if let Err(e) = envoi {
+            eprintln!("menu du personnage : « {id} » non transmis : {e}");
+        }
     }
 
     pub fn enregistrer_cases(&self, cases: CasesTray) {
@@ -345,7 +431,27 @@ pub fn executer(actions: &Actions, app: &AppHandle, id: &str, cases_du_tray: &Ca
             appliquer_visibilite(actions, app, false);
         }
 
+        ID_P_CACHER_CE => {
+            // Rien à faire ici que lever le drapeau : QUI cacher, seule la
+            // boucle le sait (`demandeur_du_menu`, dans `main.rs`).
+            actions
+                .cacher_le_demandeur
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+
         // ── Les entrées communes aux deux menus ─────────────────────────
+        ID_TOUS_AU_MUR => {
+            // Aucun personnage à désigner : la boucle le donne à chacun, et
+            // `behavior::pas` refuse l'ordre à ceux qui ne peuvent pas obéir
+            // (portés, en chute, pack sans poses d'escalade).
+            deposer_dans(
+                &actions.pour_tous,
+                crate::menu_perso::Commande::Intention(
+                    crate::behavior::intention::Intention::Grimper,
+                ),
+            );
+        }
+
         ID_CATALOGUE => {
             ouvrir_catalogue(app);
         }
@@ -413,7 +519,14 @@ pub(crate) fn appliquer_demarrage(voulu: bool) -> bool {
 /// rapprochés doivent donner le **dernier** voulu, pas une file d'attente
 /// qui les jouerait tous les deux.
 fn deposer_commande(actions: &Actions, commande: crate::menu_perso::Commande) {
-    match actions.commande.lock() {
+    deposer_dans(&actions.commande, commande);
+}
+
+/// Dépose une commande dans l'une des deux boîtes — celle du demandeur ou
+/// celle de tous. Une seule fonction pour les deux, pour que le traitement
+/// d'un verrou empoisonné ne diverge pas de l'une à l'autre.
+fn deposer_dans(boite: &BoiteCommande, commande: crate::menu_perso::Commande) {
+    match boite.lock() {
         Ok(mut boite) => {
             *boite = Some(commande);
             println!("commande du menu : {commande:?}");

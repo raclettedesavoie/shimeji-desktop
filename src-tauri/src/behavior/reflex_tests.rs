@@ -6,7 +6,9 @@
 //! se désindentent d'un cran puisqu'ils ne sont plus enfermés dans un `mod tests { }`.
 
 use super::*;
-use crate::character::manifest::{Manifest, POSE_FALL, POSE_GRAB_WALL, POSE_LAND, POSE_STAND};
+use crate::character::manifest::{
+    Manifest, POSE_FALL, POSE_GRAB_WALL, POSE_LAND, POSE_SPRAWL, POSE_STAND,
+};
 use crate::geom::Point;
 use crate::probe::fake::FakeProbe;
 use crate::probe::SystemProbe;
@@ -651,6 +653,66 @@ fn la_pose_land_finie_il_repasse_a_stand() {
 
     appliquer(&mut ch, &m, &entrees_neutres(), Duration::from_millis(200), DT);
     assert_eq!(ch.pose, POSE_STAND);
+}
+
+/// Le manifeste de test, AVEC la pose `sprawl` — pour la queue de chute
+/// ajoutée le 2026-09-23. Le manifeste commun n'en a pas, et c'est ce qui
+/// garde `la_pose_land_finie_il_repasse_a_stand` vrai : c'est la
+/// couverture partielle, un pack sans `sprawl` repart tout de suite.
+fn manifeste_avec_sprawl() -> Manifest {
+    let mut m = manifeste();
+    let json = r#"{ "frames": [21] }"#;
+    m.poses
+        .insert("sprawl".to_string(), serde_json::from_str(json).unwrap());
+    m
+}
+
+#[test]
+fn la_pose_land_finie_il_reste_etale_au_sol() {
+    let m = monde();
+    let mut ch = perso_pose_sur_le_sol(&m);
+    ch.manifest = manifeste_avec_sprawl();
+    ch.set_pose(POSE_LAND, Duration::ZERO);
+
+    let r = appliquer(&mut ch, &m, &entrees_neutres(), Duration::from_millis(200), DT);
+
+    // La main passe à la couche 2, qui porte l'étalement : c'est elle qui
+    // a l'aléatoire et les réglages pour en tirer la durée.
+    assert_eq!(r, Reflexe::Aucun);
+    assert_eq!(ch.pose, POSE_SPRAWL);
+    assert!(
+        matches!(
+            ch.intention,
+            Some(crate::behavior::intention::ActiveIntention {
+                etat: crate::behavior::intention::EtatIntention::Repos {
+                    phase: crate::behavior::intention::PhaseRepos::Etale,
+                    ..
+                },
+                ..
+            })
+        ),
+        "attendu la phase Etale, obtenu {:?}",
+        ch.intention
+    );
+}
+
+#[test]
+fn etale_au_sol_il_reste_attrapable() {
+    // L'étalement est une intention, pas un réflexe : le réflexe « porté »
+    // passe devant, sans une ligne de plus.
+    let m = monde();
+    let mut ch = perso_pose_sur_le_sol(&m);
+    ch.manifest = manifeste_avec_sprawl();
+    ch.set_pose(POSE_LAND, Duration::ZERO);
+    appliquer(&mut ch, &m, &entrees_neutres(), Duration::from_millis(200), DT);
+
+    let mut e = entrees_neutres();
+    e.bouton_gauche = true;
+    e.curseur_sur_le_personnage = true;
+    let r = appliquer(&mut ch, &m, &e, Duration::from_millis(300), DT);
+
+    assert_eq!(r, Reflexe::Porte);
+    assert!(ch.intention.is_none());
 }
 
 #[test]

@@ -442,6 +442,7 @@ fn atterrit_sur_la_plateforme_la_plus_haute_traversee() {
         ScreenInfo {
             id: 1,
             work_area: Rect::new(0.0, 0.0, 1920.0, 1032.0),
+            bounds: Rect::new(0.0, 0.0, 1920.0, 1032.0),
             scale: 1.0,
         },
         ScreenInfo {
@@ -449,6 +450,7 @@ fn atterrit_sur_la_plateforme_la_plus_haute_traversee() {
             // Un écran fictif dont la zone de travail finit plus haut :
             // son sol est donc à y = 600.
             work_area: Rect::new(0.0, 0.0, 1920.0, 600.0),
+            bounds: Rect::new(0.0, 0.0, 1920.0, 600.0),
             scale: 1.0,
         },
     ]);

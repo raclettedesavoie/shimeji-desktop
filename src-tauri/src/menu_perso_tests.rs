@@ -82,10 +82,10 @@ fn toute_intention_de_la_table_d_envies_est_proposee_par_le_menu() {
 /// n'en propose qu'une.
 ///
 /// C'est la couverture partielle (spec §8.6) vue depuis le menu, et la
-/// raison pour laquelle `ouvrir` filtre au lieu de tout afficher grisé.
+/// raison pour laquelle `lignes` filtre au lieu de tout afficher grisé.
 ///
 /// Ne teste que les `Commande::Intention` : les trois autres n'ont pas de
-/// pose requise propre (voir le commentaire de `ouvrir` sur ce point),
+/// pose requise propre (voir le commentaire de `lignes` sur ce point),
 /// donc rien à vérifier de leur côté de la couverture partielle.
 #[test]
 fn la_couverture_partielle_retire_les_envies_injouables() {
@@ -117,19 +117,17 @@ fn table_et_blob() -> (TableEnvies, Manifest) {
     )
 }
 
-/// Les identifiants qu'`ouvrir` proposerait pour cet endroit, en ne
-/// rejouant que la logique de filtrage (pas la construction réelle des
-/// `MenuItem`, qui demande un `AppHandle` Tauri hors de portée des
-/// tests unitaires).
+/// Les identifiants d'ENVIES que `lignes` propose pour cet endroit — les
+/// entrées communes (cacher, catalogue, quitter) écartées, puisque ces
+/// tests-ci ne portent que sur le filtrage des envies.
 fn ids_proposes(table: &TableEnvies, manifeste: &Manifest, ou: Ou) -> Vec<&'static str> {
-    ENVIES
-        .iter()
-        .filter(|(_, _, contextes, _)| contextes.contains(&ou))
-        .filter(|(_, _, _, commande)| match commande {
-            Commande::Intention(i) => table.jouable(manifeste, *i),
-            _ => true,
+    lignes(manifeste, table, ou)
+        .into_iter()
+        .filter_map(|l| match l {
+            Ligne::Entree { id, .. } => Some(id),
+            Ligne::Separateur => None,
         })
-        .map(|(id, _, _, _)| *id)
+        .filter(|id| ENVIES.iter().any(|(i, _, _, _)| i == id))
         .collect()
 }
 
@@ -281,4 +279,85 @@ fn sans_commande_le_demandeur_est_garde() {
 
     assert_eq!(commande_pour(&mut demandeur, &mut boite, "pet-3"), None);
     assert_eq!(demandeur, Some("pet-3".to_string()));
+}
+
+// ── « Tout le monde grimpe au mur » (2026-09-23) ───────────────────────────────
+
+#[test]
+fn l_ordre_a_tous_est_servi_a_qui_n_a_rien_demande() {
+    let grimper = Commande::Intention(Intention::Grimper);
+    assert_eq!(commande_de_l_acteur(None, Some(grimper)), Some(grimper));
+    assert_eq!(commande_de_l_acteur(None, None), None);
+}
+
+#[test]
+fn la_commande_personnelle_l_emporte_sur_l_ordre_a_tous() {
+    // Choisir « S'asseoir » pour CE personnage ne doit pas l'envoyer au mur
+    // parce qu'un ordre collectif est tombé dans la même image.
+    let asseoir = Commande::Intention(Intention::SeReposer);
+    let grimper = Commande::Intention(Intention::Grimper);
+    assert_eq!(commande_de_l_acteur(Some(asseoir), Some(grimper)), Some(asseoir));
+}
+
+#[test]
+fn tous_au_mur_n_est_pas_une_envie_du_demandeur() {
+    // Si l'identifiant était décodé par `commande_de`, `executer` le
+    // déposerait dans la boîte du SEUL demandeur — l'ordre collectif ne
+    // toucherait qu'un personnage.
+    assert_eq!(commande_de(crate::actions::ID_TOUS_AU_MUR), None);
+}
+
+// ── Les deux « Cacher » (2026-09-23) ─────────────────────────────────────
+
+/// Le libellé d'une entrée, ou `None` si elle n'est pas dans le menu.
+fn libelle_de(lignes: &[Ligne], cherche: &str) -> Option<&'static str> {
+    lignes.iter().find_map(|l| match l {
+        Ligne::Entree { id, libelle } if *id == cherche => Some(*libelle),
+        _ => None,
+    })
+}
+
+/// « Cacher ce personnage » est proposé partout — au sol, au mur, au
+/// plafond — et « Cacher tous les personnages » dit enfin qu'il cache tout
+/// le monde : les deux côte à côte, un libellé ambigu ferait hésiter.
+#[test]
+fn les_deux_cacher_sont_proposes_partout_et_se_distinguent() {
+    let (table, blob) = table_et_blob();
+    for ou in [Ou::Sol, Ou::Mur, Ou::Plafond] {
+        let l = lignes(&blob, &table, ou);
+        assert_eq!(
+            libelle_de(&l, crate::actions::ID_P_CACHER_CE),
+            Some("Cacher ce personnage"),
+            "{ou:?}"
+        );
+        assert_eq!(
+            libelle_de(&l, crate::actions::ID_P_CACHER),
+            Some("Cacher tous les personnages"),
+            "{ou:?}"
+        );
+    }
+}
+
+/// « Cacher ce personnage » n'est PAS une envie : il n'a pas à passer par
+/// `commande_de`, qui le rendrait à `behavior::pas` — lequel n'en ferait
+/// rien. C'est la boucle qui le traite, par `Actions::cacher_le_demandeur`.
+#[test]
+fn cacher_ce_personnage_n_est_pas_une_envie() {
+    assert_eq!(commande_de(crate::actions::ID_P_CACHER_CE), None);
+}
+
+/// Un menu ne commence ni ne finit par un séparateur, et n'en aligne jamais
+/// deux : dans les trois cas il aurait l'air cassé.
+#[test]
+fn le_menu_n_a_aucun_separateur_mal_place() {
+    let (table, blob) = table_et_blob();
+    for ou in [Ou::Sol, Ou::Mur, Ou::Plafond] {
+        let l = lignes(&blob, &table, ou);
+        assert_ne!(l.first(), Some(&Ligne::Separateur), "{ou:?}");
+        assert_ne!(l.last(), Some(&Ligne::Separateur), "{ou:?}");
+        assert!(
+            !l.windows(2).any(|p| p[0] == Ligne::Separateur && p[1] == Ligne::Separateur),
+            "{ou:?}"
+        );
+    }
 }

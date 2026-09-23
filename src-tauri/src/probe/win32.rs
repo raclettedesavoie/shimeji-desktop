@@ -146,6 +146,11 @@ unsafe extern "system" fn collecte_moniteur(
             // barre des tâches (piège Windows n° 3).
             work_area: rect_depuis_win32(info.rcWork),
 
+            // `rcMonitor` : l'écran entier, pour la seule fenêtre d'affichage
+            // — un personnage porté au-dessus de la barre des tâches doit
+            // rester visible (voir `ScreenInfo::bounds`).
+            bounds: rect_depuis_win32(info.rcMonitor),
+
             scale: dpi_x as f32 / 96.0,
         });
     }

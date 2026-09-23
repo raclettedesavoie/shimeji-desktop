@@ -74,6 +74,14 @@ pub const POSE_WAKE: &str = "wake";
 /// Détail et sprites vérifiés : `docs/specs/2026-09-09-frames-shimeji.md`.
 pub const POSE_SLEEP: &str = "sleep";
 
+/// Étalé par terre après une chute — frame 21, `Sprawl` chez Shimeji-ee.
+///
+/// La MÊME image que `sleep` chez `blob`, mais pas le même sens : `sleep` est
+/// un repos choisi, `sprawl` la queue d'une chute (phase `Etale`, ajoutée le
+/// 2026-09-23). Deux noms, pour qu'un pack puisse les dessiner différemment.
+/// Un pack sans elle se relève aussitôt après `land`, comme avant.
+pub const POSE_SPRAWL: &str = "sprawl";
+
 /// Assis, il se tourne la tête. Source : `SitAndSpinHeadAction`.
 pub const POSE_SPIN_HEAD: &str = "spinHead";
 

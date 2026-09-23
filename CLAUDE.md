@@ -455,14 +455,25 @@ mauvaises raisons cette fois.
 > délègue à `actions.rs` ; `menu_perso.rs` ne fait que **proposer**, il ne déclenche
 > rien.
 
+> ⚠️ **Le menu du clic droit n'est plus un menu Tauri** (2026-09-23), mais un menu
+> Win32 affiché **sur son propre thread** (`menu_natif.rs`). Le menu Tauri s'exécute
+> dans un callback de `tao`, qui met en file tout événement reçu pendant ce temps —
+> dont les `eval` des positions : **tous** les personnages se figeaient, et pas
+> seulement celui qu'on avait cliqué. Désormais seul l'acteur du menu s'arrête. Le
+> choix revient par `Actions::executer_choix_du_menu`, qui appelle le **même**
+> `executer` sur le thread principal — ce n'est pas un second `on_menu_event`.
+> « Cacher ce personnage » le fait partir (animation de départ) et retire UN
+> exemplaire de `config.personnages` : on le rappelle depuis la bibliothèque.
+
 ---
 
 ## Architecture
 
 ### Une fenêtre par ÉCRAN — depuis le 2026-09-23
 
-Chaque **écran occupé** porte une fenêtre transparente à la taille de sa zone de
-travail, sans bordure, hors taskbar, toujours au premier plan — et qui **ne bouge
+Chaque **écran occupé** porte une fenêtre transparente à la taille de l'**écran
+complet** (`ScreenInfo::bounds`, barre des tâches comprise — sinon un personnage
+porté par-dessus y disparaissait ; le **sol**, lui, reste la zone de travail), sans bordure, hors taskbar, toujours au premier plan — et qui **ne bouge
 jamais**. Les personnages y sont des `<img>` déplacés en CSS.
 
 La fenêtre d'un écran reste ouverte **même quand personne n'y est**, tant que les
@@ -982,6 +993,13 @@ verticale, il ne reste que le recensement des fenêtres et leur filtrage :
 > ce qu'il contient (échange de surface, transfert vers DWM, composition
 > logicielle de WebView2). C'est la seule piste connue pour descendre sous ce
 > plancher, et elle n'est pas engagée.
+
+**Idée à creuser APRÈS 4b : « il jette une fenêtre »** (2026-09-23). Les onglets
+sont hors d'atteinte : aucune API Windows générique, ce sont des éléments internes
+au navigateur. Une fenêtre entière, elle, se déplace par `SetWindowPos` (c'est
+`ThrowIE` de Shimeji-ee), sauf si elle a été lancée en administrateur. Mais
+**cela contredit « il ne gêne jamais »** : c'est à l'auteur de trancher avant
+toute ligne de code.
 
 **L'étape 3b (qu'ils se remarquent) reste de côté**, à la demande de l'auteur —
 mais elle est devenue facile : tous les personnages vivent dans un seul `Vec`,

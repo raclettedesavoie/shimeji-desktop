@@ -157,6 +157,17 @@ pub fn installer(
     )
     .map_err(|e| format!("entrée « mise à jour » : {e}"))?;
 
+    // Le même identifiant que dans le menu du personnage : un seul cas dans
+    // `actions::executer`, quel que soit le menu d'où vient le clic.
+    let tous_au_mur = MenuItem::with_id(
+        app,
+        crate::actions::ID_TOUS_AU_MUR,
+        "Tout le monde grimpe au mur",
+        true,
+        None::<&str>,
+    )
+    .map_err(|e| format!("entrée « tous au mur » : {e}"))?;
+
     let separateur =
         PredefinedMenuItem::separator(app).map_err(|e| format!("séparateur : {e}"))?;
 
@@ -171,6 +182,7 @@ pub fn installer(
         &[
             &afficher,
             &demarrage,
+            &tous_au_mur,
             &catalogue,
             &maj,
             &separateur,

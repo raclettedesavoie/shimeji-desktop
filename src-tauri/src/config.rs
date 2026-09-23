@@ -419,6 +419,10 @@ pub struct Config {
     /// Les réglages de l'escalade (étape 4a).
     pub escalade: Escalade,
 
+    /// Bornes `[min, max]` du temps passé étalé au sol après une chute, en
+    /// secondes. Clé du fichier : `dureeAuSol`.
+    pub duree_au_sol: [f32; 2],
+
     pub signaux: SignauxReglages,
 
     /// Les modificateurs par application, `"Code.exe"` → ses poids.
@@ -448,6 +452,7 @@ impl Default for Config {
             envies: Envies::default(),
             allures: Allures::default(),
             escalade: Escalade::default(),
+            duree_au_sol: crate::character::physics::DUREE_AU_SOL,
             signaux: SignauxReglages::default(),
             // Vide par défaut : aucun modificateur d'application n'est
             // imposé. Le fichier d'exemple en montre deux, commentés par
@@ -481,6 +486,10 @@ pub struct Reglages {
     pub allures: Allures,
     pub escalade: Escalade,
 
+    /// Le temps passé étalé au sol après une chute, déjà borné — voir
+    /// `borner_duree_au_sol`.
+    pub duree_au_sol: [f32; 2],
+
     /// À partir de quel biais de repos il s'affale au lieu de rester assis
     /// (Tâche 4, `behavior::intention::se_reposer`).
     pub seuil_sommeil: f32,
@@ -509,8 +518,32 @@ impl Reglages {
             vitesse_escalade: VITESSE_ESCALADE * facteur,
             allures: config.allures,
             escalade: config.escalade,
+            duree_au_sol: borner_duree_au_sol(config.duree_au_sol),
             seuil_sommeil: config.signaux.seuil_sommeil,
         }
+    }
+}
+
+/// Plafond du temps passé au sol, en secondes.
+///
+/// Sous le délai d'abandon commun (20 s, décision n° 4), avec la marge de
+/// l'animation de réveil : au-delà, l'intention expirerait au lieu de finir,
+/// et il se relèverait sans jouer `wake`.
+const DUREE_AU_SOL_MAX: f32 = 15.0;
+
+/// Ramène `dureeAuSol` dans une plage sûre.
+///
+/// Même raison que `SignauxReglages::borner` : la valeur vient d'un fichier
+/// édité à la main, et `Duration::from_secs_f32` **panique** sur un négatif.
+/// Des bornes inversées (`[5, 2]`) sont remises dans l'ordre plutôt que
+/// refusées — l'intention est claire, et c'est le repli le moins surprenant.
+fn borner_duree_au_sol(d: [f32; 2]) -> [f32; 2] {
+    let a = d[0].clamp(0.0, DUREE_AU_SOL_MAX);
+    let b = d[1].clamp(0.0, DUREE_AU_SOL_MAX);
+    if a <= b {
+        [a, b]
+    } else {
+        [b, a]
     }
 }
 

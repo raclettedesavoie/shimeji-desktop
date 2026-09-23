@@ -125,6 +125,18 @@ pub const VITESSE_ESCALADE: f32 = 16.1;
 /// en millisecondes — donc de 0,5 s à 1,5 s.
 pub const DUREE_ACCROCHE: [f32; 2] = [0.5, 1.5];
 
+/// Bornes `[min, max]` du temps passé étalé au sol après une chute, en
+/// secondes.
+///
+/// ⚠️ **Ne vient PAS de Shimeji-ee**, contrairement aux constantes voisines :
+/// chez lui, `Bouncing` enchaîne sur la marche en ~0,3 s. C'est une demande
+/// de l'auteur (2026-09-23) — « qu'il reste au sol un peu plus longtemps » —
+/// et donc un réglage de caractère, d'où sa place dans `config.json`
+/// (`dureeAuSol`, décision n° 5).
+/// Ramenée de 2–5 s à 1–2 s par l'auteur après essai à l'écran : au-delà,
+/// l'attente se remarquait plus que la chute.
+pub const DUREE_AU_SOL: [f32; 2] = [1.0, 2.0];
+
 // ── Le balancier du personnage porté ──────────────────────────────────
 //
 // **Ce n'est pas une animation, c'est un ressort amorti.** Découvert dans

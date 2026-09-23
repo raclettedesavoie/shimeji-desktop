@@ -207,7 +207,7 @@ pub fn pas(
                 // (son intention ne serait plus `Grimper`), et la règle de
                 // sécurité du monde vertical le ferait tomber — exactement
                 // le symptôme constaté à l'écran. Le menu ne propose plus ces
-                // entrées hors du sol (voir `menu_perso::ouvrir`), mais le
+                // entrées hors du sol (voir `menu_perso::lignes`), mais le
                 // clic et cette image ne sont pas le même instant : un
                 // rechargement, ou simplement le temps qu'a mis l'utilisateur
                 // à choisir dans le menu, peuvent l'avoir fait changer
@@ -235,7 +235,16 @@ pub fn pas(
                     // pack plus pauvre. Forcer une intention dont la pose
                     // manque figerait le personnage sur une image absente —
                     // la couverture partielle (spec §8.6) vaut ici aussi.
-                    ch.intention = Some(intention::ActiveIntention::nouvelle(voulue, maintenant));
+                    //
+                    // `Grimper` a son propre constructeur : une escalade
+                    // demandée au menu est un ORDRE, et il court jusqu'au mur
+                    // (voir `ActiveIntention::grimper_sur_ordre`). Les autres
+                    // intentions n'ont pas de version « pressée ».
+                    ch.intention = Some(if voulue == intention::Intention::Grimper {
+                        intention::ActiveIntention::grimper_sur_ordre(maintenant)
+                    } else {
+                        intention::ActiveIntention::nouvelle(voulue, maintenant)
+                    });
 
                     // On rend la main tout de suite : l'intention neuve sera
                     // poursuivie à l'image suivante. La poursuivre ici aussi
@@ -268,7 +277,7 @@ pub fn pas(
             crate::menu_perso::Commande::Redescendre => {
                 // Ne vaut que sur un MUR (`Left`/`Right`) : au plafond,
                 // « redescendre » n'a pas de sens (voir `menu_perso::Commande`
-                // et le commentaire de `ouvrir`).
+                // et le commentaire de `menu_perso::lignes`).
                 if matches!(
                     ch.attachment,
                     crate::character::attach::Attachment::On {
