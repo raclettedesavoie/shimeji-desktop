@@ -173,3 +173,57 @@ fn une_charge_vide_ne_produit_pas_de_javascript_casse() {
     };
     assert_eq!(js_de(&charge), "window.poserTous([])");
 }
+
+// ── L'échelle : pixels physiques → pixels CSS ───────────────────────────
+
+/// Un écran à 125 %, comme l'écran portable de la machine de l'auteur.
+fn ecran_125() -> Vec<ScreenInfo> {
+    vec![ScreenInfo {
+        id: 9,
+        work_area: Rect::new(3840.0, 0.0, 1920.0, 1020.0),
+        scale: 1.25,
+    }]
+}
+
+#[test]
+fn les_coordonnees_sont_converties_en_pixels_css() {
+    // Le webview dessine en pixels CSS = physique / échelle. Sans cette
+    // division, un sprite posé à 1000 px du bord serait dessiné 250 px trop
+    // loin — et finirait par sortir de l'écran.
+    let charges = repartir(&[sprite(1, 3840 + 1000, 500)], &ecran_125());
+    assert_eq!(charges[0].sprites[0].x, 800); // 1000 / 1.25
+    assert_eq!(charges[0].sprites[0].y, 400); //  500 / 1.25
+}
+
+#[test]
+fn la_taille_est_convertie_elle_aussi() {
+    // `window_size` rend des pixels physiques. Appliquée telle quelle en CSS,
+    // le sprite serait 25 % trop grand sur cet écran.
+    let charges = repartir(&[sprite(1, 3840, 0)], &ecran_125());
+    assert_eq!(charges[0].sprites[0].w, 102); // 128 / 1.25 = 102,4
+    assert_eq!(charges[0].sprites[0].h, 102);
+}
+
+#[test]
+fn une_echelle_de_1_ne_change_rien() {
+    // Le cas courant doit rester exactement ce qu'il était : la conversion ne
+    // doit pas introduire d'arrondi là où il n'y en avait pas.
+    let charges = repartir(&[sprite(1, 700, 300)], &deux_ecrans());
+    assert_eq!(charges[0].sprites[0].x, 700);
+    assert_eq!(charges[0].sprites[0].y, 300);
+    assert_eq!(charges[0].sprites[0].w, 128);
+}
+
+#[test]
+fn une_echelle_nulle_ne_fait_pas_disparaitre_le_sprite() {
+    // Une sonde qui rendrait 0 ne doit pas produire `inf` puis un sprite
+    // absent sans le moindre message.
+    let ecrans = vec![ScreenInfo {
+        id: 1,
+        work_area: Rect::new(0.0, 0.0, 1920.0, 1080.0),
+        scale: 0.0,
+    }];
+    let charges = repartir(&[sprite(1, 10, 10)], &ecrans);
+    assert_eq!(charges.len(), 1);
+    assert!(charges[0].sprites[0].w >= 1);
+}

@@ -67,6 +67,22 @@ pub struct ChargeEcran {
 /// **Un écran sans sprite ne produit aucune charge** (§5.1) : c'est ce qui
 /// permet à l'appelant de ne pas créer sa fenêtre, et donc de ne pas payer le
 /// péage de ~34 % mesuré par le spike.
+///
+/// # ⚠️ Le passage en pixels CSS, et pourquoi il est indispensable
+///
+/// Les sprites arrivent en pixels **physiques** du bureau virtuel, et la
+/// fenêtre d'un écran est posée en pixels physiques elle aussi. Mais le
+/// webview, lui, dessine en pixels **CSS** — qui valent `physique / scale`.
+///
+/// Sur un écran à 125 %, envoyer une position physique telle quelle
+/// l'**étire de 25 %** : plus le personnage est à droite ou en bas, plus il
+/// dérive, jusqu'à sortir de l'écran par le bas — ce qui donne exactement
+/// l'impression qu'il « tombe sans se rattraper ». Constaté à l'écran le
+/// 2026-09-23, sur l'écran portable de la machine de l'auteur.
+///
+/// C'est le piège n° 4 des « coordonnées » de CLAUDE.md (« n'appliquer le
+/// facteur d'échelle qu'au dimensionnement du sprite ») sous une forme
+/// nouvelle : ici, c'est la FENÊTRE qui impose sa propre unité.
 pub fn repartir(sprites: &[SpriteRendu], ecrans: &[ScreenInfo]) -> Vec<ChargeEcran> {
     let mut charges: Vec<ChargeEcran> = Vec::new();
 
@@ -94,15 +110,24 @@ pub fn repartir(sprites: &[SpriteRendu], ecrans: &[ScreenInfo]) -> Vec<ChargeEcr
                 continue;
             }
 
+            // Deux conversions, et pas une : l'origine (physique) puis
+            // l'unité (physique → CSS). Oublier la seconde donne un
+            // personnage qui dérive proportionnellement à sa distance au coin
+            // haut-gauche de son écran.
+            //
+            // `max(0.01)` : une échelle nulle ou négative n'existe pas, mais
+            // une division par zéro rendrait `inf` puis `NaN` à la
+            // conversion, et le sprite disparaîtrait sans message.
+            let echelle = e.scale.max(0.01);
+
             dedans.push(SpriteRelatif {
                 id: s.id,
-                // Le passage en coordonnées de fenêtre. C'est la SEULE
-                // conversion de repère du module, et la seule occasion de se
-                // tromper — d'où le test dédié.
-                x: s.x - z.x as i32,
-                y: s.y - z.y as i32,
-                w: s.w,
-                h: s.h,
+                x: ((s.x - z.x as i32) as f32 / echelle).round() as i32,
+                y: ((s.y - z.y as i32) as f32 / echelle).round() as i32,
+                // La TAILLE aussi : elle est calculée en pixels physiques par
+                // `window_size`, et le webview l'appliquerait en CSS.
+                w: (s.w as f32 / echelle).round().max(1.0) as u32,
+                h: (s.h as f32 / echelle).round().max(1.0) as u32,
                 image: s.image,
                 flip: s.flip,
             });
