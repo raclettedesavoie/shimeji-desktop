@@ -39,6 +39,7 @@ mod config;
 mod geom;
 mod maj;
 mod menu_perso;
+mod overlay;
 mod probe;
 mod rechargement;
 mod render;
@@ -214,81 +215,58 @@ fn main() {
 
 /// Le label de la fenêtre d'un personnage. Un seul personnage à l'étape 1a ;
 /// l'étape 3 en instanciera plusieurs, d'où l'index dès maintenant.
-fn label_de(index: usize) -> String {
-    format!("pet-{index}")
+/// L'écran sur lequel se trouve un point du bureau virtuel.
+///
+/// Sert à savoir à quelle fenêtre accrocher le menu contextuel d'un
+/// personnage, et laquelle doit absorber ses clics. Rend `None` si le point
+/// n'est sur aucun écran — ce qui arrive le temps d'une image quand une
+/// plateforme disparaît sous lui.
+///
+/// ⚠️ **Les bords BAS et DROIT appartiennent à l'écran** (`<=` et non `<`), et
+/// ce n'est pas un détail de confort : `pos_connue` est l'**ancre** du
+/// personnage, c'est-à-dire le sol sous ses pieds. Un personnage debout sur le
+/// plancher a donc `y` **exactement égal** à `work_area.bottom`.
+///
+/// Avec une comparaison stricte, `ecran_sous` rendait `None` pour tout
+/// personnage au sol — donc **aucun menu contextuel au sol**, alors qu'il
+/// marchait sur les murs, où `y` tombe au milieu de l'écran. Constaté à
+/// l'écran le 2026-09-23, et invisible autrement : aucun message, le clic
+/// droit ne faisait simplement rien.
+///
+/// Le risque symétrique — deux écrans empilés dont l'un a `bottom` égal au
+/// `top` de l'autre — est sans conséquence : `find` rend le premier, et les
+/// deux fenêtres couvrent ce pixel de toute façon.
+fn ecran_sous(ecrans: &[probe::ScreenInfo], p: geom::Point) -> Option<u64> {
+    ecrans
+        .iter()
+        .find(|e| {
+            let z = e.work_area;
+            p.x >= z.left() && p.x <= z.right() && p.y >= z.top() && p.y <= z.bottom()
+        })
+        .map(|e| e.id)
 }
 
-/// Crée la fenêtre d'UN personnage, avec toutes ses propriétés.
+/// La table `id -> pack` en littéral JavaScript, pour `window.declarer`.
 ///
-/// Extraite de `setup` : les fenêtres naissent désormais **en cours
-/// d'exécution**, depuis le thread de la boucle, et plus seulement au
-/// démarrage (design « plusieurs personnages » §3).
+/// Les clés sont des chaînes parce qu'un objet JavaScript n'a pas de clés
+/// numériques : `{3:"blob"}` est relu `{"3":"blob"}`. Les guillemets sont donc
+/// posés ici, et `overlay.js` interroge `packs[id]` — la conversion implicite
+/// de JavaScript fait le reste.
 ///
-/// C'est légitime : `RuntimeHandle` de Tauri poste un message au thread
-/// principal quand on l'appelle depuis un autre thread. À l'inverse,
-/// `tauri-runtime-wry` panique explicitement si `WindowMessage::Close` est
-/// traité *sur* le thread principal (`lib.rs:3492`) — c'est-à-dire si l'on
-/// ferme une fenêtre depuis un gestionnaire d'événements. Notre boucle étant
-/// un thread à part, elle est du bon côté. **Vérifié par un spike jetable**
-/// (20 cycles création/destruction) et pas seulement déduit des sources.
-///
-/// ⚠️ **Les deux styles étendus sont posés ICI et nulle part ailleurs.** Les
-/// oublier sur les fenêtres n° 2 et suivantes donnerait des personnages qui
-/// volent le focus et apparaissent dans Alt+Tab — un défaut qui ne se verrait
-/// que sur le deuxième personnage, donc jamais pendant une mise au point à
-/// N=1.
-fn creer_fenetre_personnage(
-    app: &tauri::AppHandle,
-    label: &str,
-    nom: &str,
-    taille: (u32, u32),
-) -> Result<tauri::WebviewWindow, String> {
-    let win = tauri::WebviewWindowBuilder::new(
-        app,
-        label,
-        // Le fragment dit à `pet.js` quel personnage servir, et il doit
-        // porter le nom **du pack**, pas `blob` en dur.
-        //
-        // Le bug que ça corrige est sournois : avec `#blob` fixe, le
-        // manifeste chargé était bien celui du personnage demandé (bonnes
-        // poses, bonnes ancres, bonne hitbox) mais le webview réclamait
-        // `shime:///blob/N` — donc les **images** de blob. Rien ne le
-        // signalait : aucune erreur, aucune trace, un personnage
-        // parfaitement animé… avec le mauvais dessin.
-        //
-        // Invisible tant que `blob` était le seul pack livré. Constaté à
-        // l'œil en ajoutant `luffy`, et par aucun autre moyen.
-        tauri::WebviewUrl::App(format!("index.html#{nom}").into()),
-    )
-    .title("shimeji-desktop")
-    .inner_size(taille.0 as f64, taille.1 as f64)
-    .decorations(false)
-    .transparent(true)
-    .always_on_top(true)
-    .skip_taskbar(true)
-    .resizable(false)
-    .shadow(false)
-    .focused(false)
-    .build()
-    .map_err(|e| format!("fenêtre « {label} » : {e}"))?;
-
-    // Les clics traversent en permanence ; la boucle ne les réactive que
-    // dans la hitbox de la pose courante (spec §3.3).
-    win.set_ignore_cursor_events(true)
-        .map_err(|e| format!("clics traversants sur « {label} » : {e}"))?;
-
-    // **Les deux découvertes de l'étape 0.** À faire avant que la hitbox
-    // n'existe : sinon le vol de focus apparaîtrait en même temps que
-    // l'attrapabilité, et les deux se diagnostiqueraient ensemble, pour rien.
-    match render::appliquer_styles_etendus(&win) {
-        Ok(()) => println!("styles étendus posés sur {label} (NOACTIVATE, TOOLWINDOW)"),
-        // Non bloquant : la fenêtre marche sans, elle est seulement moins
-        // polie. Mieux vaut un personnage qui vole le focus qu'aucun
-        // personnage.
-        Err(e) => eprintln!("styles étendus NON appliqués sur {label} : {e}"),
+/// ⚠️ **Aucun échappement**, et c'est délibéré : un nom de pack est un nom de
+/// dossier, validé par le catalogue à l'installation. Si cette garantie devait
+/// tomber un jour, c'est ICI qu'il faudrait échapper — et nulle part ailleurs,
+/// puisque c'est la seule chaîne non numérique qui traverse vers le webview.
+fn table_packs_js(acteurs: &[Acteur]) -> String {
+    let mut s = String::from("{");
+    for (i, a) in acteurs.iter().enumerate() {
+        if i > 0 {
+            s.push(',');
+        }
+        s.push_str(&format!("\"{}\":\"{}\"", a.id, a.nom));
     }
-
-    Ok(win)
+    s.push('}');
+    s
 }
 
 fn lancer_application() {
@@ -483,26 +461,13 @@ fn lancer_application() {
                     _ => geom::Point::new(0.0, 0.0),
                 };
 
-                let label = label_de(index);
-                if let Err(e) =
-                    creer_fenetre_personnage(&app.handle().clone(), &label, nom, taille)
-                {
-                    eprintln!("« {nom} » n'a pas pu apparaître : {e}");
-                    continue;
-                }
-
+                // Aucune fenêtre à créer ici : les fenêtres sont celles des
+                // ÉCRANS, et la boucle les ouvre au fur et à mesure que des
+                // personnages y arrivent (conception §5.1).
                 acteurs.push(Acteur {
-                    label,
+                    id: index as u32,
                     nom: nom.clone(),
                     ch: character::Character::new(manifeste.clone(), attachement, depart),
-                    dernier_rendu: None,
-                    derniere_taille: None,
-                    dernier_coin: None,
-                    // `true` : c'est ce que `creer_fenetre_personnage` vient
-                    // de poser. Mentir ici ferait sauter le premier appel de
-                    // `traverser_les_clics`, et le personnage serait
-                    // incliquable jusqu'au prochain changement d'état.
-                    clics_traversent: true,
                     derniere_trace_grimpe: None,
                     depart: None,
                 });
@@ -895,13 +860,17 @@ fn deja_en_reveil(ch: &character::Character) -> bool {
 /// (design « plusieurs personnages » §3). C'est ce partage qui fait que N
 /// personnages ne coûtent pas N fois notre calcul.
 struct Acteur {
-    /// Le label de sa fenêtre Tauri.
+    /// Son identité, telle que le webview la connaît.
     ///
-    /// ⚠️ **Jamais réutilisé** : il vient d'un compteur monotone, pas de
-    /// l'index dans le `Vec`. Retirer `pet-1` puis en ajouter un
-    /// réattribuerait `pet-1` pendant que Windows détruit encore la fenêtre
-    /// précédente (design §3, piège n° 3).
-    label: String,
+    /// ⚠️ **Jamais réutilisée** : elle vient d'un compteur monotone, pas de
+    /// l'index dans le `Vec`. Un index se réutilise quand un acteur part, et
+    /// le suivant hériterait alors de la position INTERPOLÉE du précédent —
+    /// il traverserait l'écran en glissant, sans qu'aucune erreur ne le
+    /// signale (conception « une fenêtre par écran », `SpriteRendu::id`).
+    ///
+    /// Elle a remplacé le label de fenêtre le 2026-09-23 : un personnage
+    /// n'est plus une fenêtre, c'est un `<img>` dans celle de son écran.
+    id: u32,
 
     /// Le pack dont il est une instance. **Plusieurs acteurs peuvent
     /// partager le même nom** : c'est tout l'objet des doublons.
@@ -909,15 +878,12 @@ struct Acteur {
 
     ch: character::Character,
 
-    // ── La mémoire de rendu ─────────────────────────────────────────────
-    // Ces quatre champs existent pour une seule raison : n'appeler Windows
-    // que quand quelque chose a changé. Le coût étant proportionnel au
-    // nombre de déplacements (design §2), s'en priver multiplierait la
-    // consommation par ~2 — c'est mesuré, 21 % contre 12,3 %.
-    dernier_rendu: Option<render::Rendu>,
-    derniere_taille: Option<(u32, u32)>,
-    dernier_coin: Option<(i32, i32)>,
-    clics_traversent: bool,
+    // ⚠️ **La mémoire de rendu a disparu le 2026-09-23.** Les quatre champs
+    // `dernier_rendu`, `derniere_taille`, `dernier_coin` et
+    // `clics_traversent` n'existaient que pour n'appeler Windows qu'au
+    // changement. Il n'y a plus d'appel Windows par personnage : la boucle
+    // empile de la donnée, et la comparaison « est-ce que ça a changé » se
+    // fait une fois par ÉCRAN, sur la charge entière (`derniere_charge`).
 
     /// Diagnostic `SHIMEJI_ESCALADE=1` : le dernier triplet tracé, pour ne
     /// tracer qu'au changement de phase.
@@ -1226,6 +1192,18 @@ fn boucle(
     // est perdu. Si le personnage restait immobile pendant les premières
     // secondes, rien ne s'afficherait — écran vide, sans erreur, et le
     // diagnostic partirait chercher un problème de transparence.
+    //
+    // ⚠️ **Le risque a EMPIRÉ avec l'overlay, pas disparu.** `eval` rend `Ok`
+    // dès que le message est posté : si `overlay.js` n'a pas encore défini
+    // `window.poserTous`, le JavaScript lève une exception que **personne
+    // n'observe**, et la charge est perdue en silence. Comme
+    // `derniere_charge` l'aurait enregistrée comme envoyée, l'écran resterait
+    // vide jusqu'au prochain changement — c'est-à-dire, pour un personnage
+    // endormi, indéfiniment.
+    //
+    // D'où l'amorçage PAR ÉCRAN ci-dessous : pendant deux secondes après la
+    // création d'une fenêtre, on renvoie tout à chaque tour sans se fier au
+    // dédoublonnage. Trente envois de plus, une fois par fenêtre.
     const AMORCAGE: Duration = Duration::from_secs(2);
 
     let mut dernier_recensement = Duration::ZERO;
@@ -1278,16 +1256,58 @@ fn boucle(
     let mut travail_cumule = Duration::ZERO;
     let mut derniere_trace = Duration::ZERO;
 
-    // Le prochain numéro de label libre.
+    // La prochaine identité libre.
     //
-    // ⚠️ **Monotone, et jamais remis à zéro.** L'index dans le `Vec` ne peut
-    // pas servir de label : retirer `pet-1` puis en ajouter un réattribuerait
-    // `pet-1` pendant que Windows détruit encore la fenêtre précédente, et
-    // Tauri refuserait le label — ou pire, servirait l'ancienne fenêtre
-    // (design §3, piège n° 3).
+    // ⚠️ **Monotone, et jamais remise à zéro.** L'index dans le `Vec` ne
+    // peut pas servir d'identité : un index réutilisé ferait hériter le
+    // nouveau venu de la position INTERPOLÉE de celui qu'il remplace, et il
+    // traverserait l'écran en glissant.
     //
-    // Il part après les labels déjà posés par `setup`.
-    let mut prochain_label: usize = acteurs.len();
+    // Elle part après les identités déjà posées par `setup`.
+    let mut prochain_id: u32 = acteurs.len() as u32;
+
+    // La liste des écrans, gardée d'un recensement à l'autre.
+    //
+    // Recensée à 8 Hz comme `monde`, mais lue à 60 Hz : l'overlay en a besoin
+    // à chaque image pour répartir les sprites, et redemander `screens()` à
+    // 60 Hz serait un appel système par image pour rien.
+    let mut ecrans_courants: Vec<probe::ScreenInfo> = sonde.screens();
+
+    // ── L'état de l'overlay ─────────────────────────────────────────────
+    //
+    // Les écrans pour lesquels une fenêtre existe. On ne les redemande pas à
+    // Tauri à chaque image : `get_webview_window` est un ALLER-RETOUR vers le
+    // thread principal — découverte du spike `spike-deplacements-groupes`, où
+    // l'appeler 15 fois par image coûtait 66 ms par image.
+    let mut ecrans_ouverts: std::collections::HashSet<u64> = std::collections::HashSet::new();
+
+    // La dernière charge envoyée à chaque écran, pour ne rien réenvoyer
+    // d'identique (conception §5.4). Un `eval` coûte ~2,9 ms de CPU : 44 par
+    // seconde payés pour rien, c'est ~13 % de CPU quand tout le monde dort.
+    let mut derniere_charge: std::collections::HashMap<u64, overlay::ChargeEcran> =
+        std::collections::HashMap::new();
+
+    // Qui absorbe les clics, par écran. Remplace le `clics_traversent` qui
+    // vivait sur chaque acteur : c'est la FENÊTRE qui absorbe, et elle en
+    // porte désormais plusieurs.
+    let mut clics_traversent: std::collections::HashMap<u64, bool> =
+        std::collections::HashMap::new();
+
+    // Jusqu'à quand chaque fenêtre est en amorçage. Voir `AMORCAGE`.
+    let mut amorcage_ecran: std::collections::HashMap<u64, std::time::Instant> =
+        std::collections::HashMap::new();
+
+
+    // Le prochain instant d'envoi. 15 Hz, mesuré comme le meilleur compromis
+    // (spike du 2026-09-22) : 44 eval/s tiennent 3 ms de latence, là où 174
+    // en coûtaient 157 % de CPU.
+    let mut prochain_envoi = std::time::Instant::now();
+    const PERIODE_ENVOI: Duration = Duration::from_millis(66);
+
+    // La version de contenu courante, portée par `window.declarer`. Elle
+    // change au rechargement à chaud, et sert à invalider le cache d'images
+    // du webview.
+    let mut version_contenu: u32 = 0;
 
     // Le bouton droit était-il enfoncé à l'image précédente ?
     //
@@ -1320,6 +1340,16 @@ fn boucle(
         // rester pilotable par une horloge factice (spec §10.2).
         let debut = Instant::now();
         let maintenant = horloge.elapsed();
+
+        // Le roster a-t-il changé pendant cette image ? Si oui, la table
+        // `id -> pack` est republiée dans toutes les fenêtres d'écran avant
+        // la prochaine charge — sans quoi `urlDe` construirait « undefined »
+        // pour un nouveau venu, et un partant resterait affiché à jamais.
+        //
+        // Déclaré ICI, tout en haut : le bloc qui applique un changement de
+        // roster est plus haut dans le corps de boucle que l'overlay qui le
+        // consomme.
+        let mut roster_a_declarer = false;
 
         // ── ~2 Hz : les signaux (spec §5.5, design étape 2 §9) ──────────
         //
@@ -1444,6 +1474,8 @@ fn boucle(
             let ecrans = sonde.screens();
             if !ecrans.is_empty() {
                 monde = world::World::from_screens(&ecrans);
+                // Gardée pour les 60 Hz : c'est elle que l'overlay répartit.
+                ecrans_courants = ecrans.clone();
                 // Gardée à part : le rechargement à chaud doit pouvoir
                 // recombiner l'échelle du moniteur avec la NOUVELLE échelle
                 // de la config, sans redemander les écrans.
@@ -1510,13 +1542,16 @@ fn boucle(
 
                         a.ch.manifest = charge.manifeste.clone();
 
-                        // Le webview doit oublier ses images, et la taille
-                        // de la fenêtre peut avoir changé (`frameSize`,
-                        // `scale`).
-                        let _ = render::recharger(&handle, &a.label, r.version, &a.nom);
-                        a.derniere_taille = None;
-                        a.dernier_rendu = None;
-                        a.dernier_coin = None;
+                        // Le webview doit oublier ses images : c'est
+                        // `window.declarer` qui porte la version, et il est
+                        // republié plus bas, une fois pour TOUTES les
+                        // fenêtres — au lieu d'un appel par personnage.
+                        //
+                        // `as u32` : la version de rechargement est un `u64`,
+                        // mais elle compte des rechargements à chaud d'une
+                        // session — elle ne débordera jamais 32 bits.
+                        version_contenu = r.version as u32;
+                        roster_a_declarer = true;
                     }
 
                     // ── Réconcilier présents et voulus ─────────────────
@@ -1560,14 +1595,15 @@ fn boucle(
                                 };
 
                                 // ⚠️ Compteur MONOTONE, jamais l'index dans
-                                // le `Vec` : un label réutilisé se
-                                // heurterait à une fenêtre que Windows
-                                // détruit encore (design §3, piège n° 3).
-                                let label = format!("pet-{prochain_label}");
-                                prochain_label += 1;
+                                // le `Vec` : une identité réutilisée ferait
+                                // hériter le nouveau venu de la position
+                                // interpolée du précédent, et il traverserait
+                                // l'écran en glissant.
+                                let id = prochain_id;
+                                prochain_id += 1;
 
-                                match creer_fenetre_personnage(&handle, &label, &nom, taille) {
-                                    Ok(_) => {
+                                {
+                                    {
                                         let depart_pos = match att {
                                             character::attach::Attachment::Falling {
                                                 pos, ..
@@ -1581,33 +1617,22 @@ fn boucle(
                                         };
 
                                         acteurs.push(Acteur {
-                                            label: label.clone(),
+                                            id,
                                             nom: nom.clone(),
                                             ch: character::Character::new(
                                                 charge.manifeste.clone(),
                                                 att,
                                                 depart_pos,
                                             ),
-                                            dernier_rendu: None,
-                                            derniere_taille: None,
-                                            dernier_coin: None,
-                                            // `true` : c'est ce que
-                                            // `creer_fenetre_personnage` vient
-                                            // de poser. Mentir ici ferait
-                                            // sauter le premier appel de
-                                            // `traverser_les_clics`, et le
-                                            // personnage serait incliquable.
-                                            clics_traversent: true,
                                             derniere_trace_grimpe: None,
                                             depart: None,
                                         });
-                                        println!("« {nom} » apparaît ({label})");
-                                    }
-                                    // Bruyant : une création silencieusement
-                                    // ratée donnerait un compteur à 3 pour 2
-                                    // personnages à l'écran.
-                                    Err(e) => {
-                                        eprintln!("« {nom} » n'a pas pu apparaître : {e}")
+                                        // Le webview doit connaître ce nouvel
+                                        // id AVANT la prochaine charge, sinon
+                                        // `urlDe` construirait « undefined »
+                                        // dans l'URL de son image.
+                                        roster_a_declarer = true;
+                                        println!("« {nom} » apparaît (id {id})");
                                     }
                                 }
                             }
@@ -1630,14 +1655,16 @@ fn boucle(
                                     // pas l'animation, les fichiers vont
                                     // être effacés (design §7).
                                     let parti = acteurs.remove(i);
-                                    if let Some(w) = handle.get_webview_window(&parti.label) {
-                                        let _ = w.destroy();
-                                    }
-                                    println!("« {nom} » retiré ({})", parti.label);
+                                    // Aucune fenêtre à détruire : le sprite
+                                    // disparaît parce que `window.declarer`
+                                    // ne cite plus son id, et `overlay.js`
+                                    // retire du DOM ce qui n'y est plus.
+                                    roster_a_declarer = true;
+                                    println!("« {nom} » retiré (id {})", parti.id);
                                 } else {
                                     let pos = acteurs[i].ch.pos_connue;
                                     acteurs[i].depart = Some(Depart::commence(maintenant, pos));
-                                    println!("« {nom} » s'en va ({})", acteurs[i].label);
+                                    println!("« {nom} » s'en va (id {})", acteurs[i].id);
                                 }
                             }
                         }
@@ -1685,6 +1712,53 @@ fn boucle(
         let front_descendant_droit = !m.right_down && bouton_droit_precedent;
         bouton_droit_precedent = m.right_down;
 
+        // ── L'absorption des clics, par écran ───────────────────────────
+        //
+        // Avant le 2026-09-23, chaque personnage était une fenêtre et
+        // absorbait pour lui-même. Maintenant une fenêtre porte N personnages :
+        // elle absorbe si le curseur est sur **l'un** d'eux, ou si l'un d'eux
+        // est porté. Le test lui-même (`elu`, calculé sur les hitbox) n'a pas
+        // changé — seule la fenêtre à qui on l'applique.
+        //
+        // ⚠️ **Décidé ICI, avant la boucle, et pas après.** Deux raisons, et
+        // la seconde a été un bug réel :
+        //
+        // 1. Le menu contextuel s'ouvre DANS la boucle. L'absorption doit être
+        //    déjà posée quand il s'ouvre, sinon le clic droit atteint aussi
+        //    l'application derrière — et l'utilisateur voit **deux** menus.
+        // 2. La version précédente cherchait l'écran dans `charges`, calculé
+        //    APRÈS la boucle. Or la boucle **`break`** quand un menu s'ouvre :
+        //    la liste des sprites était alors partielle, l'écran introuvable,
+        //    et l'absorption relâchée au pire moment.
+        //
+        // Elle ne dépend donc plus que de `elu` et des positions, tous deux
+        // connus avant que quoi que ce soit ne bouge.
+        //
+        // Pendant un glisser on garde les clics absorbés même si le sprite a
+        // quitté sa propre hitbox : sinon un déplacement rapide relâcherait le
+        // personnage tout seul.
+        let acteur_actif = elu.or_else(|| {
+            acteurs
+                .iter()
+                .position(|a| matches!(a.ch.attachment, character::attach::Attachment::Dragged))
+        });
+
+        let ecran_absorbant =
+            acteur_actif.and_then(|i| ecran_sous(&ecrans_courants, acteurs[i].ch.pos_connue));
+
+        for id in ecrans_ouverts.iter().copied().collect::<Vec<_>>() {
+            let doit_traverser = Some(id) != ecran_absorbant;
+            // On n'appelle Win32 que sur CHANGEMENT : l'appeler 60 fois par
+            // seconde marcherait, mais c'est un appel système par image pour
+            // rien (CLAUDE.md, « Mesurer le CPU »).
+            if clics_traversent.get(&id) != Some(&doit_traverser) {
+                let label = render::label_ecran(id);
+                if render::traverser_les_clics(&handle, &label, doit_traverser).is_ok() {
+                    clics_traversent.insert(id, doit_traverser);
+                }
+            }
+        }
+
         // La commande éventuellement déposée par le gestionnaire de menu.
         //
         // `try_lock` et non `lock` : à 60 Hz on ne s'autorise jamais à
@@ -1719,6 +1793,11 @@ fn boucle(
         // Un menu contextuel a-t-il été ouvert pendant cette image ? Voir
         // pourquoi ce drapeau existe, plus bas, là où il est posé.
         let mut menu_ouvert = false;
+
+        // Les sprites de cette image, tous acteurs confondus. Remplace les
+        // trois appels Windows par personnage (`dimensionner`, `placer`,
+        // `pousser`) qui bouchaient la file du thread principal.
+        let mut sprites: Vec<overlay::SpriteRendu> = Vec::new();
 
         // Les acteurs dont le départ s'achève à cette image.
         //
@@ -1762,28 +1841,36 @@ fn boucle(
                     // personnage de travers pendant sa chute, et c'est très
                     // exactement la compensation que l'ancre existe pour
                     // rendre inutile (spec §8.3).
-                    if visible {
-                        if acteur.ch.manifest.has_pose(&acteur.ch.pose) {
-                            let coin = character::attach::window_top_left(
-                                acteur.ch.pos_connue,
-                                acteur.ch.frame_courante(maintenant),
-                                &acteur.ch.pose,
+                    if visible && acteur.ch.manifest.has_pose(&acteur.ch.pose) {
+                        let image = acteur.ch.frame_courante(maintenant);
+                        let coin = character::attach::window_top_left(
+                            acteur.ch.pos_connue,
+                            image,
+                            &acteur.ch.pose,
+                            &acteur.ch.manifest,
+                            echelle_affichage,
+                            acteur.ch.facing,
+                        );
+                        sprites.push(overlay::SpriteRendu {
+                            id: acteur.id,
+                            x: coin.x.round() as i32,
+                            y: coin.y.round() as i32,
+                            w: character::attach::window_size(
                                 &acteur.ch.manifest,
+                                image,
                                 echelle_affichage,
-                                acteur.ch.facing,
-                            );
-                            let _ = render::placer(&handle, &acteur.label, coin);
-                            placements_depuis_trace += 1;
-                        }
-
-                        let rendu = render::Rendu {
-                            image: acteur.ch.frame_courante(maintenant),
+                            )
+                            .0,
+                            h: character::attach::window_size(
+                                &acteur.ch.manifest,
+                                image,
+                                echelle_affichage,
+                            )
+                            .1,
+                            image,
                             flip: acteur.ch.facing.flipped(),
-                        };
-                        if acteur.dernier_rendu != Some(rendu) {
-                            let _ = render::pousser(&handle, &acteur.label, rendu);
-                            acteur.dernier_rendu = Some(rendu);
-                        }
+                        });
+                        placements_depuis_trace += 1;
                     }
                 }
                 continue;
@@ -1804,24 +1891,16 @@ fn boucle(
                 acteur.ch.attachment,
                 character::attach::Attachment::Dragged
             );
-            let doit_traverser = !sur_le_personnage && !porte;
-
-            // On n'appelle Win32 que sur CHANGEMENT d'état : appeler
-            // `set_ignore_cursor_events` 60 fois par seconde marcherait,
-            // mais c'est un appel système par image pour rien — et la
-            // section « Mesurer le CPU » de CLAUDE.md dit pourquoi on y
-            // regarde.
-            if doit_traverser != acteur.clics_traversent {
-                // ⚠️ `continue` et non `return` : la fenêtre de CE
-                // personnage a pu être détruite, mais ça n'est plus une
-                // raison de tuer la boucle — les autres continuent de
-                // vivre. C'est la généralisation qui l'impose, et c'est
-                // aussi ce qui rend le retrait d'un acteur inoffensif.
-                if render::traverser_les_clics(&handle, &acteur.label, doit_traverser).is_err() {
-                    continue;
-                }
-                acteur.clics_traversent = doit_traverser;
-            }
+            // ⚠️ **L'absorption ne se décide plus ici.** Un personnage
+            // n'est plus une fenêtre : c'est la fenêtre de son ÉCRAN qui
+            // absorbe, et elle en porte plusieurs. La décision est donc
+            // prise une fois par écran, après cette boucle — le test lui
+            // même (`sur_le_personnage`, `porte`) est rigoureusement le
+            // même, seule la fenêtre à qui on l'applique a changé.
+            //
+            // `porte` reste calculé ici parce que l'acteur est sous la main ;
+            // il sert plus bas, via `acteur_actif`.
+            let _ = porte;
 
             // ── Clic droit sur le personnage : le menu contextuel ───────
             //
@@ -1841,9 +1920,17 @@ fn boucle(
             //    Le menu hérite alors d'un suivi de souris qui ne lui
             //    appartient pas, et se referme mal.
             if front_descendant_droit && sur_le_personnage {
-                // `let … else` : si la fenêtre a été fermée, cet acteur n'a
-                // plus de menu à ouvrir. On passe au suivant.
-                let Some(win) = handle.get_webview_window(&acteur.label) else {
+                // La fenêtre à qui le menu s'accroche est celle de l'ÉCRAN
+                // du personnage, pas la sienne — il n'en a plus.
+                //
+                // `let … else` : si l'écran n'a pas (ou plus) de fenêtre,
+                // il n'y a pas de menu à ouvrir. On passe au suivant plutôt
+                // que de chercher un repli : `label_ecran(0)` désignerait
+                // une fenêtre qui n'existe pas, donc un menu muet.
+                let Some(id_ecran) = ecran_sous(&ecrans_courants, acteur.ch.pos_connue) else {
+                    continue;
+                };
+                let Some(win) = handle.get_webview_window(&render::label_ecran(id_ecran)) else {
                     continue;
                 };
 
@@ -1874,7 +1961,10 @@ fn boucle(
                 // étendrait ce défaut aux N−1 autres au lieu de le corriger.
                 // Mémorisé MAINTENANT : c'est la seule image où l'on sait
                 // encore qui a fait le clic droit.
-                demandeur_du_menu = Some(acteur.label.clone());
+                // L'identité, puisqu'il n'y a plus de label de fenêtre.
+                // C'est une clé opaque pour `menu_perso` : il ne fait que la
+                // comparer, il n'en tire rien.
+                demandeur_du_menu = Some(acteur.id.to_string());
 
                 menu_ouvert = true;
                 break;
@@ -1896,7 +1986,7 @@ fn boucle(
                 commande: menu_perso::commande_pour(
                     &mut demandeur_du_menu,
                     &mut commande_du_menu,
-                    &acteur.label,
+                    &acteur.id.to_string(),
                 ),
             };
 
@@ -1965,101 +2055,67 @@ fn boucle(
             }
         }
 
-            // ── Sur changement seulement : la taille de la fenêtre ─────
-            // Elle dépend du manifeste, de l'échelle de l'écran — et depuis
-            // le 2026-09-20 de l'IMAGE affichée, les frames d'un pack tiers
-            // n'ayant pas toutes la même taille.
-            //
-            // Le `if` en dessous reste donc indispensable : l'appeler à
-            // 60 Hz coûtait 8 points de pourcentage de CPU pour rien (voir
-            // l'avertissement de `render::placer`). Avec le test, un pack
-            // homogène — `blob`, et la plupart — ne paie toujours qu'un
-            // seul `set_size`, au chargement ; un pack hétérogène en paie
-            // un par changement d'image, soit ~7 par seconde.
-            let taille = character::attach::window_size(
-                &acteur.ch.manifest,
-                acteur.ch.frame_courante(maintenant),
-                echelle_affichage,
-            );
-            if acteur.derniere_taille != Some(taille) {
-                // `continue` et non `return` : voir la traversée des clics
-                // plus haut — la fenêtre d'un acteur peut disparaître sans
-                // que les autres aient à mourir avec.
-                if render::dimensionner(&handle, &acteur.label, taille).is_err() {
-                    continue;
-                }
-                acteur.derniere_taille = Some(taille);
-            }
-
-            // Caché ou session verrouillée : on a fait tourner le
-            // comportement ci-dessus, et on s'arrête là. `visible` est lu
-            // une fois pour tous, avant la boucle.
+            // Caché ou session verrouillée : le comportement a tourné
+            // ci-dessus, et on s'arrête là. `visible` est lu une fois pour
+            // tous, avant la boucle. N'empiler aucun sprite suffit : toutes
+            // les fenêtres se fermeront plus bas, faute d'écran occupé — ce
+            // qui rend le mode caché réellement gratuit.
             if !visible {
-                // On oublie ce qu'on avait posé : au retour, il faut tout
-                // repousser, la fenêtre ayant pu être masquée entre-temps.
-                acteur.dernier_coin = None;
-                acteur.dernier_rendu = None;
                 continue;
             }
 
-            // ── 60 Hz : le rendu ───────────────────────────────────────
-            // La position est DÉRIVÉE à chaque image (décision n° 1).
-            if let Some(pos) =
-                character::attach::world_position(&acteur.ch.attachment, &monde, m.pos)
-            {
-                if acteur.ch.manifest.has_pose(&acteur.ch.pose) {
-                    let coin = character::attach::window_top_left(
-                        pos,
-                        acteur.ch.frame_courante(maintenant),
-                        &acteur.ch.pose,
-                        &acteur.ch.manifest,
-                        echelle_affichage,
-                        acteur.ch.facing,
-                    );
-
-                    // Arrondi ici et non dans `placer` : c'est cet entier
-                    // qu'on compare, et le calculer deux fois serait deux
-                    // occasions de divergence.
-                    let coin_entier = (coin.x.round() as i32, coin.y.round() as i32);
-
-                    if acteur.dernier_coin != Some(coin_entier) {
-                        if render::placer(&handle, &acteur.label, coin).is_err() {
-                            continue;
-                        }
-                        acteur.dernier_coin = Some(coin_entier);
-                        placements_depuis_trace += 1;
-                    }
-                }
-            }
-
-            let rendu = render::Rendu {
-                image: acteur.ch.frame_courante(maintenant),
-                flip: acteur.ch.facing.flipped(),
-            };
-
-            // N'émettre que sur changement — sauf pendant l'amorçage, où
-            // l'écouteur du webview n'existe peut-être pas encore.
+            // ── 60 Hz : empiler, au lieu d'appeler Windows ──────────────
             //
-            // À 60 Hz, une pose de marche ne change d'image que ~8 fois par
-            // seconde : on économise ~85 % des messages, sans une ligne de
-            // logique côté front.
-            let amorcage = maintenant < AMORCAGE;
-            if amorcage || acteur.dernier_rendu != Some(rendu) {
-                if render::pousser(&handle, &acteur.label, rendu).is_err() {
-                    // ⚠️ **Compté, pas imprimé.** Ce message sortait des
-                    // centaines de fois par seconde à onze personnages, et il
-                    // noyait tout le reste — y compris les lignes qui auraient
-                    // servi au diagnostic. Le total part dans la trace de
-                    // cadence, une fois toutes les cinq secondes.
-                    //
-                    // Et l'échec n'est PAS anodin : il veut dire que la file du
-                    // thread principal a débordé (spec « régulation de charge »
-                    // §2). S'il n'est jamais nul, la régulation n'a pas suffi.
-                    echecs_de_rendu += 1;
-                    continue;
-                }
-                acteur.dernier_rendu = Some(rendu);
+            // La position est DÉRIVÉE à chaque image (décision n° 1) : c'est
+            // elle qui rend gratuit le déplacement d'une plateforme sous les
+            // pieds du personnage, et elle n'a pas changé d'un iota.
+            //
+            // Ce qui a changé, c'est ce qu'on en fait. Avant : jusqu'à trois
+            // appels Windows par acteur et par image (`dimensionner`,
+            // `placer`, `pousser`), soit jusqu'à 900 messages par seconde à
+            // 15 personnages — ce qui bouchait la file du thread principal et
+            // lui donnait 8 à 14 SECONDES de retard. Maintenant : un
+            // `Vec::push`, et un seul `eval` par écran à 15 Hz.
+            let Some(pos) = character::attach::world_position(&acteur.ch.attachment, &monde, m.pos)
+            else {
+                continue;
+            };
+            if !acteur.ch.manifest.has_pose(&acteur.ch.pose) {
+                continue;
             }
+
+            let image = acteur.ch.frame_courante(maintenant);
+
+            // La taille dépend du manifeste, de l'échelle de l'écran — et
+            // depuis le 2026-09-20 de l'IMAGE affichée, les frames d'un pack
+            // tiers n'ayant pas toutes la même taille. Elle n'est plus testée
+            // « au changement » : elle voyage dans la charge utile, et c'est
+            // `overlay.js` qui ne réécrit le style que si elle a bougé.
+            let taille =
+                character::attach::window_size(&acteur.ch.manifest, image, echelle_affichage);
+
+            let coin = character::attach::window_top_left(
+                pos,
+                image,
+                &acteur.ch.pose,
+                &acteur.ch.manifest,
+                echelle_affichage,
+                acteur.ch.facing,
+            );
+
+            sprites.push(overlay::SpriteRendu {
+                id: acteur.id,
+                // Arrondi ICI et nulle part ailleurs : c'est cet entier que
+                // `overlay.js` compare pour savoir s'il doit réécrire, et le
+                // calculer deux fois serait deux occasions de divergence.
+                x: coin.x.round() as i32,
+                y: coin.y.round() as i32,
+                w: taille.0,
+                h: taille.1,
+                image,
+                flip: acteur.ch.facing.flipped(),
+            });
+            placements_depuis_trace += 1;
         }
 
         // ── Les départs achevés ─────────────────────────────────────────
@@ -2068,10 +2124,156 @@ fn boucle(
         // boucle restent valides à mesure qu'on retire.
         for i in a_retirer.into_iter().rev() {
             let parti = acteurs.remove(i);
-            if let Some(w) = handle.get_webview_window(&parti.label) {
-                let _ = w.destroy();
+            // Plus de fenêtre à détruire : le sprite disparaît parce que
+            // `window.declarer` ne cite plus son id.
+            roster_a_declarer = true;
+            println!("« {} » est parti (id {})", parti.nom, parti.id);
+        }
+
+        // ── L'overlay : une fenêtre par écran occupé ────────────────────
+        //
+        // Tout ce qui suit remplace les appels Windows que la boucle par
+        // acteur faisait jusqu'au 2026-09-23. Conception :
+        // `docs/specs/2026-09-23-fenetre-par-ecran-design.md`.
+        //
+        // `repartir` émet un sprite à cheval dans les DEUX écrans qu'il
+        // touche (§5.2), et n'émet aucune charge pour un écran vide (§5.1).
+        let charges = overlay::repartir(&sprites, &ecrans_courants);
+
+        // ── Quelles fenêtres doivent exister ────────────────────────────
+        //
+        // **Une par écran, tant que les personnages sont visibles** — qu'il y
+        // ait quelqu'un dessus ou non. On ne ferme plus la fenêtre d'un écran
+        // qui se vide.
+        //
+        // ⚠️ C'était l'inverse jusqu'au 2026-09-23 (conception §5.1 : « un
+        // écran vide ne doit rien coûter »), avec un délai de grâce de 3 s.
+        // L'auteur a constaté un **gel bref à chaque fermeture** : détruire
+        // une fenêtre WebView2, puis la recréer quand un personnage revient,
+        // est un travail lourd fait par le thread principal — celui qui livre
+        // les clics. C'était la dernière trace de la falaise d'origine.
+        //
+        // Une fenêtre vide ne coûte presque rien : aucune charge ne lui est
+        // envoyée après la première, et `overlay.js` suspend sa boucle de
+        // dessin quand il n'a plus de sprite. Le chiffre est dans
+        // `docs/specs/2026-09-23-fenetre-par-ecran-mesure.md`.
+        //
+        // Deux cas ferment encore une fenêtre, et tous deux sont rares :
+        // tout est caché (tray, session verrouillée) — c'est ce qui rend le
+        // mode caché gratuit —, ou l'écran a été débranché.
+        let voulus: std::collections::HashSet<u64> = if visible {
+            ecrans_courants.iter().map(|e| e.id).collect()
+        } else {
+            std::collections::HashSet::new()
+        };
+
+        // Fermer celles qui n'ont plus lieu d'être.
+        //
+        // `collect` en `Vec` d'abord : on ne peut pas modifier
+        // `ecrans_ouverts` pendant qu'on l'itère.
+        let a_fermer: Vec<u64> = ecrans_ouverts.difference(&voulus).copied().collect();
+        for id in a_fermer {
+            render::detruire_fenetre_ecran(&handle, id);
+            ecrans_ouverts.remove(&id);
+            derniere_charge.remove(&id);
+            clics_traversent.remove(&id);
+            amorcage_ecran.remove(&id);
+        }
+
+        // Ouvrir celles qui manquent.
+        for e in &ecrans_courants {
+            if !voulus.contains(&e.id) || ecrans_ouverts.contains(&e.id) {
+                continue;
             }
-            println!("« {} » est parti ({})", parti.nom, parti.label);
+            match render::creer_fenetre_ecran(&handle, e) {
+                Ok(()) => {
+                    ecrans_ouverts.insert(e.id);
+                    amorcage_ecran.insert(e.id, std::time::Instant::now() + AMORCAGE);
+                    // La table des packs doit arriver AVANT la première
+                    // charge : sans elle, `urlDe` construirait « undefined »
+                    // dans l'URL de l'image, et l'on verrait un personnage
+                    // parfaitement animé… sans aucun dessin.
+                    roster_a_declarer = true;
+                }
+                Err(msg) => eprintln!("écran {} : {msg}", e.id),
+            }
+        }
+
+        // Une fenêtre encore en amorçage doit tout recevoir à chaque tour :
+        // son premier `declarer` a pu être perdu (voir `AMORCAGE`).
+        let en_amorcage: std::collections::HashSet<u64> = amorcage_ecran
+            .iter()
+            .filter(|(_, fin)| std::time::Instant::now() < **fin)
+            .map(|(id, _)| *id)
+            .collect();
+
+        // Republier la table `id -> pack` quand le roster a bougé.
+        if (roster_a_declarer || !en_amorcage.is_empty()) && !ecrans_ouverts.is_empty() {
+            let table = table_packs_js(&acteurs);
+            for id in &ecrans_ouverts {
+                let _ = render::declarer_packs(&handle, *id, &table, version_contenu);
+            }
+            // Les charges mémorisées ne valent plus rien : le webview vient
+            // de remettre à zéro ce qu'il sait. Sans cet oubli, §5.4
+            // sauterait le prochain envoi et l'écran resterait vide.
+            derniere_charge.clear();
+        }
+
+        // ── L'envoi, à 15 Hz et seulement sur changement ────────────────
+        if std::time::Instant::now() >= prochain_envoi {
+            prochain_envoi = std::time::Instant::now() + PERIODE_ENVOI;
+
+            // ⚠️ **On parcourt les fenêtres OUVERTES, pas seulement les écrans
+            // occupés.** Une fenêtre en délai de grâce (écran devenu vide, pas
+            // encore fermée) doit recevoir une charge VIDE : c'est la seule
+            // façon pour `overlay.js` d'apprendre que ses sprites sont partis.
+            //
+            // Sans elle, emporter à la souris le DERNIER personnage d'un écran
+            // laissait son image figée sur l'ancien écran pendant les 3 s du
+            // délai de grâce — constaté à l'écran le 2026-09-23. S'il restait
+            // d'autres personnages, la charge arrivait sans le sprite et il
+            // était retiré normalement : d'où un défaut qui n'apparaissait
+            // qu'avec le dernier.
+            //
+            // Le dédoublonnage ci-dessous fait que la charge vide ne part
+            // qu'UNE fois, puis plus rien jusqu'à la fermeture.
+            let a_envoyer: Vec<overlay::ChargeEcran> = ecrans_ouverts
+                .iter()
+                .map(|id| {
+                    // `cloned()` : `find` rend une référence dans `charges`,
+                    // et on veut une valeur à nous. `unwrap_or_else` fabrique
+                    // la charge vide seulement quand l'écran n'en a pas.
+                    charges
+                        .iter()
+                        .find(|c| c.ecran == *id)
+                        .cloned()
+                        .unwrap_or_else(|| overlay::ChargeEcran {
+                            ecran: *id,
+                            sprites: Vec::new(),
+                        })
+                })
+                .collect();
+
+            for c in &a_envoyer {
+                // §5.4 : un `eval` coûte ~2,9 ms de CPU. Ne rien envoyer
+                // quand rien n'a changé rend gratuit le cas « tout le monde
+                // dort », qui est celui de la nuit et de l'utilisateur parti.
+                // Le dédoublonnage (§5.4) ne s'applique PAS pendant
+                // l'amorçage : c'est précisément là que l'envoi précédent a
+                // pu se perdre sans le dire.
+                if !en_amorcage.contains(&c.ecran) && derniere_charge.get(&c.ecran) == Some(c) {
+                    continue;
+                }
+                if render::pousser_ecran(&handle, c).is_ok() {
+                    derniere_charge.insert(c.ecran, c.clone());
+                } else {
+                    // ⚠️ **Compté, pas imprimé.** Un message par échec noyait
+                    // tout le reste à onze personnages. Et l'échec n'est PAS
+                    // anodin : il veut dire que la file du thread principal a
+                    // débordé (spec « régulation de charge » §2).
+                    echecs_de_rendu += 1;
+                }
+            }
         }
 
         // Un menu contextuel a été ouvert : il a bloqué plusieurs secondes,
@@ -2143,5 +2345,60 @@ fn boucle(
         if let Some(reste) = PERIODE.checked_sub(ecoule) {
             std::thread::sleep(reste);
         }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Les rares fonctions de `main.rs` qui se testent sans écran.
+//
+// Le reste du fichier est une boucle qui pilote Windows : il ne se vérifie
+// qu'à l'œil, ou par les modules qu'il appelle. `ecran_sous`, elle, est
+// purement géométrique — et son bord bas a déjà coûté un bug.
+// ─────────────────────────────────────────────────────────────────────────
+#[cfg(test)]
+mod tests_main {
+    use super::*;
+    use crate::geom::Rect;
+
+    fn un_ecran() -> Vec<probe::ScreenInfo> {
+        vec![probe::ScreenInfo {
+            id: 42,
+            // Zone de travail : 1032 et non 1080, la barre des tâches prenant
+            // les 48 derniers pixels.
+            work_area: Rect::new(0.0, 0.0, 1920.0, 1032.0),
+            scale: 1.0,
+        }]
+    }
+
+    #[test]
+    fn un_personnage_au_sol_appartient_a_son_ecran() {
+        // ⚠️ **Le test qui compte.** `pos_connue` est l'ANCRE du personnage,
+        // c'est-à-dire le sol sous ses pieds : debout sur le plancher, son `y`
+        // vaut EXACTEMENT `work_area.bottom`.
+        //
+        // Avec une comparaison stricte (`y < bottom`), `ecran_sous` rendait
+        // `None` — et le clic droit ne faisait alors strictement rien au sol,
+        // sans le moindre message, alors qu'il marchait sur les murs.
+        let p = geom::Point::new(500.0, 1032.0);
+        assert_eq!(ecran_sous(&un_ecran(), p), Some(42));
+    }
+
+    #[test]
+    fn un_personnage_contre_le_bord_droit_appartient_a_son_ecran() {
+        // Même raisonnement pour un personnage accroché au mur de droite :
+        // son ancre est la main qui agrippe, donc pile sur le bord.
+        let p = geom::Point::new(1920.0, 400.0);
+        assert_eq!(ecran_sous(&un_ecran(), p), Some(42));
+    }
+
+    #[test]
+    fn un_point_hors_de_tout_ecran_ne_rend_aucun_ecran() {
+        let p = geom::Point::new(9000.0, 9000.0);
+        assert_eq!(ecran_sous(&un_ecran(), p), None);
+    }
+
+    #[test]
+    fn le_coin_haut_gauche_appartient_a_l_ecran() {
+        assert_eq!(ecran_sous(&un_ecran(), geom::Point::new(0.0, 0.0)), Some(42));
     }
 }

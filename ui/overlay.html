@@ -1,0 +1,45 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>shimeji overlay</title>
+<style>
+  /* `background: transparent` sur `html` ET `body` : si l'un des deux garde
+     un fond, WebView2 peint un rectangle opaque et la transparence de la
+     fenêtre ne se voit pas. C'est la cause de faux négatif n° 1 sur ce
+     test, confirmée par le spike de l'étape 0 — et elle serait ici
+     spectaculaire, la fenêtre couvrant tout l'écran. */
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: transparent;
+    overflow: hidden;
+  }
+
+  .perso {
+    position: absolute;
+    /* `left/top` restent à 0 : TOUT le déplacement passe par `transform`,
+       composé par le GPU sans refaire la mise en page. C'est le mécanisme
+       qui remplace `SetWindowPos` — et toute la raison de cette
+       architecture. Utiliser `left/top` referait la mise en page à chaque
+       image et annulerait le bénéfice. */
+    left: 0;
+    top: 0;
+    /* Le pixel-art doit rester net : sans ça, la mise à l'échelle sur un
+       écran HiDPI le rend flou. */
+    image-rendering: pixelated;
+    user-select: none;
+    -webkit-user-drag: none;
+    /* Le webview n'intercepte jamais rien : c'est Rust qui décide, par
+       `set_ignore_cursor_events` sur la fenêtre entière (conception §4). */
+    pointer-events: none;
+    /* Promesse au compositeur : cet élément va bouger, garde-le sur sa
+       propre couche. */
+    will-change: transform;
+  }
+</style>
+</head>
+<body>
+<script src="overlay.js"></script>
+</body>
+</html>

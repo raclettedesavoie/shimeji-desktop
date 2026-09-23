@@ -308,3 +308,60 @@ fn la_table_frames_est_facultative_et_se_replie() {
     assert_eq!(m2.taille_de_frame(1), [128, 128]);
     assert_eq!(m2.ancre_de_frame(1, "stand"), [64.0, 128.0]);
 }
+
+/// ⚠️ **Porté, un personnage pend par le HAUT — quelle que soit l'ancre de
+/// l'image.**
+///
+/// Constaté à l'écran le 2026-09-23 : `blob` pendait sous le curseur, mais
+/// tous les packs installés par le catalogue flottaient AU-DESSUS.
+///
+/// La cause est un aplatissement. Dans Shimeji, une ancre dépend du couple
+/// *(action, image)* ; notre table `frames` n'en garde qu'une par NUMÉRO
+/// d'image. Or l'image 1 sert à la fois à « debout » (ancre = les pieds) et à
+/// « porté » (ancre = le point de pincement). Le catalogue y écrit celle de
+/// debout, et comme l'ancre d'image l'emportait sur celle de la pose, le
+/// curseur tenait le personnage… par les pieds.
+///
+/// `blob` y échappait par accident : écrit à la main, il n'a pas de table
+/// `frames`.
+#[test]
+fn une_pose_portee_ignore_l_ancre_de_l_image() {
+    // Exactement ce qu'écrit le catalogue : l'image 1 porte l'ancre des
+    // pieds, la pose `dragged` déclare le point de pincement.
+    let json = r#"{
+        "id": "t", "name": "T", "frameSize": [128,128], "scale": 1,
+        "hitbox": [40,20,48,100],
+        "frames": {
+            "1": { "size": [128,128], "anchor": [64,128] },
+            "5": { "size": [128,128], "anchor": [70,120] }
+        },
+        "poses": {
+            "stand":         { "frames": [1], "anchor": [64,128] },
+            "dragged":       { "frames": [1], "anchor": [64,8] },
+            "draggedRight1": { "frames": [5], "anchor": [64,8] }
+        }
+    }"#;
+    let m: Manifest = serde_json::from_str(json).expect("manifeste valide");
+
+    // La même image, deux sens : debout, on tient par les pieds…
+    assert_eq!(m.ancre_de_frame(1, "stand"), [64.0, 128.0]);
+    // … porté, par le haut de la tête.
+    assert_eq!(m.ancre_de_frame(1, "dragged"), [64.0, 8.0]);
+
+    // Et pendant le balancement aussi : sans ça, le point tenu par le
+    // curseur SAUTERAIT d'une image de balancement à l'autre.
+    assert_eq!(m.ancre_de_frame(5, "draggedRight1"), [64.0, 8.0]);
+}
+
+#[test]
+fn les_poses_portees_sont_reconnues_toutes_les_sept() {
+    // La pose au repos, et les six de balancement. En oublier une ferait
+    // sauter le personnage sous le curseur à chaque passage par elle.
+    assert!(est_pose_portee(POSE_DRAGGED));
+    for p in POSES_DRAGGED_LEFT.iter().chain(POSES_DRAGGED_RIGHT.iter()) {
+        assert!(est_pose_portee(p), "pose portée non reconnue : {p}");
+    }
+    // Et rien d'autre : une pose debout doit garder l'ancre de son image.
+    assert!(!est_pose_portee(POSE_STAND));
+    assert!(!est_pose_portee(POSE_FALL));
+}

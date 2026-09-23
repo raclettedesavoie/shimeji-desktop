@@ -9,23 +9,9 @@
 //! motif gère en prime le cas de la fenêtre fermée. Un accès à une table de
 //! hachage par image est négligeable.
 
-use crate::geom::Point;
-use serde::Serialize;
+use crate::overlay::ChargeEcran;
+use crate::probe::ScreenInfo;
 use tauri::{AppHandle, Manager, PhysicalPosition, PhysicalSize, WebviewWindow};
-
-/// Ce que le webview a besoin de savoir. **Deux champs, et pas un de plus.**
-///
-/// `PartialEq` : l'appelant compare avec la valeur précédente et n'émet que
-/// sur changement. À 60 Hz, une pose de marche ne change d'image que ~8 fois
-/// par seconde — on économise ainsi ~85 % des messages IPC, sans aucune
-/// logique côté front.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub struct Rendu {
-    /// Le numéro de `shime<n>.png`.
-    pub image: u32,
-    /// Faut-il retourner le sprite horizontalement (spec §8.5) ?
-    pub flip: bool,
-}
 
 /// Pose `WS_EX_NOACTIVATE` et `WS_EX_TOOLWINDOW` sur la fenêtre.
 ///
@@ -292,137 +278,6 @@ pub fn rendre_le_premier_plan(hwnd: windows::Win32::Foundation::HWND) {
     }
 }
 
-/// Envoie la frame au webview d'un personnage, en **appelant directement une
-/// fonction JavaScript**.
-///
-/// Rend `Err` si la fenêtre a disparu — l'appelant en déduit qu'il faut
-/// arrêter la boucle de ce personnage.
-///
-/// # Pourquoi `eval` et non le système d'événements
-///
-/// **C'est une découverte de l'exécution, pas un choix initial.** La voie
-/// des événements (`emit_to` + `window.__TAURI__.event.listen`) a été
-/// écrite, lancée, et **ne fonctionnait pas** : le sprite restait invisible.
-///
-/// Le diagnostic est venu d'une trace sur le schéma URI — une seule requête
-/// `shime:///blob/1`, celle de l'affichage initial de `pet.js`, et aucune
-/// ensuite. Donc les images étaient bien servies, mais `poser` n'était
-/// jamais rappelée : l'écouteur ne recevait rien.
-///
-/// La cause : **Tauri v2 a une liste de contrôle d'accès**, et
-/// `event.listen` exige la permission `core:event:allow-listen`. Le projet
-/// n'a aucun fichier de capacités, donc l'appel était refusé — et
-/// *silencieusement*, la promesse rejetée n'étant attendue par personne.
-///
-/// Deux issues possibles : déclarer les capacités, ou se passer du système
-/// d'événements. **On se passe** — et ce n'est pas par paresse :
-///
-/// | | Événements | `eval` |
-/// |---|---|---|
-/// | fichier de capacités à maintenir | oui | non |
-/// | API Tauri injectée dans la page | oui (`withGlobalTauri`) | non |
-/// | dépend d'une ACL qui peut refuser en silence | oui | non |
-/// | ciblage d'un webview précis | `emit_to` (`emit` diffuse à TOUS) | intrinsèque |
-///
-/// La dernière ligne compte pour l'étape 3 : `Emitter::emit` diffuse à tous
-/// les webviews (`tauri/src/lib.rs:934`), donc chaque personnage aurait
-/// affiché la pose du dernier émetteur. Avec `eval`, la fenêtre visée est
-/// celle sur laquelle on appelle la méthode — l'erreur n'est pas
-/// exprimable.
-///
-/// Et c'est cohérent avec « le webview est un afficheur délibérément bête »
-/// (spec §3.1) : il ne reste plus une ligne de code d'écoute côté JS.
-///
-/// Vérifié : `WebviewWindow::eval`
-/// (`tauri-2.11.5/src/webview/webview_window.rs:2403`).
-pub fn pousser(app: &AppHandle, label: &str, r: Rendu) -> Result<(), String> {
-    let Some(win) = app.get_webview_window(label) else {
-        return Err(format!("fenêtre « {label} » absente"));
-    };
-
-    // `{}` sur un `bool` rend « true » ou « false », qui sont exactement les
-    // littéraux JavaScript attendus. Les deux valeurs étant un entier et un
-    // booléen produits par nous, il n'y a rien à échapper — aucune chaîne
-    // venue de l'extérieur n'entre dans ce JavaScript.
-    let js = format!("window.poser({}, {})", r.image, r.flip);
-
-    win.eval(js).map_err(|e| format!("eval : {e}"))
-}
-
-/// Prévient le webview qu'il doit oublier ses images.
-///
-/// Séparée de `pousser` parce qu'elle n'arrive que sur action de
-/// l'utilisateur, jamais dans la boucle.
-pub fn recharger(
-    app: &AppHandle,
-    label: &str,
-    version: u64,
-    personnage: &str,
-) -> Result<(), String> {
-    let Some(win) = app.get_webview_window(label) else {
-        return Err(format!("fenêtre « {label} » absente"));
-    };
-    // Le second argument est le personnage courant : il peut avoir changé
-    // (fenêtre du catalogue), auquel cas `pet.js` refait sa base d'URL.
-    win.eval(format!("window.recharger({version}, \"{personnage}\")"))
-        .map_err(|e| format!("eval : {e}"))
-}
-
-/// Déplace la fenêtre. **Appelée 60 fois par seconde.**
-///
-/// La position est en **pixels physiques du bureau virtuel** (spec §3.4),
-/// d'où `PhysicalPosition` — utiliser la variante logique ferait dériver la
-/// position sur un écran non standard, et ce genre de décalage ne se
-/// reproduit que sur un seul écran, ce qui est un enfer à diagnostiquer.
-///
-/// > **Ne pas y remettre `set_size`.** La taille ne change qu'au chargement
-/// > du manifeste ou au changement d'échelle d'écran — quelques fois par
-/// > heure au grand maximum. Appeler une API du système 60 fois par seconde
-/// > pour une valeur constante est une faute par principe. D'où
-/// > `dimensionner`, séparée.
-/// >
-/// > ⚠️ **Mais ce n'est PAS ce qui coûte le CPU**, contrairement à ce qu'on a
-/// > d'abord cru. Mesuré sur cette machine, en build *debug* :
-/// >
-/// > | | CPU |
-/// > |---|---|
-/// > | `set_position` + `set_size` à 60 Hz | 14,8 % |
-/// > | `set_position` seul à 60 Hz | 14,1 % |
-/// > | **spike de l'étape 0**, qui ne fait *que* `set_position` à 60 Hz | **18 %** |
-/// >
-/// > Le spike consomme plus que l'application complète : le coût est donc
-/// > **inhérent au déplacement d'une fenêtre en couche à 60 Hz**, pas dans
-/// > notre logique. Chercher l'optimisation dans le comportement ou dans le
-/// > rendu serait chercher au mauvais endroit.
-pub fn placer(app: &AppHandle, label: &str, coin: Point) -> Result<(), String> {
-    // `let … else` : la fenêtre a été fermée, il n'y a plus rien à placer.
-    let Some(win) = app.get_webview_window(label) else {
-        return Err(format!("fenêtre « {label} » absente"));
-    };
-
-    // `round()` avant la conversion : `as i32` tronque vers zéro, ce qui
-    // décalerait d'un pixel la moitié du temps et donnerait un tremblement
-    // visible sur du pixel-art.
-    win.set_position(PhysicalPosition::new(
-        coin.x.round() as i32,
-        coin.y.round() as i32,
-    ))
-    .map_err(|e| format!("set_position : {e}"))
-}
-
-/// Redimensionne la fenêtre. **À n'appeler que sur changement.**
-///
-/// Séparée de `placer` pour une raison mesurée, pas esthétique : voir
-/// l'avertissement ci-dessus.
-pub fn dimensionner(app: &AppHandle, label: &str, taille: (u32, u32)) -> Result<(), String> {
-    let Some(win) = app.get_webview_window(label) else {
-        return Err(format!("fenêtre « {label} » absente"));
-    };
-
-    win.set_size(PhysicalSize::new(taille.0, taille.1))
-        .map_err(|e| format!("set_size : {e}"))
-}
-
 /// Active ou désactive la traversée des clics (spec §3.3).
 ///
 /// Utilisé par la Tâche 11. Séparé de `placer` parce qu'il ne change que
@@ -435,52 +290,135 @@ pub fn traverser_les_clics(app: &AppHandle, label: &str, traverser: bool) -> Res
         .map_err(|e| format!("set_ignore_cursor_events : {e}"))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+// ─────────────────────────────────────────────────────────────────────────
+// L'overlay : une fenêtre par écran occupé
+//
+// Conception : `docs/specs/2026-09-23-fenetre-par-ecran-design.md`
+// ─────────────────────────────────────────────────────────────────────────
 
-    // Ce fichier n'a presque rien à tester : tout y est un appel à Tauri ou
-    // à Win32. Le seul comportement propre est la comparaison de `Rendu`,
-    // dont dépend l'économie de messages IPC — et une régression y serait
-    // invisible à l'œil, puisque l'affichage resterait correct.
+/// Le label Tauri de la fenêtre d'un écran.
+///
+/// Dérivé de l'identité **stable** de l'écran (`ScreenInfo::id`, issue du
+/// `HMONITOR`) et non de son index : un écran débranché puis rebranché
+/// changerait d'index, et la fenêtre suivante hériterait du label de la
+/// précédente pendant que Windows détruit encore celle-ci. C'est le même
+/// piège que celui des labels d'acteurs (design « plusieurs personnages »
+/// §3, piège n° 3).
+pub fn label_ecran(id: u64) -> String {
+    format!("ecran-{id}")
+}
 
-    #[test]
-    fn deux_rendus_identiques_sont_egaux() {
-        let a = Rendu {
-            image: 3,
-            flip: false,
-        };
-        let b = Rendu {
-            image: 3,
-            flip: false,
-        };
-        assert_eq!(a, b);
+/// Crée la fenêtre d'un écran : à la taille de sa zone de travail,
+/// transparente, au premier plan, traversante — et qui **ne bougera jamais**.
+///
+/// C'est tout l'objet de l'architecture : cette fenêtre ne reçoit aucun
+/// `SetWindowPos` après sa création. Les personnages se déplacent en CSS à
+/// l'intérieur, ce qui retire de la file du thread principal les 900 messages
+/// par seconde qui la bouchaient.
+pub fn creer_fenetre_ecran(app: &AppHandle, ecran: &ScreenInfo) -> Result<(), String> {
+    let label = label_ecran(ecran.id);
+
+    let win = tauri::WebviewWindowBuilder::new(
+        app,
+        &label,
+        tauri::WebviewUrl::App("overlay.html".into()),
+    )
+    .title("shimeji-desktop")
+    .decorations(false)
+    .transparent(true)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .resizable(false)
+    .shadow(false)
+    .focused(false)
+    .build()
+    .map_err(|e| format!("fenêtre « {label} » : {e}"))?;
+
+    // Position et taille en pixels PHYSIQUES. Les passer au builder les ferait
+    // interpréter en pixels LOGIQUES, donc faux sur un écran à 125 % — la
+    // fenêtre couvrirait 80 % de l'écran et les personnages seraient coupés.
+    // C'est le piège n° 4 des « coordonnées » de CLAUDE.md, et il serait ici
+    // beaucoup plus visible qu'avec une fenêtre de 128 px.
+    win.set_position(PhysicalPosition::new(
+        ecran.work_area.x as i32,
+        ecran.work_area.y as i32,
+    ))
+    .map_err(|e| format!("set_position sur « {label} » : {e}"))?;
+
+    win.set_size(PhysicalSize::new(
+        ecran.work_area.w as u32,
+        ecran.work_area.h as u32,
+    ))
+    .map_err(|e| format!("set_size sur « {label} » : {e}"))?;
+
+    // Les clics traversent par défaut. La boucle ne les absorbe que quand le
+    // curseur est sur un personnage de CET écran (conception §4).
+    //
+    // ⚠️ C'est LA propriété qui rend l'idée vivable : sans elle, une fenêtre
+    // plein écran au premier plan rendrait la machine inutilisable.
+    win.set_ignore_cursor_events(true)
+        .map_err(|e| format!("clics traversants sur « {label} » : {e}"))?;
+
+    // **Les deux découvertes de l'étape 0.** Sans elles, la fenêtre volerait
+    // le focus de l'éditeur et apparaîtrait dans Alt+Tab.
+    match appliquer_styles_etendus(&win) {
+        Ok(()) => println!("styles étendus posés sur {label} (NOACTIVATE, TOOLWINDOW)"),
+        // Non bloquant : la fenêtre marche sans, elle est seulement moins
+        // polie. Mieux vaut un overlay impoli qu'aucun personnage.
+        Err(e) => eprintln!("styles étendus NON appliqués sur {label} : {e}"),
     }
 
-    #[test]
-    fn un_changement_de_flip_seul_rend_les_rendus_differents() {
-        // Sans ce test, une implémentation qui ne comparerait que `image`
-        // passerait : le personnage regarderait alors toujours du même côté.
-        let a = Rendu {
-            image: 3,
-            flip: false,
-        };
-        let b = Rendu {
-            image: 3,
-            flip: true,
-        };
-        assert_ne!(a, b);
-    }
+    println!(
+        "fenêtre {label} : {}×{} @ ({}, {})",
+        ecran.work_area.w, ecran.work_area.h, ecran.work_area.x, ecran.work_area.y
+    );
+    Ok(())
+}
 
-    #[test]
-    fn le_rendu_se_serialise_avec_les_noms_attendus_du_front() {
-        // `pet.js` lit `event.payload.image` et `.flip`. Un renommage côté
-        // Rust casserait l'affichage sans casser la compilation.
-        let json = serde_json::to_string(&Rendu {
-            image: 7,
-            flip: true,
-        })
-        .unwrap();
-        assert_eq!(json, r#"{"image":7,"flip":true}"#);
-    }
+/// Ferme la fenêtre d'un écran devenu vide (conception §5.1).
+///
+/// Silencieuse si la fenêtre n'existe pas : l'appelant peut le demander deux
+/// fois sans que ce soit une erreur.
+pub fn detruire_fenetre_ecran(app: &AppHandle, id: u64) {
+    // `let … else` : rien à fermer, on sort. Équivalent d'un `match` dont la
+    // branche `None` ferait `return`.
+    let Some(win) = app.get_webview_window(&label_ecran(id)) else {
+        return;
+    };
+    let _ = win.close();
+}
+
+/// Envoie toute la charge d'un écran, en un seul `eval`.
+///
+/// ⚠️ **C'est l'appel dont le spike a mesuré le coût : ~2,9 ms de CPU
+/// chacun.** Il ne doit être émis que lorsque quelque chose a changé
+/// (conception §5.4), et jamais plus de ~15 fois par seconde et par écran.
+/// L'appeler à 60 Hz coûtait 157 % de CPU au lieu de 30.
+pub fn pousser_ecran(app: &AppHandle, charge: &ChargeEcran) -> Result<(), String> {
+    let label = label_ecran(charge.ecran);
+    let Some(win) = app.get_webview_window(&label) else {
+        return Err(format!("fenêtre « {label} » absente"));
+    };
+    win.eval(crate::overlay::js_de(charge))
+        .map_err(|e| format!("eval sur « {label} » : {e}"))
+}
+
+/// Publie la table `id -> pack` dans la fenêtre d'un écran.
+///
+/// `table_js` est un littéral objet JavaScript déjà formé par l'appelant
+/// (`{"3":"blob","4":"naruto-kakashi"}`), parce que c'est lui qui connaît le
+/// roster. Appelée **au changement de roster seulement**, jamais dans la
+/// boucle : c'est la seule donnée non numérique qui traverse.
+pub fn declarer_packs(
+    app: &AppHandle,
+    id_ecran: u64,
+    table_js: &str,
+    version: u32,
+) -> Result<(), String> {
+    let label = label_ecran(id_ecran);
+    let Some(win) = app.get_webview_window(&label) else {
+        return Err(format!("fenêtre « {label} » absente"));
+    };
+    win.eval(format!("window.declarer({table_js}, {version})"))
+        .map_err(|e| format!("eval sur « {label} » : {e}"))
 }
