@@ -126,6 +126,24 @@ pub const POSES_DRAGGED_LEFT: [&str; 3] = ["draggedLeft1", "draggedLeft2", "drag
 /// Les poses de balancement, **tête à droite**. Frames 5, 7, 9.
 pub const POSES_DRAGGED_RIGHT: [&str; 3] = ["draggedRight1", "draggedRight2", "draggedRight3"];
 
+/// Vrai pour les sept poses où le personnage est **tenu par le curseur** :
+/// `dragged` au repos, et les six de balancement.
+///
+/// Sert à `Manifest::ancre_de_frame`, qui doit leur appliquer l'ancre de la
+/// POSE et jamais celle de l'image — voir pourquoi là-bas.
+///
+/// Construit sur les constantes plutôt que sur un préfixe de chaîne
+/// (`starts_with("dragged")`) : une pose ajoutée par un pack et nommée
+/// `draggedSomething` ne doit pas changer de comportement par accident.
+pub fn est_pose_portee(nom: &str) -> bool {
+    // `iter().any(…)` : vrai dès qu'un élément du tableau vaut `nom`.
+    // `*p == nom` compare deux `&str` — le `*` retire la référence que
+    // `iter()` ajoute sur chaque élément.
+    nom == POSE_DRAGGED
+        || POSES_DRAGGED_LEFT.iter().any(|p| *p == nom)
+        || POSES_DRAGGED_RIGHT.iter().any(|p| *p == nom)
+}
+
 /// Le rectangle réellement occupé par le personnage dans la boîte de 128×128
 /// (spec §8.4). Sert au hit-testing (Tâche 11) et à la proximité entre
 /// personnages (étape 3).
@@ -485,6 +503,25 @@ impl Manifest {
     /// Trois niveaux de repli, du plus précis au plus général : l'ancre de
     /// l'**image**, puis celle de la **pose**, puis celle **par défaut**.
     ///
+    /// # ⚠️ Sauf pour les poses portées, qui prennent TOUJOURS celle de la pose
+    ///
+    /// « L'ancre de l'image est la plus précise » est vrai en général, et faux
+    /// pour le curseur. Dans Shimeji, une ancre dépend du couple *(action,
+    /// image)* ; notre table `frames` n'en garde qu'**une par numéro
+    /// d'image**. Or l'image 1 sert à la fois à « debout » (ancre = les pieds)
+    /// et à « porté » (ancre = le point de pincement). Le catalogue y écrit
+    /// celle de debout.
+    ///
+    /// Résultat, constaté à l'écran le 2026-09-23 : le curseur tenait les
+    /// personnages du catalogue **par les pieds**, et ils flottaient au-dessus
+    /// de lui. `blob` y échappait par accident — écrit à la main, il n'a pas
+    /// de table `frames`.
+    ///
+    /// Pour une pose portée, l'ancre n'est donc pas une propriété de l'image
+    /// mais de l'**action** : c'est le point que la main tient. Et elle doit
+    /// être la même sur les sept poses, sinon ce point sauterait sous le
+    /// curseur à chaque image de balancement.
+    ///
     /// Une pose inconnue rend l'ancre par défaut plutôt que `None` — comme
     /// `hitbox_de`, et pour la même raison : l'appelant est la boucle 60 Hz,
     /// qui n'a rien à faire d'un cas d'erreur à cette cadence.
@@ -492,8 +529,10 @@ impl Manifest {
         // `and_then` : deux `Option` à traverser d'affilée — la table peut
         // ignorer l'image, ET l'image peut ne pas déclarer d'ancre. Un
         // `match` imbriqué dirait la même chose en cinq lignes.
-        if let Some(a) = self.frames.get(&n).and_then(|info| info.anchor) {
-            return a;
+        if !est_pose_portee(pose) {
+            if let Some(a) = self.frames.get(&n).and_then(|info| info.anchor) {
+                return a;
+            }
         }
 
         match self.poses.get(pose) {
