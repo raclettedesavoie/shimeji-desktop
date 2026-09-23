@@ -161,11 +161,35 @@ window.poserTous = function (liste) {
       retirer(s, id);
     }
   });
+
+  // La boucle de dessin s'était peut-être endormie faute de sprite (voir
+  // `dessiner`). Des personnages viennent d'arriver : on la réveille.
+  if (sprites.size > 0 && enPause) {
+    enPause = false;
+    requestAnimationFrame(dessiner);
+  }
 };
 
 // ── La boucle de dessin, à la cadence de l'écran ────────────────────────
 
+// Vrai quand la boucle de dessin est suspendue, faute de sprite.
+let enPause = false;
+
 function dessiner() {
+  // ⚠️ **Plus aucun sprite : on s'endort au lieu de tourner à vide.**
+  //
+  // Depuis le 2026-09-23, la fenêtre d'un écran reste ouverte même quand
+  // personne n'y est — la fermer puis la rouvrir faisait geler le thread
+  // principal un instant. Une fenêtre vide doit alors coûter le moins
+  // possible : une boucle `requestAnimationFrame` qui tourne à 60 Hz pour ne
+  // rien dessiner garderait le compositeur éveillé pour rien.
+  //
+  // C'est `poserTous` qui la réveille, dès qu'un sprite arrive.
+  if (sprites.size === 0) {
+    enPause = true;
+    return;
+  }
+
   const maintenant = performance.now();
 
   sprites.forEach(function (s, id) {

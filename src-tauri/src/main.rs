@@ -1297,21 +1297,6 @@ fn boucle(
     let mut amorcage_ecran: std::collections::HashMap<u64, std::time::Instant> =
         std::collections::HashMap::new();
 
-    // Depuis quand l'écran est vide, pour ne pas fermer sa fenêtre aussitôt.
-    //
-    // ⚠️ **Un délai de grâce, et il n'est pas cosmétique.** Créer une fenêtre
-    // WebView2 coûte des centaines de millisecondes, pendant lesquelles les
-    // personnages de cet écran ne sont PAS dessinés. Sans ce délai, un
-    // personnage qui fait des allers-retours sur un bord d'écran ferait
-    // battre la fenêtre voisine — et clignoter les personnages qu'elle porte.
-    //
-    // Le coût de l'attente est nul ou presque : une fenêtre sans sprite
-    // n'anime rien, et le péage de ~34 % se paie au CONTENU qui change, pas à
-    // l'existence de la fenêtre (mesuré : 2,9 % pour trois fenêtres
-    // immobiles).
-    let mut vide_depuis: std::collections::HashMap<u64, std::time::Instant> =
-        std::collections::HashMap::new();
-    const GRACE_ECRAN_VIDE: Duration = Duration::from_secs(3);
 
     // Le prochain instant d'envoi. 15 Hz, mesuré comme le meilleur compromis
     // (spike du 2026-09-22) : 44 eval/s tiennent 3 ms de latence, là où 174
@@ -2155,57 +2140,62 @@ fn boucle(
         // touche (§5.2), et n'émet aucune charge pour un écran vide (§5.1).
         let charges = overlay::repartir(&sprites, &ecrans_courants);
 
-        let occupes: std::collections::HashSet<u64> = charges.iter().map(|c| c.ecran).collect();
+        // ── Quelles fenêtres doivent exister ────────────────────────────
+        //
+        // **Une par écran, tant que les personnages sont visibles** — qu'il y
+        // ait quelqu'un dessus ou non. On ne ferme plus la fenêtre d'un écran
+        // qui se vide.
+        //
+        // ⚠️ C'était l'inverse jusqu'au 2026-09-23 (conception §5.1 : « un
+        // écran vide ne doit rien coûter »), avec un délai de grâce de 3 s.
+        // L'auteur a constaté un **gel bref à chaque fermeture** : détruire
+        // une fenêtre WebView2, puis la recréer quand un personnage revient,
+        // est un travail lourd fait par le thread principal — celui qui livre
+        // les clics. C'était la dernière trace de la falaise d'origine.
+        //
+        // Une fenêtre vide ne coûte presque rien : aucune charge ne lui est
+        // envoyée après la première, et `overlay.js` suspend sa boucle de
+        // dessin quand il n'a plus de sprite. Le chiffre est dans
+        // `docs/specs/2026-09-23-fenetre-par-ecran-mesure.md`.
+        //
+        // Deux cas ferment encore une fenêtre, et tous deux sont rares :
+        // tout est caché (tray, session verrouillée) — c'est ce qui rend le
+        // mode caché gratuit —, ou l'écran a été débranché.
+        let voulus: std::collections::HashSet<u64> = if visible {
+            ecrans_courants.iter().map(|e| e.id).collect()
+        } else {
+            std::collections::HashSet::new()
+        };
 
-        // Fermer les fenêtres des écrans que plus personne n'habite. Le péage
-        // mesuré est de ~34 % par fenêtre ANIMÉE : un écran vide doit être
-        // gratuit, et une fenêtre fermée l'est tout à fait.
+        // Fermer celles qui n'ont plus lieu d'être.
         //
         // `collect` en `Vec` d'abord : on ne peut pas modifier
         // `ecrans_ouverts` pendant qu'on l'itère.
-        // Un écran de nouveau occupé n'est plus candidat à la fermeture.
-        for id in &occupes {
-            vide_depuis.remove(id);
-        }
-
-        let candidats: Vec<u64> = ecrans_ouverts.difference(&occupes).copied().collect();
-        for id in candidats {
-            // Premier tour où il est vide : on note l'heure et on attend.
-            let depuis = *vide_depuis
-                .entry(id)
-                .or_insert_with(std::time::Instant::now);
-            if depuis.elapsed() < GRACE_ECRAN_VIDE {
-                continue;
-            }
+        let a_fermer: Vec<u64> = ecrans_ouverts.difference(&voulus).copied().collect();
+        for id in a_fermer {
             render::detruire_fenetre_ecran(&handle, id);
             ecrans_ouverts.remove(&id);
             derniere_charge.remove(&id);
             clics_traversent.remove(&id);
             amorcage_ecran.remove(&id);
-            vide_depuis.remove(&id);
         }
 
-        // Ouvrir celles qui viennent d'être occupées.
-        for c in &charges {
-            if ecrans_ouverts.contains(&c.ecran) {
+        // Ouvrir celles qui manquent.
+        for e in &ecrans_courants {
+            if !voulus.contains(&e.id) || ecrans_ouverts.contains(&e.id) {
                 continue;
             }
-            // `let … else` : l'écran a disparu entre la répartition et ici
-            // (débranchement). On saute, la prochaine image s'en occupera.
-            let Some(e) = ecrans_courants.iter().find(|e| e.id == c.ecran) else {
-                continue;
-            };
             match render::creer_fenetre_ecran(&handle, e) {
                 Ok(()) => {
-                    ecrans_ouverts.insert(c.ecran);
-                    amorcage_ecran.insert(c.ecran, std::time::Instant::now() + AMORCAGE);
+                    ecrans_ouverts.insert(e.id);
+                    amorcage_ecran.insert(e.id, std::time::Instant::now() + AMORCAGE);
                     // La table des packs doit arriver AVANT la première
                     // charge : sans elle, `urlDe` construirait « undefined »
                     // dans l'URL de l'image, et l'on verrait un personnage
                     // parfaitement animé… sans aucun dessin.
                     roster_a_declarer = true;
                 }
-                Err(msg) => eprintln!("écran {} : {msg}", c.ecran),
+                Err(msg) => eprintln!("écran {} : {msg}", e.id),
             }
         }
 

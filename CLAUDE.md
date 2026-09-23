@@ -465,8 +465,17 @@ Chaque **écran occupé** porte une fenêtre transparente à la taille de sa zon
 travail, sans bordure, hors taskbar, toujours au premier plan — et qui **ne bouge
 jamais**. Les personnages y sont des `<img>` déplacés en CSS.
 
-Un écran sans personnage n'a pas de fenêtre (fermée après 3 s de grâce), donc ne
-coûte rien.
+La fenêtre d'un écran reste ouverte **même quand personne n'y est**, tant que les
+personnages sont visibles. Elle ne se ferme que si tout est caché (tray, session
+verrouillée) ou si l'écran est débranché.
+
+> ⚠️ **Ce n'était pas le choix de départ.** La conception fermait la fenêtre d'un
+> écran vide (§5.1, « un écran vide ne doit rien coûter »), après 3 s de grâce.
+> L'auteur a constaté un **gel bref à chaque fermeture** : détruire puis recréer
+> une fenêtre WebView2 est un travail lourd, fait par le thread principal. Une
+> fenêtre vide coûte **~1 %** (mesuré processus par processus : 0,8 % et 0,2 %
+> pour deux fenêtres vides), parce que `overlay.js` suspend sa boucle de dessin
+> quand il n'a aucun sprite. Ne pas revenir à la fermeture à la volée.
 
 > ⚠️ **C'était « une fenêtre de 128×128 par personnage » jusqu'au 2026-09-23.**
 > Chacune était déplacée par `SetWindowPos` à 60 Hz — soit jusqu'à 900 messages

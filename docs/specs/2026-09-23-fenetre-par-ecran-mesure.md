@@ -102,6 +102,35 @@ Le coût de l'attente est nul ou presque : le péage se paie au **contenu qui
 change**, pas à l'existence de la fenêtre (2,9 % mesurés pour trois fenêtres
 immobiles, au spike).
 
+## 5 bis. Le délai de grâce a été remplacé : les fenêtres restent ouvertes
+
+Le délai de grâce réduisait le battement, mais **chaque fermeture gelait
+encore brièvement** l'application — constaté à l'œil par l'auteur. Détruire
+une fenêtre WebView2, puis la recréer quand un personnage revient, est un
+travail lourd fait par le thread principal.
+
+Les fenêtres restent donc ouvertes tant que les personnages sont visibles, et
+`overlay.js` **suspend sa boucle de dessin** quand il n'a plus aucun sprite.
+
+Mesuré processus par processus, un `blob` sur trois écrans, 45 s :
+
+| Processus | CPU |
+|---|---|
+| renderer de la fenêtre avec le personnage | 10,3 % |
+| renderer d'une fenêtre vide | **0,8 %** |
+| renderer de l'autre fenêtre vide | **0,2 %** |
+| processus GPU, partagé | 9,8 % |
+| navigateur et utilitaires | 1,6 % |
+
+**Deux fenêtres vides coûtent ~1 %.** Le prix du gel supprimé est négligeable.
+
+> ⚠️ **Une première mesure disait 30,3 % contre 18,1 % avant**, soit 12
+> points imputés aux fenêtres vides. C'était faux : l'écart venait du
+> comportement du personnage pendant l'essai (il marchait plus ou moins). Seule
+> la décomposition par processus isole le coût d'une fenêtre vide — c'est le
+> piège « la mesure en marche ne se compare plus d'une version à l'autre » de
+> CLAUDE.md, rencontré une fois de plus.
+
 ## 6. Les pièges de mesure rencontrés
 
 > ⚠️ **Une session verrouillée fausse tout, en silence.** Deux essais
