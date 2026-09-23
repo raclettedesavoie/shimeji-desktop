@@ -39,6 +39,7 @@ mod config;
 mod geom;
 mod maj;
 mod menu_perso;
+mod overlay;
 mod probe;
 mod rechargement;
 mod render;
