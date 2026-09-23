@@ -218,14 +218,30 @@ fn main() {
 /// L'écran sur lequel se trouve un point du bureau virtuel.
 ///
 /// Sert à savoir à quelle fenêtre accrocher le menu contextuel d'un
-/// personnage. Rend `None` si le point n'est sur aucun écran — ce qui arrive
-/// le temps d'une image quand une plateforme disparaît sous lui.
+/// personnage, et laquelle doit absorber ses clics. Rend `None` si le point
+/// n'est sur aucun écran — ce qui arrive le temps d'une image quand une
+/// plateforme disparaît sous lui.
+///
+/// ⚠️ **Les bords BAS et DROIT appartiennent à l'écran** (`<=` et non `<`), et
+/// ce n'est pas un détail de confort : `pos_connue` est l'**ancre** du
+/// personnage, c'est-à-dire le sol sous ses pieds. Un personnage debout sur le
+/// plancher a donc `y` **exactement égal** à `work_area.bottom`.
+///
+/// Avec une comparaison stricte, `ecran_sous` rendait `None` pour tout
+/// personnage au sol — donc **aucun menu contextuel au sol**, alors qu'il
+/// marchait sur les murs, où `y` tombe au milieu de l'écran. Constaté à
+/// l'écran le 2026-09-23, et invisible autrement : aucun message, le clic
+/// droit ne faisait simplement rien.
+///
+/// Le risque symétrique — deux écrans empilés dont l'un a `bottom` égal au
+/// `top` de l'autre — est sans conséquence : `find` rend le premier, et les
+/// deux fenêtres couvrent ce pixel de toute façon.
 fn ecran_sous(ecrans: &[probe::ScreenInfo], p: geom::Point) -> Option<u64> {
     ecrans
         .iter()
         .find(|e| {
             let z = e.work_area;
-            p.x >= z.left() && p.x < z.right() && p.y >= z.top() && p.y < z.bottom()
+            p.x >= z.left() && p.x <= z.right() && p.y >= z.top() && p.y <= z.bottom()
         })
         .map(|e| e.id)
 }
@@ -1711,6 +1727,53 @@ fn boucle(
         let front_descendant_droit = !m.right_down && bouton_droit_precedent;
         bouton_droit_precedent = m.right_down;
 
+        // ── L'absorption des clics, par écran ───────────────────────────
+        //
+        // Avant le 2026-09-23, chaque personnage était une fenêtre et
+        // absorbait pour lui-même. Maintenant une fenêtre porte N personnages :
+        // elle absorbe si le curseur est sur **l'un** d'eux, ou si l'un d'eux
+        // est porté. Le test lui-même (`elu`, calculé sur les hitbox) n'a pas
+        // changé — seule la fenêtre à qui on l'applique.
+        //
+        // ⚠️ **Décidé ICI, avant la boucle, et pas après.** Deux raisons, et
+        // la seconde a été un bug réel :
+        //
+        // 1. Le menu contextuel s'ouvre DANS la boucle. L'absorption doit être
+        //    déjà posée quand il s'ouvre, sinon le clic droit atteint aussi
+        //    l'application derrière — et l'utilisateur voit **deux** menus.
+        // 2. La version précédente cherchait l'écran dans `charges`, calculé
+        //    APRÈS la boucle. Or la boucle **`break`** quand un menu s'ouvre :
+        //    la liste des sprites était alors partielle, l'écran introuvable,
+        //    et l'absorption relâchée au pire moment.
+        //
+        // Elle ne dépend donc plus que de `elu` et des positions, tous deux
+        // connus avant que quoi que ce soit ne bouge.
+        //
+        // Pendant un glisser on garde les clics absorbés même si le sprite a
+        // quitté sa propre hitbox : sinon un déplacement rapide relâcherait le
+        // personnage tout seul.
+        let acteur_actif = elu.or_else(|| {
+            acteurs
+                .iter()
+                .position(|a| matches!(a.ch.attachment, character::attach::Attachment::Dragged))
+        });
+
+        let ecran_absorbant =
+            acteur_actif.and_then(|i| ecran_sous(&ecrans_courants, acteurs[i].ch.pos_connue));
+
+        for id in ecrans_ouverts.iter().copied().collect::<Vec<_>>() {
+            let doit_traverser = Some(id) != ecran_absorbant;
+            // On n'appelle Win32 que sur CHANGEMENT : l'appeler 60 fois par
+            // seconde marcherait, mais c'est un appel système par image pour
+            // rien (CLAUDE.md, « Mesurer le CPU »).
+            if clics_traversent.get(&id) != Some(&doit_traverser) {
+                let label = render::label_ecran(id);
+                if render::traverser_les_clics(&handle, &label, doit_traverser).is_ok() {
+                    clics_traversent.insert(id, doit_traverser);
+                }
+            }
+        }
+
         // La commande éventuellement déposée par le gestionnaire de menu.
         //
         // `try_lock` et non `lock` : à 60 Hz on ne s'autorise jamais à
@@ -2192,46 +2255,6 @@ fn boucle(
             }
         }
 
-        // ── L'absorption des clics, par écran ───────────────────────────
-        //
-        // Avant, chaque personnage était une fenêtre et absorbait pour
-        // lui-même. Maintenant une fenêtre porte N personnages : elle absorbe
-        // si le curseur est sur **l'un** d'eux, ou si l'un d'eux est porté.
-        //
-        // Le test d'appartenance est rigoureusement le même (`elu`, calculé
-        // plus haut sur les hitbox) : seule la fenêtre à qui on l'applique a
-        // changé. C'est ce qui rend ce remplacement sûr.
-        //
-        // Pendant un glisser on garde les clics absorbés même si le sprite a
-        // quitté sa propre hitbox : sinon un déplacement rapide relâcherait
-        // le personnage tout seul.
-        let acteur_actif = elu.or_else(|| {
-            acteurs
-                .iter()
-                .position(|a| matches!(a.ch.attachment, character::attach::Attachment::Dragged))
-        });
-
-        let ecran_absorbant = acteur_actif.and_then(|i| {
-            let id = acteurs[i].id;
-            charges
-                .iter()
-                .find(|c| c.sprites.iter().any(|s| s.id == id))
-                .map(|c| c.ecran)
-        });
-
-        for id in ecrans_ouverts.iter().copied().collect::<Vec<_>>() {
-            let doit_traverser = Some(id) != ecran_absorbant;
-            // On n'appelle Win32 que sur CHANGEMENT : l'appeler 60 fois par
-            // seconde marcherait, mais c'est un appel système par image pour
-            // rien (CLAUDE.md, « Mesurer le CPU »).
-            if clics_traversent.get(&id) != Some(&doit_traverser) {
-                let label = render::label_ecran(id);
-                if render::traverser_les_clics(&handle, &label, doit_traverser).is_ok() {
-                    clics_traversent.insert(id, doit_traverser);
-                }
-            }
-        }
-
         // Un menu contextuel a été ouvert : il a bloqué plusieurs secondes,
         // `maintenant` est périmé. On repart sur une image neuve plutôt que
         // de juger les échéances de tout le monde sur un instant faux.
@@ -2301,5 +2324,60 @@ fn boucle(
         if let Some(reste) = PERIODE.checked_sub(ecoule) {
             std::thread::sleep(reste);
         }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Les rares fonctions de `main.rs` qui se testent sans écran.
+//
+// Le reste du fichier est une boucle qui pilote Windows : il ne se vérifie
+// qu'à l'œil, ou par les modules qu'il appelle. `ecran_sous`, elle, est
+// purement géométrique — et son bord bas a déjà coûté un bug.
+// ─────────────────────────────────────────────────────────────────────────
+#[cfg(test)]
+mod tests_main {
+    use super::*;
+    use crate::geom::Rect;
+
+    fn un_ecran() -> Vec<probe::ScreenInfo> {
+        vec![probe::ScreenInfo {
+            id: 42,
+            // Zone de travail : 1032 et non 1080, la barre des tâches prenant
+            // les 48 derniers pixels.
+            work_area: Rect::new(0.0, 0.0, 1920.0, 1032.0),
+            scale: 1.0,
+        }]
+    }
+
+    #[test]
+    fn un_personnage_au_sol_appartient_a_son_ecran() {
+        // ⚠️ **Le test qui compte.** `pos_connue` est l'ANCRE du personnage,
+        // c'est-à-dire le sol sous ses pieds : debout sur le plancher, son `y`
+        // vaut EXACTEMENT `work_area.bottom`.
+        //
+        // Avec une comparaison stricte (`y < bottom`), `ecran_sous` rendait
+        // `None` — et le clic droit ne faisait alors strictement rien au sol,
+        // sans le moindre message, alors qu'il marchait sur les murs.
+        let p = geom::Point::new(500.0, 1032.0);
+        assert_eq!(ecran_sous(&un_ecran(), p), Some(42));
+    }
+
+    #[test]
+    fn un_personnage_contre_le_bord_droit_appartient_a_son_ecran() {
+        // Même raisonnement pour un personnage accroché au mur de droite :
+        // son ancre est la main qui agrippe, donc pile sur le bord.
+        let p = geom::Point::new(1920.0, 400.0);
+        assert_eq!(ecran_sous(&un_ecran(), p), Some(42));
+    }
+
+    #[test]
+    fn un_point_hors_de_tout_ecran_ne_rend_aucun_ecran() {
+        let p = geom::Point::new(9000.0, 9000.0);
+        assert_eq!(ecran_sous(&un_ecran(), p), None);
+    }
+
+    #[test]
+    fn le_coin_haut_gauche_appartient_a_l_ecran() {
+        assert_eq!(ecran_sous(&un_ecran(), geom::Point::new(0.0, 0.0)), Some(42));
     }
 }
