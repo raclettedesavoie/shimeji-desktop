@@ -459,29 +459,66 @@ mauvaises raisons cette fois.
 
 ## Architecture
 
-### Une fenêtre par personnage
+### Une fenêtre par ÉCRAN — depuis le 2026-09-23
 
-Chaque personnage est **sa propre petite fenêtre de 128×128**, transparente, sans
-bordure, hors taskbar, toujours au premier plan, déplacée par Rust. C'est ce que fait le
-vrai Shimeji.
+Chaque **écran occupé** porte une fenêtre transparente à la taille de sa zone de
+travail, sans bordure, hors taskbar, toujours au premier plan — et qui **ne bouge
+jamais**. Les personnages y sont des `<img>` déplacés en CSS.
 
-**Ne pas revenir à un overlay transparent plein écran** : une seule fenêtre ne peut pas
-couvrir proprement deux moniteurs de DPI différents, et c'est un défaut structurel. Avec
-une fenêtre par personnage, changer d'écran, c'est écrire une position.
+Un écran sans personnage n'a pas de fenêtre (fermée après 3 s de grâce), donc ne
+coûte rien.
+
+> ⚠️ **C'était « une fenêtre de 128×128 par personnage » jusqu'au 2026-09-23.**
+> Chacune était déplacée par `SetWindowPos` à 60 Hz — soit jusqu'à 900 messages
+> par seconde à 15 personnages, sur la file du thread principal **qui livre aussi
+> les clics**. Elle débordait, et l'application se figeait : 8 à 14 secondes de
+> latence, impossible d'ouvrir le gestionnaire pour réduire son roster.
+>
+> Trois spikes ont cerné la cause avant qu'on écrive une ligne :
+> `spike-deplacements-groupes` (grouper les messages ne change rien, le coût est
+> par fenêtre), `spike-deplacement-30hz` (espacer divise par 3, reste en
+> secondes), `spike-fenetre-par-ecran` (la mesure qui a décidé).
+>
+> **La décision « ne pas revenir à un overlay plein écran » a été rouverte, et
+> elle visait autre chose** : son motif était qu'une fenêtre UNIQUE ne peut pas
+> couvrir deux moniteurs de DPI différents. C'est vrai, et cette machine en est
+> la preuve. Une fenêtre **par écran** y échappe : chacune prend le DPI du sien.
+> C'est la version « une seule fenêtre pour tout » qui reste interdite.
+
+**Ce n'est PAS une économie de CPU** : 85,7 % contre 91 % à 15 personnages. Ce qui
+change, c'est **où** il est dépensé — le thread principal passe de ~59 % à 6,2 %,
+le reste part dans des renderers qui ne bloquent rien. On achète de
+l'interactivité, pas de la batterie. En dessous de 3 ou 4 personnages par écran,
+l'overlay est même **plus cher** (18,1 % contre ~12 % à un personnage) : il y a
+un péage fixe par écran animé. Le troc assumé est un **plafond plat** au lieu
+d'une **falaise**.
+→ `docs/specs/2026-09-23-fenetre-par-ecran-mesure.md`
 
 Le hit-testing : les clics traversent en permanence, et Rust ne les réactive que quand le
 curseur entre dans la **hitbox serrée** de l'animation courante (`GetCursorPos` sondé à
-~30 Hz, quasi gratuit).
+~30 Hz, quasi gratuit). C'est désormais la fenêtre de l'**écran** qui absorbe, si le
+curseur est sur *l'un* de ses personnages — le test lui-même n'a pas changé.
 
 ### Où vit la logique
 
-La position étant appliquée par Rust, faire calculer la physique en JS coûterait un
-aller-retour IPC **60 fois par seconde par personnage**. Donc :
+Faire **calculer** la physique en JS coûterait un aller-**retour** IPC 60 fois par
+seconde par personnage. Donc :
 
 | Couche | Où |
 |---|---|
 | Fenêtres, signaux, tray, config, **physique, comportement** | **Rust** |
-| Dessin du sprite | Webview (reçoit `{frame, flip}`, pose un `background-position`) |
+| Dessin des sprites | Webview (reçoit `[id,x,y,w,h,image,flip]` par écran, pose un `transform`) |
+
+> ⚠️ **Le webview interpole, et ce n'est pas de la logique.** Rust envoie les
+> positions **15 fois par seconde** ; `ui/overlay.js` glisse entre deux positions
+> reçues pour dessiner à 60 Hz. Il ne calcule aucune trajectoire, ne décide de
+> rien, ne renvoie rien — et le facteur est **borné à 1**, donc il n'invente
+> jamais une position que Rust n'a pas calculée : si l'envoi suivant tarde, le
+> sprite s'arrête sur la dernière position connue.
+>
+> Le prix est ~66 ms de retard visuel, **jugé invisible à l'œil** (2026-09-23).
+> Le dessin à 30 Hz a été essayé et **refusé** par l'auteur, jugé « un peu plus
+> saccadé » : physique ET dessin restent à 60 Hz, seul l'envoi est espacé.
 
 Corollaire : Rust détenant **tous** les personnages, le comportement social est une
 simple vérification côté coordinateur — aucun canal entre fenêtres à inventer.
@@ -498,11 +535,13 @@ La physique et les comportements **ne savent jamais** si une plateforme est le b
 l'écran ou la barre de titre de VSCode. C'est ce qui permet de livrer le sol d'abord et
 de brancher les fenêtres ensuite sans rien réécrire.
 
-### Trois horloges
+### Quatre horloges
 
 | Rythme | Quoi | Pourquoi |
 |---|---|---|
-| **60 Hz** | physique, dessin, **et la seule plateforme occupée** | interroger *une* fenêtre est quasi gratuit → il colle à la fenêtre qu'on déplace |
+| **60 Hz** | physique, **et la seule plateforme occupée** | interroger *une* fenêtre est quasi gratuit → il colle à la fenêtre qu'on déplace |
+| **60 Hz** | dessin, dans le webview | c'est la fluidité, et elle n'est pas négociable (règle n° 1 de l'étape 0) |
+| **15 Hz** | envoi des positions, un `eval` par écran | un `eval` coûte ~2,9 ms de CPU : 60 Hz en coûtaient 157 %, 15 Hz en coûtent 30 |
 | **~8 Hz** | recensement complet des fenêtres, filtres, occlusion | une fenêtre qui apparaît est vue en ~125 ms : imperceptible |
 | **~2 Hz** | inactivité, appli active, heure, batterie | aucun de ces signaux ne bouge vite |
 
@@ -805,33 +844,37 @@ ramassant, sautant, puis tombant hors de l'écran. Une poubelle supprime un pack
 du disque. Le reste est inchangé — marche, escalade, attrape-souris, tray,
 `config.json`.
 
-**316 tests.** Et le CPU, mesuré sur le programme réel (release, 60 s) :
+**335 tests.** Et le CPU, mesuré sur le programme réel (release, 60 s, 3 écrans) :
 
-| Roster | Caché | En marche |
-|---|---|---|
-| 1 | 0,7 % | — |
-| 4 | 0,9 % | — |
-| **10** | **0,7 %** | **67,9 %**, cadence tenue à 58,8 img/s |
+| Roster | Caché | En marche | dont `shimeji-desktop` | Latence de la file |
+|---|---|---|---|---|
+| 1 | — | 18,1 % | 2,6 % | 0 / 9 ms |
+| **15** | **0,8 %** | **85,7 %** | **6,2 %** | **0 ms médiane, 13 ms max** |
 
-> ⚠️ **Le mode caché est PLAT** — 0,7 % à un personnage comme à dix. Notre
-> calcul ne grandit pas avec le roster : les signaux à 2 Hz, le recensement du
-> monde à 8 Hz et la sonde du curseur sont payés **une seule fois** par la
-> boucle unique. Ce qui coûte reste `SetWindowPos`, donc le **nombre de
-> personnages qui MARCHENT** — un personnage assis ou endormi est gratuit.
+> ⚠️ **Mesurer le seul processus `shimeji-desktop` ne dit plus rien.** Il ne
+> fait que 6 % du total : l'essentiel est dans les **renderers WebView2**, qui
+> sont des processus séparés. Utiliser `docs/outils/mesurer-overlay.ps1`, pas
+> `mesurer-roster.ps1`.
 >
-> **Aucun plafond n'est imposé**, par décision de l'auteur prise en
-> connaissance de la mesure : la bibliothèque **avertit** à partir de 10, et
-> n'interdit rien.
+> ⚠️ **La falaise a disparu, et ce n'est PAS une économie.** Avant le
+> 2026-09-23, 15 personnages coûtaient 91 % **et 8 à 14 secondes** de latence —
+> le menu ne se fermait plus, les clics traversaient, et l'on ne pouvait même
+> plus ouvrir le gestionnaire pour réduire son roster. Le total est aujourd'hui
+> à peine plus bas (85,7 %), mais le **thread principal** est passé de ~59 % à
+> 6,2 %, et c'est lui qui livre les clics.
 >
-> ⚠️ **Et ce qui se perd au-delà n'est pas que du CPU — c'est l'interactivité.**
-> À 15 personnages en debug, la file de messages du thread principal prend
-> **14 s** de retard : le menu ne se ferme plus, les clics traversent, les
-> sprites se figent. C'est une **falaise** (0 ms à 4 personnages, 8 400 ms à 15),
-> pas une pente, et c'est `SetWindowPos` — cachés, 15 personnages coûtent 6 % et
-> 0 ms. La **régulation de charge** y répond : un sixième signal mesure cette
-> latence et biaise vers le repos, ce qui la ramène à 234 ms. Elle ne supprime
-> pas la falaise, elle empêche d'y tomber.
+> En échange, il y a un **péage fixe par écran animé** : à un personnage,
+> l'overlay coûte 18 % contre ~12 % avant. Le point de croisement est vers 3 ou
+> 4 personnages par écran. C'est un **plafond plat** au lieu d'une falaise.
+> → `docs/specs/2026-09-23-fenetre-par-ecran-mesure.md`
+>
+> **La régulation de charge reste en place** et garde tout son sens : elle
+> mesure la latence de la file et biaise vers le repos. Elle a simplement
+> beaucoup moins de travail.
 > → `docs/specs/2026-09-22-mesure-regulation.md`
+>
+> **Aucun plafond n'est imposé**, par décision de l'auteur : la bibliothèque
+> **avertit** à partir de 10, et n'interdit rien.
 
 > ⚠️ **Ce qui n'est PAS fait : le comportement social.** Ils coexistent, ils ne
 > se remarquent pas. Ne pas conclure de « plusieurs personnages » que l'étape 3
@@ -865,6 +908,9 @@ clic dans `%APPDATA%`. Le dépôt ne versionne plus que `blob`.
 | `docs/specs/2026-09-21-regulation-de-charge-design.md` | **le design de la régulation de charge** : le sixième signal, ce que la mesure a REFUSÉ (`SetWindowPos` direct), et la tension avec « pas de charge CPU comme signal » |
 | `docs/plans/2026-09-21-regulation-de-charge.md` | son plan, **soldé** — 4 tâches |
 | `docs/specs/2026-09-22-mesure-regulation.md` | **la mesure** : la falaise entre 4 et 15 personnages, les 14 s ramenées à 234 ms, et les trois pièges de mesure |
+| `docs/specs/2026-09-23-fenetre-par-ecran-design.md` | **la conception d'« une fenêtre par écran »** : ce qu'on achète (l'interactivité, PAS le CPU), les deux décisions rouvertes, les trois cadences découplées |
+| `docs/plans/2026-09-23-fenetre-par-ecran.md` | son plan, **soldé** — 8 tâches |
+| `docs/specs/2026-09-23-fenetre-par-ecran-mesure.md` | **la mesure** : 8–14 s ramenées à 13 ms, le péage par écran, et les deux défauts trouvés à l'exécution |
 | `docs/conception/2026-09-14-cout-des-sessions.md` | **ce que coûte une session d'assistance** : le relevé, et l'hypothèse évidente qui était fausse |
 | `docs/conception/2026-09-14-journal-des-etapes.md` | **le récit de chaque étape** (0, 1a, 1b, 2, 4a) et les réglages « à l'œil » qui se sont révélés faux — extrait de ce fichier le 2026-09-14 |
 | `docs/specs/2026-09-09-mesure-cpu.md` | **le dossier CPU complet** : les quatre hypothèses démenties par la mesure — à lire avant de toucher au chemin 60 Hz |
@@ -917,11 +963,16 @@ verticale, il ne reste que le recensement des fenêtres et leur filtrage :
 
 > ⚠️ **Et c'est là que le CPU redeviendra une question.** Le recensement à 8 Hz
 > est aujourd'hui payé une seule fois pour tout le roster, ce qui est exactement
-> ce qui rend dix personnages gratuits en mode caché. `EnumWindows` y est
-> beaucoup plus cher que la liste des écrans : **re-mesurer avec
-> `docs/outils/mesurer-roster.ps1 -Cache`** après l'avoir branché, et comparer
-> aux 0,7 % d'aujourd'hui. Si le chiffre monte avec le roster, c'est que du
-> travail partagé est passé par erreur dans la boucle par personnage.
+> ce qui rend quinze personnages cachés gratuits. `EnumWindows` y est beaucoup
+> plus cher que la liste des écrans : **re-mesurer avec
+> `docs/outils/mesurer-overlay.ps1 -N 15 -Cache`** après l'avoir branché, et
+> comparer aux 0,8 % d'aujourd'hui. Si le chiffre monte avec le roster, c'est
+> que du travail partagé est passé par erreur dans la boucle par personnage.
+
+> ⚠️ **Le péage de ~34 % par écran animé n'a pas été attaqué.** On ne sait pas
+> ce qu'il contient (échange de surface, transfert vers DWM, composition
+> logicielle de WebView2). C'est la seule piste connue pour descendre sous ce
+> plancher, et elle n'est pas engagée.
 
 **L'étape 3b (qu'ils se remarquent) reste de côté**, à la demande de l'auteur —
 mais elle est devenue facile : tous les personnages vivent dans un seul `Vec`,
