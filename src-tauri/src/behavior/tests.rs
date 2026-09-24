@@ -1606,3 +1606,286 @@ fn depuis_l_ecran_du_milieu_il_rejoint_un_mur_voisin() {
     });
     assert!(sur_un_mur, "il n'a jamais atteint de mur : {:?}", ch.attachment);
 }
+
+/// Un second ordre « Tout le monde » remplace le premier, quel que soit
+/// l'instant où il tombe (rapporté par l'auteur, 2026-09-24). Balayé sur
+/// toutes les paires, à des instants variés du premier — marche vers le mur,
+/// saut, escalade, plafond.
+#[test]
+fn un_second_ordre_collectif_remplace_le_premier() {
+    use crate::menu_perso::Commande;
+    use tenue::Tenue;
+    let m = monde();
+    let tous = [Tenue::Flaner, Tenue::Asseoir, Tenue::BalancerLesJambes, Tenue::Grimper];
+    let mut echecs = Vec::new();
+    let mut rng = XorShift32::seeded(53);
+    for premier in tous {
+        for second in tous {
+            if premier == second { continue; }
+            for k in (0..4000).step_by(173) {
+                let mut ch = perso(&m);
+                let t0 = Duration::from_secs(1);
+                commander(&mut ch, &m, Commande::Imposer(premier), t0, &mut rng);
+                let t = jouer_images(&mut ch, &m, &entrees(true, 1.0), &mut rng, t0, k, |_| {});
+                let avant = (ch.attachment, ch.intention.map(|i| i.kind), ch.tenue);
+                commander(&mut ch, &m, Commande::Imposer(second), t, &mut rng);
+                let apres_cmd = ch.tenue;
+                jouer_images(&mut ch, &m, &entrees(true, 1.0), &mut rng, t, 1800, |_| {});
+                let ok_pose = match second {
+                    Tenue::Asseoir => ch.pose == POSE_SIT,
+                    Tenue::Grimper => matches!(ch.attachment, Attachment::On { face, .. } if face != Face::Top),
+                    _ => true,
+                };
+                if ch.tenue != Some(second) || !ok_pose {
+                    echecs.push(format!("{premier:?}->{second:?} k={k} avant={avant:?} apres_cmd={apres_cmd:?} fin tenue={:?} pose={} att={:?} int={:?}", ch.tenue, ch.pose, ch.attachment, ch.intention.map(|i| i.kind)));
+                }
+            }
+        }
+    }
+    for e in &echecs { println!("{e}"); }
+    assert!(echecs.is_empty(), "{} échecs", echecs.len());
+}
+
+
+/// « Tout le monde › Faire son petit truc » vaut aussi pour qui est au mur :
+/// il se lâche, et le joue en atterrissant (rapporté par l'auteur,
+/// 2026-09-24 — l'action ponctuelle y était ignorée, et il continuait de
+/// grimper sur l'ordre précédent).
+#[test]
+fn une_action_ponctuelle_pour_tous_fait_descendre_celui_qui_grimpe() {
+    use crate::menu_perso::Commande;
+    let tete = intention::Intention::Jouer(intention::Jeu::TeteQuiTourne);
+    let m = monde();
+    let mut ch = perso_au_mur(&m, tenue::Tenue::Grimper);
+    let mut rng = XorShift32::seeded(59);
+
+    commander(&mut ch, &m, Commande::ImposerUneFois(tete), Duration::from_secs(2), &mut rng);
+    assert_eq!(ch.tenue, None);
+    assert!(matches!(ch.attachment, Attachment::Falling { .. }), "{:?}", ch.attachment);
+
+    // Dix secondes : la chute, l'atterrissage, puis son petit truc.
+    let mut joue = false;
+    jouer_images(&mut ch, &m, &entrees(true, 1.0), &mut rng, Duration::from_secs(2), 600, |ch| {
+        joue |= ch.intention.map(|i| i.kind) == Some(tete);
+    });
+    assert!(joue, "il n'a jamais fait son petit truc");
+}
+
+#[test]
+fn une_action_ponctuelle_pour_tous_s_impose_aussi_en_pleine_chute() {
+    use crate::menu_perso::Commande;
+    let tete = intention::Intention::Jouer(intention::Jeu::TeteQuiTourne);
+    let m = monde();
+    let mut ch = perso(&m);
+    ch.tenue = Some(tenue::Tenue::Asseoir);
+    ch.attachment = Attachment::Falling {
+        pos: Point::new(ch.pos_connue.x, ch.pos_connue.y - 200.0),
+        vel: crate::geom::Vec2::zero(),
+    };
+    let mut rng = XorShift32::seeded(59);
+
+    commander(&mut ch, &m, Commande::ImposerUneFois(tete), Duration::from_secs(1), &mut rng);
+    assert_eq!(ch.tenue, None);
+
+    let mut joue = false;
+    jouer_images(&mut ch, &m, &entrees(true, 1.0), &mut rng, Duration::from_secs(1), 600, |ch| {
+        joue |= ch.intention.map(|i| i.kind) == Some(tete);
+    });
+    assert!(joue, "il n'a jamais fait son petit truc");
+    // Joué UNE fois : il ne le rejoue pas en boucle, il reprend sa vie.
+    assert_eq!(ch.a_jouer, None);
+}
+
+// ── Toute action du clic droit se fait, quel que soit l'état de départ ────
+//
+// Demande de l'auteur (2026-09-24) : « dès qu'on fait une action via le clic
+// droit sur un perso, je veux que l'action se fasse — dans toutes les
+// conditions initiales ». La matrice ci-dessous croise chaque état de départ
+// avec chaque entrée que le menu lui PROPOSE vraiment (`menu_perso::lignes`,
+// le même appel que `main.rs`), personnelle ou « Tout le monde », décodée
+// par le même chemin (`commande_de`, `commande_de_tous` puis
+// `resoudre_pour_tous`). Une nouvelle entrée de menu y entre donc d'office.
+
+/// Les états de départ : au sol, au mur, au plafond, en l'air — avec ou
+/// sans action tenue.
+fn etats_de_depart(m: &World) -> Vec<(&'static str, Character)> {
+    use crate::menu_perso::Commande;
+    use tenue::Tenue;
+    let mut rng = XorShift32::seeded(61);
+    let t0 = Duration::from_secs(1);
+    let mut etats = Vec::new();
+
+    // Au sol, sans tenue, dans chacune de ses activités.
+    for (nom, i) in [
+        ("flâne", intention::Intention::Flaner),
+        ("se repose", intention::Intention::SeReposer),
+        ("fait son petit truc", intention::Intention::Jouer(intention::Jeu::TeteQuiTourne)),
+        ("part grimper de lui-même", intention::Intention::Grimper),
+    ] {
+        let mut ch = perso(m);
+        ch.intention = Some(intention::ActiveIntention::nouvelle(i, t0));
+        jouer_images(&mut ch, m, &entrees(true, 1.0), &mut rng, t0, 30, |_| {});
+        etats.push((nom, ch));
+    }
+
+    // Au sol, une tenue de sol.
+    for (nom, t) in [
+        ("assis (tenu)", Tenue::Asseoir),
+        ("flâne (tenu)", Tenue::Flaner),
+        ("balance les jambes (tenu)", Tenue::BalancerLesJambes),
+    ] {
+        let mut ch = perso(m);
+        commander(&mut ch, m, Commande::Basculer(t), t0, &mut rng);
+        jouer_images(&mut ch, m, &entrees(true, 1.0), &mut rng, t0, 120, |_| {});
+        etats.push((nom, ch));
+    }
+
+    // Endormi : l'utilisateur est parti, il s'est assoupi.
+    let mut ch = perso(m);
+    commander(&mut ch, m, Commande::Basculer(Tenue::Asseoir), t0, &mut rng);
+    jouer_images(&mut ch, m, &entrees(false, 20.0), &mut rng, t0, 3600, |_| {});
+    etats.push(("endormi", ch));
+
+    // Court vers le mur sur ordre.
+    let mut ch = perso(m);
+    commander(&mut ch, m, Commande::Basculer(Tenue::Grimper), t0, &mut rng);
+    jouer_images(&mut ch, m, &entrees(true, 1.0), &mut rng, t0, 30, |_| {});
+    etats.push(("court vers le mur (tenu)", ch));
+
+    // Au mur.
+    etats.push(("grimpe (tenu)", perso_au_mur(m, Tenue::Grimper)));
+    etats.push(("accroché (tenu)", perso_au_mur(m, Tenue::ResterAccroche)));
+    let mut ch = perso_au_mur(m, Tenue::Grimper);
+    ch.tenue = None;
+    etats.push(("grimpe de lui-même", ch));
+
+    // Au plafond, en pleine escalade tenue (il y reprend là où il est).
+    let plafond = m.platforms().iter().find(|p| p.has_face(Face::Bottom)).expect("plafond");
+    let mut ch = perso_au_mur(m, Tenue::Grimper);
+    ch.attachment = Attachment::On { platform: plafond.id, face: Face::Bottom, offset: 600.0 };
+    jouer_images(&mut ch, m, &entrees(true, 1.0), &mut rng, t0, 30, |_| {});
+    assert!(matches!(ch.attachment, Attachment::On { face: Face::Bottom, .. }), "{:?}", ch.attachment);
+    etats.push(("au plafond (tenu)", ch));
+
+    // En l'air.
+    for (nom, t) in [("tombe", None), ("tombe, assis tenu", Some(Tenue::Asseoir))] {
+        let mut ch = perso(m);
+        ch.tenue = t;
+        ch.attachment = Attachment::Falling {
+            pos: Point::new(ch.pos_connue.x, ch.pos_connue.y - 300.0),
+            vel: crate::geom::Vec2::zero(),
+        };
+        etats.push((nom, ch));
+    }
+    etats
+}
+
+/// A-t-il fait ce que la commande demandait ? `None` si oui, sinon ce qui
+/// cloche. Joue jusqu'à 90 s — le temps de courir jusqu'au mur et d'y
+/// monter, le plus long de tous.
+fn verifier_effet(
+    m: &World,
+    mut ch: Character,
+    c: crate::menu_perso::Commande,
+    rng: &mut XorShift32,
+) -> Option<String> {
+    use crate::menu_perso::Commande;
+    use tenue::Tenue;
+    let t0 = Duration::from_secs(100);
+    // Ce que `pas` en fera : `Basculer` se résout sur la tenue du moment.
+    let c = match c {
+        Commande::Basculer(t) if ch.tenue == Some(t) => Commande::Relacher(t),
+        Commande::Basculer(t) => Commande::Tenir(t),
+        autre => autre,
+    };
+    commander(&mut ch, m, c, t0, rng);
+
+    // Effets immédiats.
+    match c {
+        Commande::Relacher(t) => {
+            return (ch.tenue == Some(t)).then(|| "toujours tenue".to_string());
+        }
+        Commande::Tenir(Tenue::ResterAccroche) => {
+            let depart = ch.attachment;
+            let mut bouge = false;
+            jouer_images(&mut ch, m, &entrees(true, 1.0), rng, t0, 600, |ch| {
+                bouge |= ch.attachment != depart;
+            });
+            return (bouge || ch.tenue != Some(Tenue::ResterAccroche))
+                .then(|| format!("n'est pas resté accroché : {:?}", ch.attachment));
+        }
+        _ => {}
+    }
+
+    // Effets qui demandent du temps : on joue image par image, jusqu'à
+    // ce que ce soit vrai.
+    let atteint = |ch: &Character| -> bool {
+        let au_sol = matches!(ch.attachment, Attachment::On { face: Face::Top, .. });
+        let sur_paroi = matches!(ch.attachment, Attachment::On { face, .. } if face != Face::Top);
+        let fait = |i| ch.intention.map(|a| a.kind) == Some(i);
+        match c {
+            Commande::Tenir(Tenue::Grimper) | Commande::Imposer(Tenue::Grimper) => {
+                sur_paroi && ch.tenue == Some(Tenue::Grimper)
+            }
+            Commande::Tenir(Tenue::Asseoir) | Commande::Imposer(Tenue::Asseoir) => {
+                au_sol && ch.tenue == Some(Tenue::Asseoir) && ch.pose == POSE_SIT
+            }
+            Commande::Tenir(t) | Commande::Imposer(t) => au_sol && ch.tenue == Some(t) && fait(t.intention()),
+            Commande::Intention(i) | Commande::ImposerUneFois(i) => au_sol && fait(i),
+            Commande::Redescendre | Commande::SeLacher => au_sol && ch.tenue.is_none(),
+            _ => true,
+        }
+    };
+    let mut t = t0;
+    for _ in 0..5400 {
+        if atteint(&ch) {
+            return None;
+        }
+        t = jouer_images(&mut ch, m, &entrees(true, 1.0), rng, t, 1, |_| {});
+    }
+    Some(format!(
+        "jamais fait en 90 s — tenue {:?}, attache {:?}, intention {:?}, pose {}",
+        ch.tenue,
+        ch.attachment,
+        ch.intention.map(|a| a.kind),
+        ch.pose
+    ))
+}
+
+#[test]
+fn toute_action_du_menu_se_fait_quel_que_soit_l_etat_de_depart() {
+    use crate::menu_perso::{self, Ligne, Present};
+    let m = monde();
+    let table = desire::TableEnvies::defaut();
+    let mut rng = XorShift32::seeded(67);
+    let mut echecs = Vec::new();
+    let mut essais = 0;
+
+    for (etat, ch) in etats_de_depart(&m) {
+        let presents = [Present {
+            tenue: ch.tenue,
+            peut_tenir: tenue::Tenue::TOUTES.to_vec(),
+        }];
+        let ou = menu_perso::ou_de(&ch.attachment);
+        for ligne in menu_perso::lignes(&ch.manifest, &table, ou, ch.tenue, &presents, None) {
+            let Ligne::Entree { id, .. } = ligne else { continue };
+            // Le même décodage que `actions::executer`.
+            let commande = match (menu_perso::commande_de(id), menu_perso::commande_de_tous(id)) {
+                (Some(c), _) => c,
+                (None, Some(c)) => menu_perso::resoudre_pour_tous(c, &presents, None),
+                // Cacher, catalogue, quitter : pas des actions du personnage.
+                (None, None) => continue,
+            };
+            essais += 1;
+            if let Some(pb) = verifier_effet(&m, ch.clone(), commande, &mut rng) {
+                echecs.push(format!("[{etat}] {id} ({commande:?}) : {pb}"));
+            }
+        }
+    }
+
+    for e in &echecs {
+        println!("{e}");
+    }
+    assert!(essais > 50, "la matrice est trop petite : {essais} essais");
+    assert!(echecs.is_empty(), "{} échecs sur {essais}", echecs.len());
+}

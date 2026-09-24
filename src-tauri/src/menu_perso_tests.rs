@@ -459,9 +459,14 @@ fn resoudre_pour_tous_relache_si_tous_la_tiennent() {
 }
 
 #[test]
-fn resoudre_pour_tous_laisse_passer_le_reste() {
-    let c = Commande::Intention(Intention::Jouer(Jeu::TeteQuiTourne));
-    assert_eq!(resoudre_pour_tous(c, &[capable(None)], None), c);
+fn resoudre_pour_tous_impose_aussi_une_action_ponctuelle() {
+    // Une action ponctuelle de « Tout le monde » s'impose comme une tenue :
+    // même à qui est au mur, qui l'ignorait sinon (2026-09-24).
+    let tete = Intention::Jouer(Jeu::TeteQuiTourne);
+    assert_eq!(
+        resoudre_pour_tous(Commande::Intention(tete), &[capable(None)], None),
+        Commande::ImposerUneFois(tete)
+    );
 }
 
 #[test]

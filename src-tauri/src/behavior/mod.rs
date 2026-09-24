@@ -157,6 +157,65 @@ pub(crate) fn lacher_si_accroche(ch: &mut Character, world: &World) -> bool {
     false
 }
 
+/// `Basculer` devient `Relacher` s'il tient déjà cette tenue, `Tenir`
+/// sinon ; toute autre commande passe telle quelle.
+///
+/// Résolue ICI, par le personnage : le menu a affiché la coche d'après
+/// `ch.tenue`, et entre-temps rien n'a pu la changer que lui-même. C'est donc
+/// ici, et seulement ici, qu'on sait si le clic coche ou décoche.
+fn resoudre_basculer(
+    c: crate::menu_perso::Commande,
+    ch: &crate::character::Character,
+) -> crate::menu_perso::Commande {
+    use crate::menu_perso::Commande;
+    match c {
+        Commande::Basculer(t) if ch.tenue == Some(t) => Commande::Relacher(t),
+        Commande::Basculer(t) => Commande::Tenir(t),
+        autre => autre,
+    }
+}
+
+/// Une commande reçue pendant qu'il tombe ou qu'on le porte : on retient
+/// ce qu'il fera en touchant le sol, sans toucher à son vol (les réflexes
+/// gardent la main). Voir l'appel, en tête de `pas`.
+///
+/// `ResterAccroche` n'a aucun sens au sol : refusé, comme par `peut_tenir`.
+fn en_l_air(
+    c: crate::menu_perso::Commande,
+    ch: &mut crate::character::Character,
+    table: &desire::TableEnvies,
+) {
+    use crate::menu_perso::Commande;
+    match c {
+        Commande::Tenir(t) | Commande::Imposer(t)
+            if t != tenue::Tenue::ResterAccroche && table.jouable(&ch.manifest, t.intention()) =>
+        {
+            ch.tenue = Some(t);
+        }
+        Commande::Intention(i) | Commande::ImposerUneFois(i) if table.jouable(&ch.manifest, i) => {
+            ch.tenue = None;
+            ch.a_jouer = Some(i);
+        }
+        Commande::Relacher(t) if ch.tenue == Some(t) => ch.tenue = None,
+        // Il tombe déjà : « se lâcher » ou « redescendre » n'ont plus qu'à
+        // mettre fin à la tenue.
+        Commande::Redescendre | Commande::SeLacher => ch.tenue = None,
+        _ => {}
+    }
+}
+
+/// L'intention neuve d'un ordre du menu. `Grimper` a son propre
+/// constructeur : une escalade demandée est un ORDRE, et il court jusqu'au
+/// mur (voir `ActiveIntention::grimper_sur_ordre`). Les autres intentions
+/// n'ont pas de version « pressée ».
+fn nouvelle_sur_ordre(voulue: intention::Intention, maintenant: std::time::Duration) -> intention::ActiveIntention {
+    if voulue == intention::Intention::Grimper {
+        intention::ActiveIntention::grimper_sur_ordre(maintenant)
+    } else {
+        intention::ActiveIntention::nouvelle(voulue, maintenant)
+    }
+}
+
 /// Un pas de comportement : les trois couches, dans l'ordre, une fois.
 ///
 /// C'est la seule fonction que la boucle 60 Hz (Tâche 10) et le mode
@@ -178,15 +237,25 @@ pub fn pas(
     // S'ils s'imposent, les couches 2 et 3 ne tournent pas du tout dans
     // cette image (spec §7.1).
     //
-    // Sauf pour un point : un ordre « Tout le monde » s'IMPOSE, même à qui
-    // tombe ou qu'on porte (demande de l'auteur). Les réflexes gardent la
-    // main — on ne touche pas à son vol —, on lui donne seulement la tenue,
-    // qu'il jouera dès qu'il aura touché le sol (relance plus bas).
-    if let Some(crate::menu_perso::Commande::Imposer(t)) = e.commande {
-        if !matches!(ch.attachment, Attachment::On { .. })
-            && table.jouable(&ch.manifest, t.intention())
-        {
-            ch.tenue = Some(t);
+    // Sauf pour un point : une commande du menu arrivée pendant qu'il tombe
+    // ou qu'on le porte vaut quand même (demande de l'auteur, 2026-09-24 :
+    // « dès qu'on fait une action via le clic droit, je veux que l'action se
+    // fasse »). Les réflexes gardent la main — on ne touche pas à son vol —,
+    // on retient seulement ce qu'il devra faire en touchant le sol : la
+    // tenue, ou l'action ponctuelle (`a_jouer`), relancées plus bas. Sans
+    // cela, les réflexes rendant la main avant le bloc des commandes, la
+    // commande était perdue — et l'atterrissage efface l'intention de toute
+    // façon.
+    //
+    // Toute nouvelle commande remplace une action ponctuelle encore en
+    // attente : le dernier ordre gagne.
+    let cmd = e.commande.map(|c| resoudre_basculer(c, ch));
+    if cmd.is_some() {
+        ch.a_jouer = None;
+    }
+    if let Some(c) = cmd {
+        if !matches!(ch.attachment, Attachment::On { .. }) {
+            en_l_air(c, ch, table);
         }
     }
 
@@ -209,20 +278,8 @@ pub fn pas(
     // pour le menu comme pour tout le reste. En pratique le cas ne se
     // présente guère — ouvrir le menu demande un clic droit, pas un
     // glisser — mais l'ordre des blocs suffit à le rendre impossible.
-    if let Some(cmd) = e.commande {
-        // ── `Basculer` se résout ICI ────────────────────────────────────
-        //
-        // Le menu a affiché la coche d'après `ch.tenue` ; entre-temps, rien
-        // n'a pu la changer que ce personnage lui-même. C'est donc ici, et
-        // seulement ici, qu'on sait si le clic coche ou décoche.
-        let cmd = match cmd {
-            crate::menu_perso::Commande::Basculer(t) if ch.tenue == Some(t) => {
-                crate::menu_perso::Commande::Relacher(t)
-            }
-            crate::menu_perso::Commande::Basculer(t) => crate::menu_perso::Commande::Tenir(t),
-            autre => autre,
-        };
-
+    // `cmd` : la commande, `Basculer` déjà résolu (voir `resoudre_basculer`).
+    if let Some(cmd) = cmd {
         match cmd {
             crate::menu_perso::Commande::Intention(voulue) => {
                 // ── Le garde-fou de l'endroit (bug rapporté à l'écran) ──
@@ -267,15 +324,7 @@ pub fn pas(
                     // manque figerait le personnage sur une image absente —
                     // la couverture partielle (spec §8.6) vaut ici aussi.
                     //
-                    // `Grimper` a son propre constructeur : une escalade
-                    // demandée au menu est un ORDRE, et il court jusqu'au mur
-                    // (voir `ActiveIntention::grimper_sur_ordre`). Les autres
-                    // intentions n'ont pas de version « pressée ».
-                    ch.intention = Some(if voulue == intention::Intention::Grimper {
-                        intention::ActiveIntention::grimper_sur_ordre(maintenant)
-                    } else {
-                        intention::ActiveIntention::nouvelle(voulue, maintenant)
-                    });
+                    ch.intention = Some(nouvelle_sur_ordre(voulue, maintenant));
 
                     // On rend la main tout de suite : l'intention neuve sera
                     // poursuivie à l'image suivante. La poursuivre ici aussi
@@ -324,6 +373,28 @@ pub fn pas(
                 {
                     ch.tenue = Some(t);
                     ch.intention = None;
+                }
+            }
+
+            crate::menu_perso::Commande::ImposerUneFois(voulue) => {
+                // L'action ponctuelle de « Tout le monde » : au sol, il la
+                // joue tout de suite, comme une `Intention` ; sur une paroi,
+                // il la garde pour l'atterrissage et l'on efface son
+                // intention — la règle de sécurité du monde vertical, juste
+                // plus bas, le fait lâcher dans cette image. Elle remplace
+                // l'ordre précédent dans les deux cas.
+                if table.jouable(&ch.manifest, voulue) {
+                    ch.tenue = None;
+                    match ch.attachment {
+                        Attachment::On { face: Face::Top, .. } => {
+                            ch.intention = Some(nouvelle_sur_ordre(voulue, maintenant));
+                            return r;
+                        }
+                        _ => {
+                            ch.a_jouer = Some(voulue);
+                            ch.intention = None;
+                        }
+                    }
                 }
             }
 
@@ -515,6 +586,18 @@ pub fn pas(
             if servait_au_mur {
                 ch.tenue = None;
             }
+        }
+    }
+
+    // ── L'action ponctuelle en attente, jouée une fois ──────────────────
+    //
+    // Commandée pendant qu'il tombait ou qu'il était au mur (`a_jouer`) : il
+    // vient de toucher le sol, il la joue maintenant. `take()` : lue ET
+    // effacée d'un seul geste — il ne la rejouera pas.
+    if let Some(voulue) = ch.a_jouer.take() {
+        if table.jouable(&ch.manifest, voulue) {
+            ch.intention = Some(nouvelle_sur_ordre(voulue, maintenant));
+            return r;
         }
     }
 

@@ -64,6 +64,14 @@ pub enum Commande {
     /// jouera en touchant le sol. Seul un pack sans les poses la refuse.
     Imposer(Tenue),
 
+    /// Le pendant d'`Imposer` pour une action PONCTUELLE de la section
+    /// « Tout le monde » (« Faire son petit truc ») : elle aussi vaut pour
+    /// TOUS, par-dessus l'ordre précédent (rapporté par l'auteur,
+    /// 2026-09-24 — une `Intention` simple est ignorée par qui est au mur, et
+    /// il continuait donc de grimper). Au mur il se lâche, en l'air il
+    /// attend de toucher le sol ; la joue une fois, puis reprend sa vie.
+    ImposerUneFois(Intention),
+
     /// La relâcher s'il la tient, ne rien faire sinon. L'intention en cours
     /// continue : il reprend sa vie normale à la fin de celle-ci.
     Relacher(Tenue),
@@ -363,7 +371,8 @@ pub fn coche_pour_tous(t: Tenue, presents: &[Present], ordre: Option<Tenue>) -> 
 /// Ce que devient une commande de la section « Tout le monde » pour les
 /// personnages présents (spec §3) : cochée (`coche_pour_tous`), un clic la
 /// relâche chez tous ; sinon, un clic l'IMPOSE à tous, par-dessus leur
-/// propre action (seul un pack sans les poses refuse).
+/// propre action (seul un pack sans les poses refuse). Une action
+/// ponctuelle, elle, n'a pas de coche : elle est toujours imposée.
 ///
 /// Résolue UNE fois par la boucle, avant de servir les acteurs : chaque
 /// acteur résolvant son propre `Basculer`, un personnage déjà assis se
@@ -377,6 +386,7 @@ pub fn resoudre_pour_tous(c: Commande, presents: &[Present], ordre: Option<Tenue
                 Commande::Imposer(t)
             }
         }
+        Commande::Intention(i) => Commande::ImposerUneFois(i),
         autre => autre,
     }
 }
@@ -449,7 +459,7 @@ pub fn lignes(
         // pas de pose particulière au-delà de celles que l'escalade en cours
         // exige déjà pour être là où le menu les propose.
         let jouable = match commande {
-            Commande::Intention(i) => table.jouable(manifeste, *i),
+            Commande::Intention(i) | Commande::ImposerUneFois(i) => table.jouable(manifeste, *i),
             Commande::Basculer(t)
             | Commande::Tenir(t)
             | Commande::Imposer(t)

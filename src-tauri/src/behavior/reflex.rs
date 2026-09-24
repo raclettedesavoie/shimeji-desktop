@@ -227,6 +227,7 @@ pub fn appliquer(
                 // L'attraper efface son action tenue (spec §2.2) : c'est le
                 // geste universel pour « laisse tomber ce que tu fais ».
                 ch.tenue = None;
+                ch.a_jouer = None;
 
                 // Tout l'état de portage repart de zéro, sur le curseur —
                 // comme `Dragged.init()` qui fait `setFootX(cursor.x)`. Sans

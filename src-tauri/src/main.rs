@@ -1950,9 +1950,18 @@ fn boucle(
         // L'ordre adressé à TOUS (« Tout le monde grimpe au mur »), lu de la même
         // façon. `Commande` est `Copy` : chaque acteur en reçoit une copie,
         // sans que la boîte ait à être relue pour chacun.
-        let commande_pour_tous = match actions.pour_tous.try_lock() {
-            Ok(mut boite) => boite.take(),
-            Err(_) => None,
+        //
+        // Même règle que la boîte personnelle : rien n'est pris tant que le
+        // menu est ouvert. Son acteur est figé et ne consomme rien — un
+        // ordre collectif lu à cet instant lui échappait donc, et lui seul
+        // gardait l'ordre précédent.
+        let commande_pour_tous = if menu_en_cours.is_some() {
+            None
+        } else {
+            match actions.pour_tous.try_lock() {
+                Ok(mut boite) => boite.take(),
+                Err(_) => None,
+            }
         };
 
         // Les présents — ce que chacun tient, et ce que son pack lui permet
@@ -1994,6 +2003,9 @@ fn boucle(
         // cours ; relâché, il n'y en a plus.
         match commande_pour_tous {
             Some(menu_perso::Commande::Imposer(t)) => ordre_pour_tous = Some(t),
+            // Une action ponctuelle pour tous remplace l'ordre précédent :
+            // plus personne ne le tient, sa ligne ne doit plus rester cochée.
+            Some(menu_perso::Commande::ImposerUneFois(_)) => ordre_pour_tous = None,
             Some(menu_perso::Commande::Relacher(t)) if ordre_pour_tous == Some(t) => {
                 ordre_pour_tous = None;
             }

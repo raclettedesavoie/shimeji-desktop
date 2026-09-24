@@ -440,6 +440,16 @@ choisir) — une commande de sol reçue pendant qu'il est accroché est **ignor�
 appliquée : l'appliquer le ferait tomber par le même mécanisme que ci-dessus, pour de
 mauvaises raisons cette fois.
 
+**Toute action du clic droit se fait, quel que soit l'état de départ** (demande de
+l'auteur, 2026-09-24). Reçue pendant qu'il **tombe**, elle est retenue pour
+l'atterrissage (`en_l_air` dans `behavior::pas` : la tenue, ou l'action ponctuelle
+dans `ch.a_jouer`) — les réflexes rendaient la main avant, et elle était perdue. Une
+action **ponctuelle** de « Tout le monde » devient `Commande::ImposerUneFois` : au mur,
+il se lâche et la joue en atterrissant. Le test
+`toute_action_du_menu_se_fait_quel_que_soit_l_etat_de_depart` croise chaque entrée
+**proposée** par `menu_perso::lignes` avec quinze états de départ : une nouvelle entrée
+y entre d'office.
+
 > **Et une seconde règle, non négociable : un seul `on_menu_event` dans tout le
 > programme.** Tauri livre *tout* événement de menu à *tous* les gestionnaires, quel que
 > soit le menu d'origine (`tauri-2.11.5`, `src/tray/mod.rs:326`). Un second gestionnaire
@@ -860,7 +870,7 @@ ramassant, sautant, puis tombant hors de l'écran. Une poubelle supprime un pack
 du disque. Le reste est inchangé — marche, escalade, attrape-souris, tray,
 `config.json`.
 
-**398 tests.** Et le CPU, mesuré sur le programme réel (release, 60 s, 3 écrans) :
+**402 tests.** Et le CPU, mesuré sur le programme réel (release, 60 s, 3 écrans) :
 
 | Roster | Caché | En marche | dont `shimeji-desktop` | Latence de la file |
 |---|---|---|---|---|
