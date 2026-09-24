@@ -3406,7 +3406,7 @@ dependencies = [
 
 [[package]]
 name = "shimeji-desktop"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "png 0.17.16",
  "serde",
