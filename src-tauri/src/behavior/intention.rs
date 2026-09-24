@@ -523,7 +523,10 @@ pub enum Issue {
 /// descend jusqu'ici, et non directement dans `se_reposer` depuis
 /// `behavior::pas`, pour que les trois intentions gardent la même signature :
 /// c'est `poursuivre` qui aiguille, pas l'appelant.
-/// `poursuivre_parmi` pour un personnage seul au monde (simulation, tests).
+/// `poursuivre_parmi` pour un personnage seul au monde. Ne sert plus qu'aux
+/// tests (`pas` appelle `pas_parmi`, qui appelle `poursuivre_parmi`) — d'où
+/// le `allow` hors test.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn poursuivre(
     ch: &mut Character,
     world: &World,

@@ -431,8 +431,9 @@ courant, appelé juste avant `ouvrir` dans `main.rs`.
 | sur un mur (face `Left`/`Right`) | Grimper au mur ✓ · Rester accroché ✓ · Redescendre · Se lâcher |
 | au plafond (face `Bottom`) | Grimper au mur ✓ · Rester accroché ✓ · Se lâcher |
 
-✓ = action tenue. Puis, partout, la section « Tout le monde » (les actions du sol),
-les deux « Cacher », le catalogue et Quitter.
+✓ = action tenue. Puis, partout, la section « Tout le monde » (les actions du sol, plus
+« Rester accroché » ✓ : ceux qui sont au sol montent puis se figent), les deux
+« Cacher », le catalogue et Quitter.
 
 Pas de « Redescendre » au plafond, et c'est délibéré : il faudrait traverser jusqu'au
 bord, basculer sur un mur, puis descendre — de la navigation calculée, que la décision
@@ -459,6 +460,16 @@ il se lâche et la joue en atterrissant. Le test
 `toute_action_du_menu_se_fait_quel_que_soit_l_etat_de_depart` croise chaque entrée
 **proposée** par `menu_perso::lignes` avec quinze états de départ : une nouvelle entrée
 y entre d'office.
+
+**Ils se traversent, mais ne s'arrêtent jamais l'un sur l'autre** (2026-09-24,
+`behavior/place.rs`). Au sol, un personnage à l'arrêt sur la place d'un plus ancien
+se décale côte à côte (`pas_parmi`) ; au pied d'un mur, ils font la file et
+s'accrochent un par un (`grimper`, phase `Rejoindre`, priorité au plus proche du pied
+parmi tous ceux qui **visent** le mur). Sur les murs et au plafond, personne n'occupe
+rien. `pas` et `poursuivre` restent pour la simulation et les tests (« seul au
+monde ») ; seule la boucle appelle `pas_parmi`, avec les occupants de l'image
+précédente. Coût mesuré : nul (travail par image inchangé à 15 personnages).
+→ `docs/specs/2026-09-24-ne-pas-se-superposer-design.md`
 
 > **Et une seconde règle, non négociable : un seul `on_menu_event` dans tout le
 > programme.** Tauri livre *tout* événement de menu à *tous* les gestionnaires, quel que
@@ -886,7 +897,7 @@ ramassant, sautant, puis tombant hors de l'écran. Une poubelle supprime un pack
 du disque. Le reste est inchangé — marche, escalade, attrape-souris, tray,
 `config.json`.
 
-**413 tests.** Et le CPU, mesuré sur le programme réel (release, 60 s, 3 écrans) :
+**434 tests.** Et le CPU, mesuré sur le programme réel (release, 60 s, 3 écrans) :
 
 | Roster | Caché | En marche | dont `shimeji-desktop` | Latence de la file |
 |---|---|---|---|---|
@@ -955,6 +966,8 @@ clic dans `%APPDATA%`. Le dépôt ne versionne plus que `blob`.
 | `docs/specs/2026-09-23-fenetre-par-ecran-mesure.md` | **la mesure** : 8–14 s ramenées à 13 ms, le péage par écran, et les deux défauts trouvés à l'exécution |
 | `docs/specs/2026-09-23-menu-sur-mesure-et-actions-tenues-design.md` | **le menu sur mesure et les actions tenues** : la tenue, la section « Tout le monde », la fenêtre webview du menu — et trois défauts constatés, à traiter à part (§6) |
 | `docs/plans/2026-09-23-menu-sur-mesure-et-actions-tenues.md` | son plan, **exécuté** — 6 tâches |
+| `docs/specs/2026-09-24-ne-pas-se-superposer-design.md` | **ne pas se superposer** : on se traverse, on ne s'arrête jamais l'un sur l'autre ; la file au pied du mur ; « Tout le monde › Rester accroché » |
+| `docs/plans/2026-09-24-ne-pas-se-superposer.md` | son plan, **exécuté** — 5 tâches |
 | `docs/conception/2026-09-14-cout-des-sessions.md` | **ce que coûte une session d'assistance** : le relevé, et l'hypothèse évidente qui était fausse |
 | `docs/conception/2026-09-14-journal-des-etapes.md` | **le récit de chaque étape** (0, 1a, 1b, 2, 4a) et les réglages « à l'œil » qui se sont révélés faux — extrait de ce fichier le 2026-09-14 |
 | `docs/specs/2026-09-09-mesure-cpu.md` | **le dossier CPU complet** : les quatre hypothèses démenties par la mesure — à lire avant de toucher au chemin 60 Hz |

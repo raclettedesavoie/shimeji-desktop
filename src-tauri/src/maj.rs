@@ -53,6 +53,10 @@ pub fn libelle(etat: &EtatMaj) -> String {
 /// Rien de retenu (`""`) : tout premier lancement — l'assistant a son propre
 /// toast —, ou lancement d'une version antérieure à la clé. On ne peut alors
 /// rien affirmer, et l'on se tait.
+///
+/// Appelée en release seulement (`constater_au_demarrage`) — d'où le
+/// `allow` en debug.
+#[cfg_attr(debug_assertions, allow(dead_code))]
 pub fn vient_d_etre_mis_a_jour(derniere_lancee: &str, courante: &str) -> bool {
     !derniere_lancee.is_empty() && derniere_lancee != courante
 }

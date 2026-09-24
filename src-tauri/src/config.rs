@@ -865,6 +865,8 @@ pub fn definir_petite_taille(petite: bool) -> Result<(), String> {
 }
 
 /// Retient la version de ce lancement (voir `derniere_version_lancee`).
+/// Appelée en release seulement — d'où le `allow` en debug.
+#[cfg_attr(debug_assertions, allow(dead_code))]
 pub fn definir_version_lancee(version: &str) -> Result<(), String> {
     ecrire_cles(
         &chemin_d_ecriture()?,

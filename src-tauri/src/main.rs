@@ -1393,6 +1393,12 @@ fn boucle(
     // comme les tenues.
     let mut ordre_pour_tous: Option<behavior::tenue::Tenue> = None;
 
+    // Les occupants de l'image précédente (spec « ne pas se superposer »).
+    // Une image de retard, invisible à 60 Hz, et c'est ce qui évite de les
+    // recalculer avant la boucle des acteurs : chacun y ajoute le sien après
+    // son pas.
+    let mut occupants: Vec<behavior::place::Occupant> = Vec::new();
+
     // Le label de l'acteur **qui a ouvert le dernier menu contextuel**.
     //
     // ⚠️ **C'est lui, et pas l'acteur sous le curseur, qui reçoit la
@@ -2071,6 +2077,10 @@ fn boucle(
         let dt = PERIODE.as_secs_f32();
 
         // ── 60 Hz par personnage ────────────────────────────────────────
+        //
+        // `take` : on prend la liste de l'image précédente, et `occupants`
+        // repart vide pour être remplie pendant cette image-ci.
+        let occupants_precedents = std::mem::take(&mut occupants);
         for i in 0..acteurs.len() {
             let sur_le_personnage = elu == Some(i);
             let acteur = &mut acteurs[i];
@@ -2292,7 +2302,7 @@ fn boucle(
             // La MÊME fonction que le mode simulation — sauf pour l'acteur
             // dont le menu est ouvert (voir `fige`).
             if !fige {
-                behavior::pas(
+                behavior::pas_parmi(
                     &mut acteur.ch,
                     &monde,
                     &entrees,
@@ -2301,7 +2311,15 @@ fn boucle(
                     maintenant,
                     dt,
                     &mut rng,
+                    &behavior::place::Voisinage { moi: acteur.id, autres: &occupants_precedents },
                 );
+            }
+
+            // Sa place, pour les autres, à l'image suivante. Hors du `if` :
+            // un acteur figé par son menu ouvert garde sa place. Et après le
+            // `continue` des départs : un acteur qui s'en va n'occupe rien.
+            if let Some(o) = behavior::place::occupant_de(acteur.id, &acteur.ch, echelle_affichage) {
+                occupants.push(o);
             }
 
         // ── Diagnostic : `SHIMEJI_ESCALADE=1` ───────────────────────────
