@@ -94,6 +94,12 @@ pub struct Character {
     /// L'intention en cours. `None` = il faut en tirer une (couche 3).
     pub intention: Option<crate::behavior::intention::ActiveIntention>,
 
+    /// L'action tenue, choisie au menu et gardée tant qu'on ne l'arrête pas
+    /// (spec « menu sur mesure et actions tenues » §2). `None` : sa vie
+    /// normale, tirée au sort. **Pour la session seulement** : jamais écrite
+    /// dans `config.json`.
+    pub tenue: Option<crate::behavior::tenue::Tenue>,
+
     /// L'état du portage. **Significatif seulement quand `attachment` vaut
     /// `Dragged`**, et réinitialisé à chaque saisie.
     pub portage: Portage,
@@ -170,6 +176,7 @@ impl Character {
             pose_depuis: Duration::ZERO,
             pos_connue,
             intention: None,
+            tenue: None,
             // Sans objet tant qu'il n'est pas porté ; `reflex` le
             // réinitialise à l'instant de l'attrapage.
             portage: Portage::neuf(pos_connue),

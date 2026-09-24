@@ -11,6 +11,7 @@
 pub mod desire;
 pub mod intention;
 pub mod reflex;
+pub mod tenue;
 
 use crate::character::attach::Attachment;
 use crate::character::Character;

@@ -224,6 +224,10 @@ pub fn appliquer(
             if e.bouton_gauche && e.curseur_sur_le_personnage {
                 ch.attachment = Attachment::Dragged;
 
+                // L'attraper efface son action tenue (spec §2.2) : c'est le
+                // geste universel pour « laisse tomber ce que tu fais ».
+                ch.tenue = None;
+
                 // Tout l'état de portage repart de zéro, sur le curseur —
                 // comme `Dragged.init()` qui fait `setFootX(cursor.x)`. Sans
                 // ça, il hériterait du retard ET de la vitesse d'un portage

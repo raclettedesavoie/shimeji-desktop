@@ -1181,3 +1181,24 @@ fn une_commande_de_sol_recue_pendant_l_escalade_est_ignoree() {
         "l'escalade en cours ne doit pas être interrompue par une commande refusée"
     );
 }
+
+/// Attraper un personnage efface son action tenue (spec §2.2) : le lâcher
+/// le fait tomber, puis il reprend sa vie normale.
+#[test]
+fn l_attraper_efface_son_action_tenue() {
+    let m = monde();
+    let mut ch = perso(&m);
+    ch.tenue = Some(tenue::Tenue::Asseoir);
+    let table = desire::TableEnvies::defaut();
+    let reglages = crate::config::Reglages::depuis(&crate::config::Config::default());
+    let mut rng = XorShift32::seeded(7);
+
+    let mut e = entrees(true, 1.0);
+    e.bouton_gauche = true;
+    e.curseur_sur_le_personnage = true;
+
+    pas(&mut ch, &m, &e, &table, &reglages, Duration::from_secs(1), DT, &mut rng);
+
+    assert_eq!(ch.attachment, Attachment::Dragged);
+    assert_eq!(ch.tenue, None);
+}
