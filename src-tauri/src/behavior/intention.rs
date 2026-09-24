@@ -28,6 +28,7 @@ use crate::character::Facing;
 use crate::geom::{Face, Point};
 use crate::rng::Rng;
 use crate::world::{PlatformId, World};
+use super::tenue::Tenue;
 use std::time::Duration;
 
 /// Le délai au bout duquel **toute** intention échoue (spec §7.3).
@@ -949,7 +950,9 @@ fn grimper(
                 // Cible atteinte. Si c'était le bas du mur, l'escalade est
                 // finie et il repasse sur le sol.
                 let longueur = plat.rect.face_length(face);
-                if cible >= longueur - 1.0 {
+                // `Grimper au mur` tenu ne repasse JAMAIS au sol de lui-même
+                // (spec §2.4) : arrivé en bas, il s'accroche comme ailleurs.
+                if cible >= longueur - 1.0 && ch.tenue != Some(Tenue::Grimper) {
                     match sol_au_pied_du_mur(world, platform) {
                         Some((sol, offset_sol)) => {
                             ch.attachment = Attachment::On {
@@ -1109,7 +1112,9 @@ fn grimper(
                 return Issue::EnCours;
             }
 
-            if maintenant < jusqu_a {
+            // « Rester accroché » tenu : la pause ne finit jamais. Il reste
+            // là jusqu'à ce qu'on le décoche, l'attrape, ou le fasse lâcher.
+            if maintenant < jusqu_a || ch.tenue == Some(Tenue::ResterAccroche) {
                 ai.etat = EtatIntention::Grimpe { phase, jusqu_a };
                 return Issue::EnCours;
             }
@@ -1131,12 +1136,19 @@ fn grimper(
             // Décision n° 5 : les deux poids viennent de `config.json`, on
             // règle s'il est casse-cou ou prudent sans recompiler.
             let e = &reglages.escalade;
-            let lache = match rng.weighted(&[e.poids_lacher, e.poids_redescendre]) {
-                Some(0) => true,
-                // `Some(1)` redescend, et `None` aussi — il n'arrive que si
-                // les deux poids sont nuls, auquel cas redescendre est le
-                // repli le moins surprenant.
-                _ => false,
+            // « Grimper au mur » tenu ne se lâche jamais de lui-même : seul
+            // « Se lâcher » au menu le fait tomber. `if` AVANT le tirage :
+            // on ne consomme pas l'aléatoire pour une issue interdite.
+            let lache = if ch.tenue == Some(Tenue::Grimper) {
+                false
+            } else {
+                match rng.weighted(&[e.poids_lacher, e.poids_redescendre]) {
+                    Some(0) => true,
+                    // `Some(1)` redescend, et `None` aussi — il n'arrive que si
+                    // les deux poids sont nuls, auquel cas redescendre est le
+                    // repli le moins surprenant.
+                    _ => false,
+                }
             };
 
             if lache {
@@ -1205,8 +1217,15 @@ fn grimper(
                     cible: rng.range(0.0, plat.rect.face_length(face)),
                 }
             } else {
+                // Tenu : un point au hasard de la paroi, en haut comme en
+                // bas — c'est ce qui le fait « vivre » sur le mur. Sinon,
+                // le bas, d'où il repasse au sol.
                 PhaseGrimpe::Paroi {
-                    cible: plat.rect.face_length(face),
+                    cible: if ch.tenue == Some(Tenue::Grimper) {
+                        rng.range(0.0, plat.rect.face_length(face))
+                    } else {
+                        plat.rect.face_length(face)
+                    },
                 }
             };
         }

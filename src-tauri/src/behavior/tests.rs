@@ -1384,3 +1384,67 @@ fn une_tenue_devenue_injouable_est_effacee() {
 
     assert_eq!(ch.tenue, None);
 }
+
+fn perso_au_mur(m: &World, t: tenue::Tenue) -> Character {
+    let mur = mur_gauche(m);
+    let mut ch = perso(m);
+    ch.attachment = Attachment::On { platform: mur.id, face: Face::Right, offset: 300.0 };
+    ch.tenue = Some(t);
+    ch.intention = Some(tenue::intention_pour(
+        t,
+        &entrees(true, 1.0),
+        &reglages_defaut(),
+        &desire::TableEnvies::defaut(),
+        &ch.manifest,
+        Duration::from_secs(1),
+    ));
+    ch
+}
+
+#[test]
+fn grimper_tenu_ne_repose_jamais_le_pied_au_sol() {
+    // Dix minutes, soit cinq fois le délai d'abandon de l'escalade : il
+    // monte, redescend, passe au plafond — mais jamais au sol, jamais en l'air.
+    let m = monde();
+    let mut ch = perso_au_mur(&m, tenue::Tenue::Grimper);
+    let mut rng = XorShift32::seeded(23);
+
+    jouer_images(&mut ch, &m, &entrees(true, 1.0), &mut rng, Duration::from_secs(1), 36_000, |ch| {
+        assert!(
+            matches!(ch.attachment, Attachment::On { face, .. } if face != Face::Top),
+            "il a quitté la paroi : {:?}",
+            ch.attachment
+        );
+        assert_eq!(ch.tenue, Some(tenue::Tenue::Grimper));
+    });
+}
+
+#[test]
+fn rester_accroche_tenu_ne_bouge_plus() {
+    let m = monde();
+    let mut ch = perso_au_mur(&m, tenue::Tenue::ResterAccroche);
+    let depart = ch.attachment;
+    let mut rng = XorShift32::seeded(23);
+
+    // Cinq minutes, utilisateur absent : au mur, rien ne l'interrompt.
+    jouer_images(&mut ch, &m, &entrees(false, 8.0), &mut rng, Duration::from_secs(1), 18_000, |ch| {
+        assert_eq!(ch.attachment, depart);
+        assert_eq!(ch.tenue, Some(tenue::Tenue::ResterAccroche));
+    });
+}
+
+#[test]
+fn redescendre_met_fin_a_grimper_tenu() {
+    use crate::menu_perso::Commande;
+    let m = monde();
+    let mut ch = perso_au_mur(&m, tenue::Tenue::Grimper);
+    let mut rng = XorShift32::seeded(23);
+
+    commander(&mut ch, &m, Commande::Redescendre, Duration::from_secs(2), &mut rng);
+    assert_eq!(ch.tenue, None);
+
+    // Et il arrive bien au sol : ~730 px à 16 px/s, soit 46 s — une minute
+    // suffit.
+    jouer_images(&mut ch, &m, &entrees(true, 1.0), &mut rng, Duration::from_secs(2), 3600, |_| {});
+    assert!(matches!(ch.attachment, Attachment::On { face: Face::Top, .. }));
+}
