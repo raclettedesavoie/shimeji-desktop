@@ -535,7 +535,13 @@ pub fn poursuivre(
     // cette vague de relecture corrige — la même règle vivant à deux
     // endroits, avec un risque qu'un futur point de sortie (une cinquième
     // intention, une nouvelle phase) n'en voie qu'un des deux.
-    let issue = if maintenant.saturating_sub(ai.depuis) > delai_abandon(ai.kind, reglages) {
+    // Une tenue AU MUR n'a pas de délai d'abandon : c'est un ordre de
+    // l'utilisateur, que rien n'interrompt (spec §2.3). Au sol, le délai
+    // reste — c'est lui qui relance la flânerie toutes les 20 s.
+    let exempte = super::tenue::sert_une_tenue_au_mur(ch);
+    let issue = if !exempte
+        && maintenant.saturating_sub(ai.depuis) > delai_abandon(ai.kind, reglages)
+    {
         ch.intention = None;
         Issue::Echouee
     } else {

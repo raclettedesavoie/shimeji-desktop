@@ -46,11 +46,19 @@ pub enum Commande {
     /// choisi ici au menu.
     Intention(Intention),
 
-    /// Reprend l'accroche là où il est — mur ou plafond, peu importe : c'est
-    /// exactement l'intention que pose déjà un lancer contre une paroi
-    /// (`ActiveIntention::accroche`). `HoldOntoWall` / `HoldOntoCeiling` de
-    /// Shimeji-ee.
-    ResterAccroche,
+    /// Tenir cette action, ou la relâcher si c'est déjà celle qu'il tient —
+    /// ce que fait un clic sur une ligne du menu du personnage, dont la coche
+    /// dit l'état (spec §3). Résolue par `behavior::pas`, qui seul connaît
+    /// `ch.tenue` au moment où la commande arrive.
+    Basculer(crate::behavior::tenue::Tenue),
+
+    /// La tenir, quoi qu'il tienne déjà. Ce que devient un `Basculer` de la
+    /// section « Tout le monde » quand tous ne la tiennent pas encore.
+    Tenir(crate::behavior::tenue::Tenue),
+
+    /// La relâcher s'il la tient, ne rien faire sinon. L'intention en cours
+    /// continue : il reprend sa vie normale à la fin de celle-ci.
+    Relacher(crate::behavior::tenue::Tenue),
 
     /// Reprend l'escalade en cours pour viser le BAS du mur — jamais
     /// proposée au plafond, où « redescendre » n'a pas de sens (design
@@ -243,7 +251,7 @@ const ENVIES: &[(&str, &str, &[Ou], Commande)] = &[
         "perso.rester",
         "Rester accroché",
         &[Ou::Mur, Ou::Plafond],
-        Commande::ResterAccroche,
+        Commande::Basculer(crate::behavior::tenue::Tenue::ResterAccroche),
     ),
     (
         "perso.redescendre",
@@ -320,7 +328,10 @@ pub fn lignes(manifeste: &Manifest, table: &TableEnvies, ou: Ou) -> Vec<Ligne> {
         // exige déjà pour être là où le menu les propose.
         let jouable = match commande {
             Commande::Intention(i) => table.jouable(manifeste, *i),
-            Commande::ResterAccroche | Commande::Redescendre | Commande::SeLacher => true,
+            Commande::Basculer(t) | Commande::Tenir(t) | Commande::Relacher(t) => {
+                table.jouable(manifeste, t.intention())
+            }
+            Commande::Redescendre | Commande::SeLacher => true,
         };
         if jouable {
             lignes.push(Ligne::Entree { id, libelle });

@@ -243,11 +243,11 @@ fn ou_de_lit_correctement_les_quatre_etats() {
 #[test]
 fn la_commande_revient_a_celui_qui_a_ouvert_le_menu() {
     let mut demandeur = Some("pet-3".to_string());
-    let mut boite = Some(Commande::ResterAccroche);
+    let mut boite = Some(Commande::Basculer(crate::behavior::tenue::Tenue::ResterAccroche));
 
     assert_eq!(
         commande_pour(&mut demandeur, &mut boite, "pet-3"),
-        Some(Commande::ResterAccroche)
+        Some(Commande::Basculer(crate::behavior::tenue::Tenue::ResterAccroche))
     );
     // Servie une fois et une seule : ni la boîte ni le demandeur ne
     // resserviraient l'image suivante.

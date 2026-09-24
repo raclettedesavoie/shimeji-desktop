@@ -197,6 +197,19 @@ pub fn pas(
     // présente guère — ouvrir le menu demande un clic droit, pas un
     // glisser — mais l'ordre des blocs suffit à le rendre impossible.
     if let Some(cmd) = e.commande {
+        // ── `Basculer` se résout ICI ────────────────────────────────────
+        //
+        // Le menu a affiché la coche d'après `ch.tenue` ; entre-temps, rien
+        // n'a pu la changer que ce personnage lui-même. C'est donc ici, et
+        // seulement ici, qu'on sait si le clic coche ou décoche.
+        let cmd = match cmd {
+            crate::menu_perso::Commande::Basculer(t) if ch.tenue == Some(t) => {
+                crate::menu_perso::Commande::Relacher(t)
+            }
+            crate::menu_perso::Commande::Basculer(t) => crate::menu_perso::Commande::Tenir(t),
+            autre => autre,
+        };
+
         match cmd {
             crate::menu_perso::Commande::Intention(voulue) => {
                 // ── Le garde-fou de l'endroit (bug rapporté à l'écran) ──
@@ -231,6 +244,10 @@ pub fn pas(
                     // continue plus bas comme si la commande n'était jamais
                     // arrivée.
                 } else if table.jouable(&ch.manifest, voulue) {
+                    // Une action ponctuelle choisie au menu remplace l'action
+                    // tenue : on la joue, puis il reprend sa vie (spec §2.2).
+                    ch.tenue = None;
+
                     // `jouable` : entre le clic et cette image, un
                     // rechargement à chaud a pu remplacer le manifeste par un
                     // pack plus pauvre. Forcer une intention dont la pose
@@ -255,25 +272,47 @@ pub fn pas(
                 }
             }
 
-            crate::menu_perso::Commande::ResterAccroche => {
-                // Même garde-fou que ci-dessus, dans l'autre sens : cette
-                // commande n'a de sens que sur une paroi (mur ou plafond).
-                // Le menu ne la propose qu'à cet endroit, mais un
-                // rechargement ou un décrochage entre-temps peut l'avoir
-                // fait changer — l'ignorer plutôt que de poser une intention
-                // d'accroche pendant qu'il est au sol.
-                if matches!(
+            crate::menu_perso::Commande::Tenir(t) => {
+                // Le garde-fou de l'endroit, le même que pour une intention
+                // de sol : une tenue de sol sur une paroi le ferait tomber,
+                // « Rester accroché » au sol n'a pas de sens. Seul `Grimper`
+                // vaut partout — au sol il part au mur, sur un mur il reprend.
+                let sur_une_paroi = matches!(
                     ch.attachment,
                     crate::character::attach::Attachment::On { face, .. } if face != Face::Top
-                ) {
-                    // `ActiveIntention::accroche` : l'intention que pose
-                    // déjà un lancer contre une paroi. Elle ne connaît pas la
-                    // face — elle relit `ch.attachment` à l'exécution — donc
-                    // elle marche pareillement sur un mur ou au plafond.
-                    ch.intention = Some(intention::ActiveIntention::accroche(maintenant));
+                );
+                let a_sa_place = match t {
+                    tenue::Tenue::Grimper => true,
+                    tenue::Tenue::ResterAccroche => sur_une_paroi,
+                    _ => !sur_une_paroi,
+                };
+                if a_sa_place && table.jouable(&ch.manifest, t.intention()) {
+                    ch.tenue = Some(t);
+                    ch.intention = Some(tenue::intention_pour(
+                        t,
+                        e,
+                        reglages,
+                        table,
+                        &ch.manifest,
+                        maintenant,
+                    ));
                     return r;
                 }
             }
+
+            crate::menu_perso::Commande::Relacher(t) => {
+                // Seulement si c'est bien celle-là : un « Tout le monde ›
+                // S'asseoir » décoché ne doit pas relever un personnage qui
+                // flâne.
+                if ch.tenue == Some(t) {
+                    ch.tenue = None;
+                }
+            }
+
+            // Résolue plus haut en `Tenir` ou `Relacher` : ne peut plus
+            // arriver ici. Un bras vide plutôt qu'un `unreachable!()`, qui
+            // ferait paniquer la boucle 60 Hz si la résolution changeait.
+            crate::menu_perso::Commande::Basculer(_) => {}
 
             crate::menu_perso::Commande::Redescendre => {
                 // Ne vaut que sur un MUR (`Left`/`Right`) : au plafond,
@@ -286,6 +325,8 @@ pub fn pas(
                         ..
                     }
                 ) {
+                    // Redescendre met fin à « Grimper au mur » (spec §2).
+                    ch.tenue = None;
                     ch.intention = Some(intention::ActiveIntention::redescendre(maintenant));
                     return r;
                 }
@@ -309,6 +350,7 @@ pub fn pas(
                 // sur une face non-`Top` (elle rend `false` sinon), donc
                 // l'effacement se contente ici de laisser la couche 3
                 // re-tirer une intention neuve — inoffensif.
+                ch.tenue = None;
                 ch.intention = None;
             }
         }
@@ -432,10 +474,43 @@ pub fn pas(
     }
 
     // ── Couche 2 : poursuivre l'intention en cours ──────────────────────
+    //
+    // Retenu AVANT : `poursuivre` efface l'intention quand elle finit, et
+    // l'on ne saurait plus ensuite ce qu'elle servait.
+    let servait_au_mur = tenue::sert_une_tenue_au_mur(ch);
     match intention::poursuivre(ch, world, e, reglages, maintenant, dt, rng) {
         intention::Issue::EnCours => return r,
-        // Finie ou échouée : on passe à la couche 3.
-        intention::Issue::Finie | intention::Issue::Echouee => {}
+        intention::Issue::Finie => {}
+        intention::Issue::Echouee => {
+            // Au mur, une tenue n'a pas de délai d'abandon : un échec y veut
+            // dire une paroi perdue — l'action est devenue impossible, on
+            // l'efface (spec §2.2). `poursuivre` l'a déjà fait lâcher.
+            if servait_au_mur {
+                ch.tenue = None;
+            }
+        }
+    }
+
+    // ── L'action tenue, AVANT le tirage : elle, elle choisit ────────────
+    //
+    // C'est le seul endroit où le code change de chemin (spec §2.1). Les
+    // réflexes et l'intention en cours ne savent rien des tenues.
+    //
+    // `jouable` : un rechargement à chaud a pu retirer ses poses. Relancer
+    // quand même donnerait une intention qui échoue à chaque image.
+    if let Some(t) = ch.tenue {
+        if table.jouable(&ch.manifest, t.intention()) {
+            ch.intention = Some(tenue::intention_pour(
+                t,
+                e,
+                reglages,
+                table,
+                &ch.manifest,
+                maintenant,
+            ));
+            return r;
+        }
+        ch.tenue = None;
     }
 
     // ── Couche 3 : tirer une nouvelle envie ─────────────────────────────

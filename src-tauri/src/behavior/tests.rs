@@ -1202,3 +1202,185 @@ fn l_attraper_efface_son_action_tenue() {
     assert_eq!(ch.attachment, Attachment::Dragged);
     assert_eq!(ch.tenue, None);
 }
+
+// ── Les actions tenues (spec « menu sur mesure » §2) ──────────────────────
+
+fn reglages_defaut() -> crate::config::Reglages {
+    crate::config::Reglages::depuis(&crate::config::Config::default())
+}
+
+/// Joue `n` images d'affilée avec les mêmes entrées, à partir de `debut`.
+/// Rend l'instant de la dernière. Le RNG est semé UNE fois par l'appelant
+/// (CLAUDE.md, « Semer l'aléatoire une seule fois »).
+fn jouer_images(
+    ch: &mut Character,
+    m: &World,
+    e: &Entrees,
+    rng: &mut XorShift32,
+    debut: Duration,
+    n: u32,
+    mut chaque: impl FnMut(&Character),
+) -> Duration {
+    let table = desire::TableEnvies::defaut();
+    let reglages = reglages_defaut();
+    let mut t = debut;
+    for _ in 0..n {
+        t += Duration::from_secs_f32(DT);
+        pas(ch, m, e, &table, &reglages, t, DT, rng);
+        chaque(ch);
+    }
+    t
+}
+
+fn commander(ch: &mut Character, m: &World, c: crate::menu_perso::Commande, t: Duration, rng: &mut XorShift32) {
+    let mut e = entrees(true, 1.0);
+    e.commande = Some(c);
+    pas(ch, m, &e, &desire::TableEnvies::defaut(), &reglages_defaut(), t, DT, rng);
+}
+
+#[test]
+fn assis_au_menu_il_l_est_encore_une_minute_plus_tard() {
+    use crate::menu_perso::Commande;
+    let m = monde();
+    let mut ch = perso(&m);
+    let mut rng = XorShift32::seeded(11);
+    let t0 = Duration::from_secs(1);
+
+    commander(&mut ch, &m, Commande::Basculer(tenue::Tenue::Asseoir), t0, &mut rng);
+    assert_eq!(ch.tenue, Some(tenue::Tenue::Asseoir));
+
+    // Une image pour que `se_reposer` pose la pose, puis une minute : trois
+    // fois le délai d'abandon, et quatre fois la plus longue pause assise.
+    let t = jouer_images(&mut ch, &m, &entrees(true, 1.0), &mut rng, t0, 1, |_| {});
+    jouer_images(&mut ch, &m, &entrees(true, 1.0), &mut rng, t, 3600, |ch| {
+        assert_eq!(ch.tenue, Some(tenue::Tenue::Asseoir));
+        assert_eq!(ch.pose, POSE_SIT);
+    });
+}
+
+#[test]
+fn basculer_deux_fois_rend_sa_vie_normale() {
+    use crate::menu_perso::Commande;
+    let m = monde();
+    let mut ch = perso(&m);
+    let mut rng = XorShift32::seeded(11);
+
+    commander(&mut ch, &m, Commande::Basculer(tenue::Tenue::Asseoir), Duration::from_secs(1), &mut rng);
+    commander(&mut ch, &m, Commande::Basculer(tenue::Tenue::Asseoir), Duration::from_secs(2), &mut rng);
+
+    assert_eq!(ch.tenue, None);
+}
+
+#[test]
+fn une_autre_tenue_remplace_la_premiere() {
+    use crate::menu_perso::Commande;
+    let m = monde();
+    let mut ch = perso(&m);
+    let mut rng = XorShift32::seeded(11);
+
+    commander(&mut ch, &m, Commande::Basculer(tenue::Tenue::Asseoir), Duration::from_secs(1), &mut rng);
+    commander(&mut ch, &m, Commande::Basculer(tenue::Tenue::BalancerLesJambes), Duration::from_secs(2), &mut rng);
+
+    assert_eq!(ch.tenue, Some(tenue::Tenue::BalancerLesJambes));
+}
+
+#[test]
+fn une_action_ponctuelle_efface_la_tenue() {
+    use crate::menu_perso::Commande;
+    let m = monde();
+    let mut ch = perso(&m);
+    let mut rng = XorShift32::seeded(11);
+
+    commander(&mut ch, &m, Commande::Basculer(tenue::Tenue::Asseoir), Duration::from_secs(1), &mut rng);
+    commander(
+        &mut ch,
+        &m,
+        Commande::Intention(intention::Intention::Jouer(intention::Jeu::TeteQuiTourne)),
+        Duration::from_secs(2),
+        &mut rng,
+    );
+
+    assert_eq!(ch.tenue, None);
+    assert_eq!(
+        ch.intention.map(|i| i.kind),
+        Some(intention::Intention::Jouer(intention::Jeu::TeteQuiTourne))
+    );
+}
+
+#[test]
+fn il_flane_encore_une_minute_plus_tard() {
+    // La flânerie ne finit QUE par le délai d'abandon : sans relance par la
+    // tenue, il repartirait au tirage au bout de 20 s.
+    use crate::menu_perso::Commande;
+    let m = monde();
+    let mut ch = perso(&m);
+    let mut rng = XorShift32::seeded(11);
+    let t0 = Duration::from_secs(1);
+
+    commander(&mut ch, &m, Commande::Basculer(tenue::Tenue::Flaner), t0, &mut rng);
+    jouer_images(&mut ch, &m, &entrees(true, 1.0), &mut rng, t0, 3600, |ch| {
+        assert_eq!(ch.tenue, Some(tenue::Tenue::Flaner));
+        assert_eq!(ch.intention.map(|i| i.kind), Some(intention::Intention::Flaner));
+    });
+}
+
+#[test]
+fn absent_il_s_assoupit_puis_reprend_sa_tenue_au_retour() {
+    use crate::menu_perso::Commande;
+    let m = monde();
+    let mut ch = perso(&m);
+    let mut rng = XorShift32::seeded(11);
+    let t0 = Duration::from_secs(1);
+
+    commander(&mut ch, &m, Commande::Basculer(tenue::Tenue::Asseoir), t0, &mut rng);
+
+    // Parti : ×8 sur le repos, et plus aucune activité. En 60 s, la pause
+    // assise (15 s au plus) a eu le temps de basculer en sommeil.
+    let mut a_dormi = false;
+    let t = jouer_images(&mut ch, &m, &entrees(false, 8.0), &mut rng, t0, 3600, |ch| {
+        if ch.pose == POSE_SLEEP {
+            a_dormi = true;
+        }
+        assert_eq!(ch.tenue, Some(tenue::Tenue::Asseoir), "toujours cochée");
+    });
+    assert!(a_dormi, "il aurait dû s'assoupir");
+
+    // Revenu : une seconde plus tard, il est de nouveau assis, pas endormi.
+    jouer_images(&mut ch, &m, &entrees(true, 1.0), &mut rng, t, 60, |_| {});
+    assert_eq!(ch.pose, POSE_SIT);
+    assert_eq!(ch.tenue, Some(tenue::Tenue::Asseoir));
+}
+
+#[test]
+fn une_tenue_de_sol_recue_sur_un_mur_est_ignoree() {
+    use crate::menu_perso::Commande;
+    let m = monde();
+    let mur = mur_gauche(&m);
+    let mut ch = perso(&m);
+    ch.attachment = Attachment::On { platform: mur.id, face: Face::Right, offset: 300.0 };
+    ch.intention = Some(intention::ActiveIntention::accroche(Duration::from_secs(1)));
+    let mut rng = XorShift32::seeded(11);
+
+    commander(&mut ch, &m, Commande::Basculer(tenue::Tenue::Asseoir), Duration::from_secs(1), &mut rng);
+
+    assert_eq!(ch.tenue, None);
+}
+
+#[test]
+fn une_tenue_devenue_injouable_est_effacee() {
+    // Un rechargement à chaud a retiré la pose assise : la tenue ne doit
+    // pas être forcée sur une image absente (spec §2.2, Review Focus n° 4).
+    use crate::menu_perso::Commande;
+    let m = monde();
+    let mut ch = perso(&m);
+    let mut rng = XorShift32::seeded(11);
+    let t0 = Duration::from_secs(1);
+
+    commander(&mut ch, &m, Commande::Basculer(tenue::Tenue::Asseoir), t0, &mut rng);
+    ch.manifest.poses.remove(POSE_SIT);
+    // L'intention en cours échoue dès l'image suivante, et la relance est
+    // refusée : 20 images suffisent largement.
+    jouer_images(&mut ch, &m, &entrees(true, 1.0), &mut rng, t0, 20, |_| {});
+
+    assert_eq!(ch.tenue, None);
+}
