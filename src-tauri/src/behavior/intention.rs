@@ -1442,6 +1442,36 @@ fn avancer(ch: &mut Character, world: &World, pas: f32) {
     };
 }
 
+/// Un pas de marche vers `cible`, sur la face où il se tient, sans en
+/// sortir. Rend `true` s'il y est.
+///
+/// Pour se décaler d'une place (`behavior::pas_parmi`) ou avancer dans la
+/// file d'un mur (`grimper`, phase `Rejoindre`) : de courtes distances sur
+/// le même sol, donc ni bord, ni face voisine à traiter — contrairement à
+/// `avancer`, qui sert à parcourir le monde.
+pub(crate) fn marcher_vers(
+    ch: &mut Character,
+    cible: f32,
+    reglages: &Reglages,
+    maintenant: Duration,
+    dt: f32,
+) -> bool {
+    let Attachment::On { platform, face, offset } = ch.attachment else {
+        return false;
+    };
+    let ecart = cible - offset;
+    let pas = reglages.vitesse_marche * dt;
+    if ecart.abs() <= pas {
+        ch.attachment = Attachment::On { platform, face, offset: cible };
+        return true;
+    }
+    // `signum` : +1 vers la droite, −1 vers la gauche. Il regarde où il va.
+    ch.facing = if ecart > 0.0 { Facing::Right } else { Facing::Left };
+    ch.set_pose(POSE_WALK, maintenant);
+    ch.attachment = Attachment::On { platform, face, offset: offset + pas * ecart.signum() };
+    false
+}
+
 /// Cherche une plateforme adjacente à celle de `depuis`, exposant la MÊME
 /// face, du côté demandé et à peu près à la même hauteur.
 ///

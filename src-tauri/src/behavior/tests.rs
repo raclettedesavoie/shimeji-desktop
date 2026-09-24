@@ -1889,3 +1889,192 @@ fn toute_action_du_menu_se_fait_quel_que_soit_l_etat_de_depart() {
     assert!(essais > 50, "la matrice est trop petite : {essais} essais");
     assert!(echecs.is_empty(), "{} échecs sur {essais}", echecs.len());
 }
+
+// ── À plusieurs : ne pas se superposer (spec 2026-09-24) ───────────────────
+//
+// Un harnais qui fait avancer N personnages ensemble, COMME la boucle de
+// `main.rs` : chacun reçoit les occupants de l'image précédente.
+
+fn jouer_foule(
+    persos: &mut [Character],
+    m: &World,
+    e: &Entrees,
+    rng: &mut XorShift32,
+    debut: Duration,
+    n: u32,
+    mut chaque: impl FnMut(&[Character]),
+) -> Duration {
+    let table = desire::TableEnvies::defaut();
+    let reglages = reglages_defaut();
+    let mut t = debut;
+    for _ in 0..n {
+        t += Duration::from_secs_f32(DT);
+        let occupants: Vec<place::Occupant> = persos
+            .iter()
+            .enumerate()
+            .filter_map(|(i, ch)| place::occupant_de(i as u32, ch, e.echelle_affichage))
+            .collect();
+        for (i, ch) in persos.iter_mut().enumerate() {
+            let v = place::Voisinage { moi: i as u32, autres: &occupants };
+            pas_parmi(ch, m, e, &table, &reglages, t, DT, rng, &v);
+        }
+        chaque(persos);
+    }
+    t
+}
+
+/// La même commande pour tous, à la même image — « Tout le monde › … ».
+fn commander_foule(persos: &mut [Character], m: &World, c: crate::menu_perso::Commande, t: Duration, rng: &mut XorShift32) {
+    for ch in persos.iter_mut() {
+        commander(ch, m, c, t, rng);
+    }
+}
+
+/// Deux personnages à l'arrêt, sur le même sol, qui se chevauchent.
+fn chevauchement_a_l_arret(persos: &[Character]) -> Option<(usize, usize)> {
+    let e = entrees(true, 1.0);
+    for i in 0..persos.len() {
+        for j in (i + 1)..persos.len() {
+            let (a, b) = (&persos[i], &persos[j]);
+            let (Attachment::On { platform: pa, face: Face::Top, offset: oa }, Attachment::On { platform: pb, face: Face::Top, offset: ob }) = (a.attachment, b.attachment) else {
+                continue;
+            };
+            if pa != pb || !place::a_l_arret(a) || !place::a_l_arret(b) {
+                continue;
+            }
+            let (da, _) = place::corps(a, e.echelle_affichage);
+            let (db, _) = place::corps(b, e.echelle_affichage);
+            if (oa - ob).abs() < da + db - 1.0 {
+                return Some((i, j));
+            }
+        }
+    }
+    None
+}
+
+fn foule_au_meme_endroit(m: &World, n: usize, offset: f32) -> Vec<Character> {
+    let sol = &m.platforms()[0];
+    (0..n)
+        .map(|_| {
+            let mut ch = perso(m);
+            ch.attachment = Attachment::On { platform: sol.id, face: Face::Top, offset };
+            ch
+        })
+        .collect()
+}
+
+#[test]
+fn tout_le_monde_s_assoit_en_rangee() {
+    use crate::menu_perso::Commande;
+    let m = monde();
+    let mut persos = foule_au_meme_endroit(&m, 5, 800.0);
+    let mut rng = XorShift32::seeded(71);
+    let t0 = Duration::from_secs(1);
+    commander_foule(&mut persos, &m, Commande::Imposer(tenue::Tenue::Asseoir), t0, &mut rng);
+
+    // 20 s pour se ranger : un corps (~90 px) à 40 px/s, pour les plus
+    // éloignés deux corps — large.
+    let t = jouer_foule(&mut persos, &m, &entrees(true, 1.0), &mut rng, t0, 1200, |_| {});
+    // Puis 10 s de contrôle : tous à l'arrêt, assis tenu, aucun
+    // chevauchement. (Pas `pose == sit` à chaque image : entre deux repos,
+    // la tenue relance `SeReposer`, qui peut passer par une autre pose.)
+    jouer_foule(&mut persos, &m, &entrees(true, 1.0), &mut rng, t, 600, |p| {
+        assert_eq!(chevauchement_a_l_arret(p), None);
+        for ch in p {
+            assert!(place::a_l_arret(ch), "{:?}", ch.intention);
+            assert_eq!(ch.tenue, Some(tenue::Tenue::Asseoir));
+        }
+    });
+}
+
+#[test]
+fn lache_sur_un_assis_il_se_decale() {
+    use crate::menu_perso::Commande;
+    let m = monde();
+    let mut persos = foule_au_meme_endroit(&m, 2, 800.0);
+    let mut rng = XorShift32::seeded(73);
+    let t0 = Duration::from_secs(1);
+    commander(&mut persos[0], &m, Commande::Basculer(tenue::Tenue::Asseoir), t0, &mut rng);
+    // Le second tombe pile au-dessus — assis tenu lui aussi : sans cela il
+    // ne reste étalé qu'1 à 2 s (`DUREE_AU_SOL`), puis part souvent flâner,
+    // et le test passerait sans que personne ne se décale.
+    persos[1].tenue = Some(tenue::Tenue::Asseoir);
+    // Depuis la plateforme, pas `pos_connue` : `foule_au_meme_endroit` ne
+    // change que l'attache, et `pos_connue` est restée celle de `perso()`.
+    let pos = m.platforms()[0].rect.point_on(Face::Top, 800.0);
+    persos[1].attachment = Attachment::Falling { pos: Point::new(pos.x, pos.y - 300.0), vel: crate::geom::Vec2::zero() };
+
+    // Il tombe, atterrit, s'étale (à l'arrêt, plus récent) : il doit
+    // s'écarter. Jamais plus de 3 s de suite l'un sur l'autre à l'arrêt.
+    let mut a_la_suite = 0u32;
+    jouer_foule(&mut persos, &m, &entrees(true, 1.0), &mut rng, t0, 1800, |p| {
+        if chevauchement_a_l_arret(p).is_some() {
+            a_la_suite += 1;
+            assert!(a_la_suite < 180, "superposés à l'arrêt depuis 3 s");
+        } else {
+            a_la_suite = 0;
+        }
+    });
+}
+
+#[test]
+fn deux_marcheurs_se_traversent_sans_devier() {
+    let m = monde();
+    let mut persos = foule_au_meme_endroit(&m, 2, 0.0);
+    let t0 = Duration::from_secs(1);
+    let marche = |ch: &mut Character, offset: f32, facing| {
+        let sol = &m.platforms()[0];
+        ch.attachment = Attachment::On { platform: sol.id, face: Face::Top, offset };
+        ch.facing = facing;
+        ch.intention = Some(intention::ActiveIntention {
+            kind: intention::Intention::Flaner,
+            depuis: t0,
+            etat: intention::EtatIntention::Flanerie { allure: intention::Allure::Marche, jusqu_a: t0 + Duration::from_secs(30) },
+        });
+    };
+    marche(&mut persos[0], 600.0, crate::character::Facing::Right);
+    marche(&mut persos[1], 800.0, crate::character::Facing::Left);
+    let offset = |ch: &Character| match ch.attachment {
+        Attachment::On { offset, .. } => offset,
+        _ => panic!("il a quitté le sol"),
+    };
+    let (mut a, mut b) = (offset(&persos[0]), offset(&persos[1]));
+    let mut rng = XorShift32::seeded(79);
+    // 8 s : ils se croisent vers 700, et continuent.
+    jouer_foule(&mut persos, &m, &entrees(true, 1.0), &mut rng, t0, 480, |p| {
+        let (na, nb) = (offset(&p[0]), offset(&p[1]));
+        assert!(na > a && nb < b, "l'un a dévié ou s'est arrêté : {a}→{na}, {b}→{nb}");
+        a = na;
+        b = nb;
+    });
+    assert!(a > b, "ils ne se sont pas croisés");
+}
+
+#[test]
+fn ecran_plein_il_reste_ou_il_est() {
+    // Un seul sol, plus de corps que de largeur : pas d'oscillation, ils
+    // restent où ils sont. On le lit sur `place::place_libre` → `None`, et
+    // sur un personnage qui ne bouge pas d'un pixel pendant 5 s.
+    use crate::menu_perso::Commande;
+    let m = monde();
+    let sol = &m.platforms()[0];
+    let longueur = sol.rect.face_length(Face::Top);
+    let (demi, _) = place::corps(&perso(&m), 1.0);
+    let n = (longueur / (2.0 * demi)) as usize + 3;
+    let mut persos: Vec<Character> = (0..n)
+        .map(|i| {
+            let mut ch = perso(&m);
+            ch.attachment = Attachment::On { platform: sol.id, face: Face::Top, offset: (i as f32 * 2.0 * demi + demi).min(longueur - demi) };
+            ch
+        })
+        .collect();
+    let mut rng = XorShift32::seeded(83);
+    let t0 = Duration::from_secs(1);
+    commander_foule(&mut persos, &m, Commande::Imposer(tenue::Tenue::Asseoir), t0, &mut rng);
+    let t = jouer_foule(&mut persos, &m, &entrees(true, 1.0), &mut rng, t0, 600, |_| {});
+    let avant: Vec<_> = persos.iter().map(|c| c.attachment).collect();
+    jouer_foule(&mut persos, &m, &entrees(true, 1.0), &mut rng, t, 300, |p| {
+        let maintenant: Vec<_> = p.iter().map(|c| c.attachment).collect();
+        assert_eq!(maintenant, avant, "quelqu'un bouge encore sur un écran plein");
+    });
+}

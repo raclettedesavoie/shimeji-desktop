@@ -217,13 +217,9 @@ fn nouvelle_sur_ordre(voulue: intention::Intention, maintenant: std::time::Durat
     }
 }
 
-/// Un pas de comportement : les trois couches, dans l'ordre, une fois.
-///
-/// C'est la seule fonction que la boucle 60 Hz (Tâche 10) et le mode
-/// simulation (Tâche 9) appellent. Les deux partagent donc **exactement** le
-/// même comportement — c'est ce qui rend la simulation représentative.
-///
-/// Rend le réflexe qui s'est éventuellement imposé, pour la trace.
+/// Un pas de comportement pour un personnage SEUL AU MONDE — ce qu'appellent
+/// la simulation et les tests. La boucle de `main.rs`, elle, appelle
+/// `pas_parmi` avec les autres (spec « ne pas se superposer »).
 pub fn pas(
     ch: &mut crate::character::Character,
     world: &crate::world::World,
@@ -234,6 +230,43 @@ pub fn pas(
     dt: f32,
     rng: &mut dyn crate::rng::Rng,
 ) -> reflex::Reflexe {
+    pas_parmi(ch, world, e, table, reglages, maintenant, dt, rng, &place::Voisinage::seul())
+}
+
+/// Un pas de comportement : les trois couches, dans l'ordre, une fois.
+///
+/// La boucle 60 Hz et le mode simulation (par `pas`) partagent donc
+/// **exactement** le même comportement — c'est ce qui rend la simulation
+/// représentative. `voisins` porte les places des autres (spec « ne pas se
+/// superposer ») : seul au monde, la liste est vide et rien ne change.
+///
+/// Rend le réflexe qui s'est éventuellement imposé, pour la trace.
+// Neuf paramètres : `clippy` le signalerait, mais les regrouper dans une
+// structure ne servirait qu'à contourner l'avertissement.
+#[allow(clippy::too_many_arguments)]
+pub fn pas_parmi(
+    ch: &mut crate::character::Character,
+    world: &crate::world::World,
+    e: &Entrees,
+    table: &desire::TableEnvies,
+    reglages: &crate::config::Reglages,
+    maintenant: std::time::Duration,
+    dt: f32,
+    rng: &mut dyn crate::rng::Rng,
+    voisins: &place::Voisinage,
+) -> reflex::Reflexe {
+    // ── Depuis quand est-il à l'arrêt ? (spec « ne pas se superposer » §3)
+    //
+    // Tout en haut : les réflexes rendent la main plus bas, et un
+    // personnage qui tombe doit perdre sa place dès cette image.
+    let au_sol = matches!(ch.attachment, Attachment::On { face: Face::Top, .. });
+    if au_sol && place::a_l_arret(ch) {
+        // `get_or_insert` : garde l'instant d'arrivée s'il y en a déjà un.
+        ch.arrete_depuis.get_or_insert(maintenant);
+    } else {
+        ch.arrete_depuis = None;
+    }
+
     // ── Couche 1 : les réflexes ─────────────────────────────────────────
     // S'ils s'imposent, les couches 2 et 3 ne tournent pas du tout dans
     // cette image (spec §7.1).
@@ -576,6 +609,28 @@ pub fn pas(
     //
     // Retenu AVANT : `poursuivre` efface l'intention quand elle finit, et
     // l'on ne saurait plus ensuite ce qu'elle servait.
+    // ── Céder sa place (spec « ne pas se superposer » §3) ───────────────
+    //
+    // À l'arrêt au sol, sur la place d'un plus ancien : un pas vers la
+    // place libre la plus proche, et l'intention attend. Celui qui attend
+    // dans la file d'un mur est exclu — `grimper` choisit sa place lui-même.
+    // Pas de place libre (écran plein) : il reste, chevauchement accepté.
+    if let Attachment::On { platform, face: Face::Top, offset } = ch.attachment {
+        if ch.arrete_depuis.is_some() && place::attend_le_mur(ch).is_none() {
+            let (demi, _) = place::corps(ch, e.echelle_affichage);
+            if place::doit_ceder(voisins, platform, offset, demi, ch.arrete_depuis) {
+                let longueur = world.get(platform).map(|p| p.rect.face_length(Face::Top)).unwrap_or(0.0);
+                if let Some(cible) = place::place_libre(voisins, platform, offset, demi, longueur) {
+                    // Il bouge : il redevient le dernier arrivé, et
+                    // reprendra une place neuve en s'arrêtant.
+                    ch.arrete_depuis = None;
+                    intention::marcher_vers(ch, cible, reglages, maintenant, dt);
+                    return r;
+                }
+            }
+        }
+    }
+
     let servait_au_mur = tenue::sert_une_tenue_au_mur(ch);
     match intention::poursuivre(ch, world, e, reglages, maintenant, dt, rng) {
         intention::Issue::EnCours => return r,
