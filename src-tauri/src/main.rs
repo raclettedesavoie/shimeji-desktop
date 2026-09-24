@@ -614,6 +614,11 @@ fn lancer_application() {
             // de Tauri. Hors ligne, il ne se passe simplement rien.
             maj::verifier_en_arriere_plan(app.handle().clone(), actions.clone());
 
+            // Une mise à jour vient-elle de s'installer ? Le toast le dit, une
+            // fois. En release seulement : voir `config::derniere_version_lancee`.
+            #[cfg(not(debug_assertions))]
+            maj::constater_au_demarrage(app.handle(), &configuration.derniere_version_lancee);
+
             // ── Deux crochets pour les vérifications qui demandent un clic ──
             //
             // Le tray a deux entrées dont l'effet ne se constate qu'en

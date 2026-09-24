@@ -58,10 +58,14 @@ réagissent l'un à l'autre. Ajouter un personnage est une **opération de conte
 - ❌ **Pas un Tamagotchi** — aucune stat à surveiller, aucune obligation, il ne meurt pas
 - ❌ **Aucune capture de frappe** — on sait seulement si l'utilisateur est actif, jamais quelle touche
 - ❌ **Pas un assistant** — il ne notifie rien, ne rappelle rien, n'a aucune utilité productive.
-  **Deux exceptions, et deux seulement** : le toast de fin de première configuration, et
-  celui d'une mise à jour disponible. Toutes deux relèvent de la maintenance de
-  l'application, pas du comportement du personnage — et la seconde est émise **une fois
-  par version**, jamais à chaque lancement (`derniereVersionSignalee`)
+  **Seules exceptions, toutes de maintenance** (`toast.rs`) : la fin de première
+  configuration ; une mise à jour disponible, **une fois par version**
+  (`derniereVersionSignalee`) ; et, depuis le 2026-09-24 à la demande de l'auteur,
+  « à jour » **sur un clic** de « Vérifier les mises à jour », « mise à jour en
+  cours » avant le téléchargement, « mis à jour en vX » au lancement suivant
+  (`derniereVersionLancee`, tenue par la release seule). Rien du personnage.
+  ⚠️ Le plugin rend `Ok` sans savoir si le toast s'affiche (`toast::emettre`) : un
+  toast invisible, c'est d'abord le mode « Ne pas déranger »
 - ❌ **Pas un jeu** — pas de score, pas de progression
 - ❌ **Pas de charge CPU comme signal** — écarté explicitement
 - ❌ **Pas de bulles de dialogue**
@@ -177,7 +181,7 @@ sinon, ne se verrait qu'à l'œil et sur plusieurs minutes :
 | `SHIMEJI_PERSONNAGES=<a>,<b>,…` | le **roster de départ**, doublons compris (`blob,blob` = deux blob) — l'équivalent scriptable des clics dans « Ma bibliothèque » |
 | `SHIMEJI_ROSTER=<s>:<a>,<b>` | un **changement de roster** après *s* secondes. C'est le seul moyen d'observer un **départ** sans qu'un humain clique |
 | `SHIMEJI_ONBOARDING=1` | force **l'assistant de première configuration**, sans toucher au `config.json` — évite d'avoir à le supprimer entre deux essais |
-| `SHIMEJI_TOAST=1` | trace le résultat des **toasts**, succès comme échec |
+| `SHIMEJI_TOAST=1` | trace la **remise** des toasts au plugin — pas leur affichage, qu'il ne rapporte pas. En debug, le tray a aussi « Tester une notification » |
 | `SHIMEJI_MAJ=1` | trace la **vérification de mise à jour** : version trouvée, déjà à jour, ou pourquoi elle a échoué. Sans elle, une vérification ratée est parfaitement muette — ce qui est voulu pour l'utilisateur, et ingérable pour qui met au point |
 | `SHIMEJI_MENU_OUVERT=1` | ouvre le **menu du clic droit** du premier personnage dès qu'il est posé ; avec `SHIMEJI_MENU=1`, imprime `menu placé : W×H @ (x, y)` — la preuve que les lignes arrivent au webview, qu'il se mesure et que l'IPC répond |
 
@@ -870,7 +874,7 @@ ramassant, sautant, puis tombant hors de l'écran. Une poubelle supprime un pack
 du disque. Le reste est inchangé — marche, escalade, attrape-souris, tray,
 `config.json`.
 
-**402 tests.** Et le CPU, mesuré sur le programme réel (release, 60 s, 3 écrans) :
+**407 tests.** Et le CPU, mesuré sur le programme réel (release, 60 s, 3 écrans) :
 
 | Roster | Caché | En marche | dont `shimeji-desktop` | Latence de la file |
 |---|---|---|---|---|

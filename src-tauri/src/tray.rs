@@ -166,7 +166,7 @@ pub fn installer(
     let maj = MenuItem::with_id(
         app,
         crate::actions::ID_MAJ,
-        "Vérifier les mises à jour…",
+        crate::maj::libelle(&crate::maj::EtatMaj::Repos),
         true,
         None::<&str>,
     )

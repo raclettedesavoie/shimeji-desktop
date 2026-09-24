@@ -383,13 +383,14 @@ impl Actions {
         let _ = cases.demarrage.set_checked(actif);
     }
 
-    /// Annonce, dans le menu du tray, qu'une version est disponible.
+    /// Affiche, dans le menu du tray, l'état de la mise à jour : version
+    /// disponible, à jour, ou vérification impossible (`maj::EtatMaj`).
     ///
     /// **Le libellé EST l'état.** On ne stocke la version nulle part
     /// ailleurs : la garder en double dans `Actions` créerait une seconde
     /// vérité à tenir d'accord avec ce que l'utilisateur lit — exactement ce
     /// que l'interrupteur de la bibliothèque s'interdit déjà.
-    pub fn signaler_maj(&self, version: &str) {
+    pub fn afficher_etat_maj(&self, etat: &crate::maj::EtatMaj) {
         let Ok(cases) = self.cases.lock() else {
             return;
         };
@@ -398,7 +399,7 @@ impl Actions {
             return;
         };
 
-        let _ = cases.maj.set_text(format!("Mettre à jour vers la v{version}"));
+        let _ = cases.maj.set_text(crate::maj::libelle(etat));
     }
 }
 
@@ -472,11 +473,11 @@ pub fn executer(actions: &Actions, app: &AppHandle, id: &str, cases_du_tray: &Ca
         }
 
         ID_MAJ => {
-            // `installer` revérifie d'abord : que l'entrée dise « Vérifier »
+            // Revérifie d'abord : que l'entrée dise « Vérifier », « À jour »
             // ou « Mettre à jour », le geste est le même, et c'est pour ça
             // qu'il n'y a qu'un identifiant. La seule différence entre les
-            // deux états est ce que l'utilisateur en attend.
-            crate::maj::installer(app.clone());
+            // états est ce que l'utilisateur en attend.
+            crate::maj::verifier_puis_installer(app.clone());
         }
 
         // `#[cfg]` sur un bras de `match` : en release, ce bras n'existe pas,

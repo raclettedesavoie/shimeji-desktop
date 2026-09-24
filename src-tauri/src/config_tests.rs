@@ -464,3 +464,11 @@ fn petite_taille_est_relue_et_fausse_par_defaut() {
     ecrire_cles(&f, &[("petiteTaille", serde_json::json!(true))]).unwrap();
     assert!(charger_depuis(&f).petite_taille);
 }
+
+#[test]
+fn derniere_version_lancee_est_relue_et_vide_par_defaut() {
+    assert_eq!(Config::default().derniere_version_lancee, "");
+    let f = fichier_de_test(r#"{ "echelle": 1 }"#);
+    ecrire_cles(&f, &[("derniereVersionLancee", serde_json::json!("0.3.0"))]).unwrap();
+    assert_eq!(charger_depuis(&f).derniere_version_lancee, "0.3.0");
+}

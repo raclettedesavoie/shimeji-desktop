@@ -418,6 +418,17 @@ pub struct Config {
     /// Clé du fichier : `derniereVersionSignalee`.
     pub derniere_version_signalee: String,
 
+    /// La version de l'application au dernier lancement. Si elle diffère de
+    /// la version courante, c'est qu'une mise à jour vient de s'installer :
+    /// un toast le dit, une fois (demande de l'auteur, 2026-09-24).
+    ///
+    /// Tenue par le build RELEASE seulement : `cargo run` partage ce même
+    /// fichier, et sa version (celle de la branche) diffère de celle
+    /// installée — il ferait croire à une mise à jour à chaque alternance.
+    ///
+    /// Clé du fichier : `derniereVersionLancee`.
+    pub derniere_version_lancee: String,
+
     pub envies: Envies,
     pub allures: Allures,
 
@@ -455,6 +466,8 @@ impl Default for Config {
             ecran_au_demarrage: EcranDemarrage::Personnages,
             // Vide : aucune version n'a encore été signalée.
             derniere_version_signalee: String::new(),
+            // Vide : jamais lancée, ou lancée avant que la clé existe.
+            derniere_version_lancee: String::new(),
             envies: Envies::default(),
             allures: Allures::default(),
             escalade: Escalade::default(),
@@ -831,10 +844,6 @@ pub fn definir_personnages(noms: &[String]) -> Result<(), String> {
     ecrire_personnages(&chemin_d_ecriture()?, noms)
 }
 
-/// Enregistre le résultat de l'assistant de première configuration.
-///
-/// Les deux clés d'un seul coup : elles sont écrites au même instant, et un
-/// seul appel veut dire une seule relecture-réécriture du fichier.
 /// Retient qu'on a déjà signalé cette version par un toast.
 ///
 /// Écrite tout de suite après l'affichage, et non avant : si l'écriture
@@ -855,6 +864,18 @@ pub fn definir_petite_taille(petite: bool) -> Result<(), String> {
     )
 }
 
+/// Retient la version de ce lancement (voir `derniere_version_lancee`).
+pub fn definir_version_lancee(version: &str) -> Result<(), String> {
+    ecrire_cles(
+        &chemin_d_ecriture()?,
+        &[("derniereVersionLancee", serde_json::json!(version))],
+    )
+}
+
+/// Enregistre le résultat de l'assistant de première configuration.
+///
+/// Les deux clés d'un seul coup : elles sont écrites au même instant, et un
+/// seul appel veut dire une seule relecture-réécriture du fichier.
 pub fn definir_onboarding(fait: bool, ecran: EcranDemarrage) -> Result<(), String> {
     ecrire_cles(
         &chemin_d_ecriture()?,
