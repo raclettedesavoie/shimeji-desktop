@@ -309,21 +309,42 @@ pub fn id_connu(id: &str) -> Option<&'static str> {
         .find(|i| *i == id)
 }
 
+/// Un personnage présent, vu par la section « Tout le monde » : ce qu'il
+/// tient, et ce qu'il PEUT tenir là où il est (`tenue::peut_tenir`).
+///
+/// `peut_tenir` : sans lui, un pack sans escalade compterait parmi ceux qui
+/// « ne tiennent pas encore » Grimper au mur, alors que `behavior::pas` lui
+/// refuse l'ordre — et la ligne ne se décocherait jamais.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Present {
+    pub tenue: Option<Tenue>,
+    pub peut_tenir: Vec<Tenue>,
+}
+
+/// Vrai si TOUS les présents capables de tenir `t` la tiennent — et qu'il y
+/// en a au moins un. Sans personne de capable, « tous la tiennent » serait
+/// vrai par vacuité, et un clic relâcherait… personne : on tient.
+///
+/// `peekable` : un itérateur qui permet de regarder le premier élément sans
+/// le consommer — ici, pour savoir s'il y a au moins un capable avant de
+/// vérifier qu'ils la tiennent tous.
+pub fn tous_la_tiennent(t: Tenue, presents: &[Present]) -> bool {
+    let mut capables = presents.iter().filter(|p| p.peut_tenir.contains(&t)).peekable();
+    capables.peek().is_some() && capables.all(|p| p.tenue == Some(t))
+}
+
 /// Ce que devient une commande de la section « Tout le monde » pour les
-/// personnages présents (spec §3) : coché si TOUS la tiennent, donc un clic
-/// relâche chez tous ; sinon, un clic la donne à tous.
+/// personnages présents (spec §3) : coché si tous ceux qui PEUVENT la tenir
+/// la tiennent, donc un clic relâche chez tous ; sinon, un clic la donne à
+/// tous (et chacun refuse ce qu'il ne peut pas faire).
 ///
 /// Résolue UNE fois par la boucle, avant de servir les acteurs : chaque
 /// acteur résolvant son propre `Basculer`, un personnage déjà assis se
 /// relèverait pendant que les autres s'assoient.
-///
-/// `!is_empty()` : sans personne, « tous la tiennent » serait vrai par
-/// vacuité, et le clic relâcherait… personne. On tient.
-pub fn resoudre_pour_tous(c: Commande, tenues: &[Option<Tenue>]) -> Commande {
+pub fn resoudre_pour_tous(c: Commande, presents: &[Present]) -> Commande {
     match c {
         Commande::Basculer(t) => {
-            let tous = !tenues.is_empty() && tenues.iter().all(|x| *x == Some(t));
-            if tous {
+            if tous_la_tiennent(t, presents) {
                 Commande::Relacher(t)
             } else {
                 Commande::Tenir(t)
@@ -378,14 +399,14 @@ pub enum Ligne {
 /// gestionnaire unique : ce fichier ne déclenche **rien**, il propose. Le
 /// choix atterrit dans `actions::executer`.
 ///
-/// `tenue` est celle du personnage cliqué, `tenues_de_tous` celles de tous
-/// les présents — lui compris. Ce sont les seules sources des coches.
+/// `tenue` est celle du personnage cliqué, `presents` décrit tous les
+/// présents — lui compris. Ce sont les seules sources des coches.
 pub fn lignes(
     manifeste: &Manifest,
     table: &TableEnvies,
     ou: Ou,
     tenue: Option<Tenue>,
-    tenues_de_tous: &[Option<Tenue>],
+    presents: &[Present],
 ) -> Vec<Ligne> {
     let mut lignes: Vec<Ligne> = Vec::new();
 
@@ -428,9 +449,7 @@ pub fn lignes(
     lignes.push(Ligne::Titre { texte: "Tout le monde" });
     for (id, libelle, commande) in TOUS {
         let coche = match commande {
-            Commande::Basculer(t) => {
-                !tenues_de_tous.is_empty() && tenues_de_tous.iter().all(|x| *x == Some(*t))
-            }
+            Commande::Basculer(t) => tous_la_tiennent(*t, presents),
             _ => false,
         };
         lignes.push(Ligne::Entree { id, libelle, coche });

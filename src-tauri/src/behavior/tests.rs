@@ -1448,3 +1448,30 @@ fn redescendre_met_fin_a_grimper_tenu() {
     jouer_images(&mut ch, &m, &entrees(true, 1.0), &mut rng, Duration::from_secs(2), 3600, |_| {});
     assert!(matches!(ch.attachment, Attachment::On { face: Face::Top, .. }));
 }
+
+/// Ce que la section « Tout le monde » demande à chacun : peut-il tenir
+/// cette action, LÀ où il est ? La même règle que `Tenir` dans `pas`, et
+/// c'est pour cela qu'elle vit dans une seule fonction (relecture finale).
+#[test]
+fn peut_tenir_suit_l_endroit_et_l_attache() {
+    use tenue::{peut_tenir, Tenue};
+    let m = monde();
+    let table = desire::TableEnvies::defaut();
+    let mut ch = perso(&m);
+
+    // Au sol.
+    assert!(peut_tenir(Tenue::Asseoir, &ch, &table));
+    assert!(peut_tenir(Tenue::Grimper, &ch, &table));
+    assert!(!peut_tenir(Tenue::ResterAccroche, &ch, &table));
+
+    // Sur un mur.
+    let mur = mur_gauche(&m);
+    ch.attachment = Attachment::On { platform: mur.id, face: Face::Right, offset: 300.0 };
+    assert!(!peut_tenir(Tenue::Asseoir, &ch, &table));
+    assert!(peut_tenir(Tenue::ResterAccroche, &ch, &table));
+    assert!(peut_tenir(Tenue::Grimper, &ch, &table));
+
+    // Porté : `pas` ne verra même pas la commande, les réflexes passent avant.
+    ch.attachment = Attachment::Dragged;
+    assert!(!peut_tenir(Tenue::Asseoir, &ch, &table));
+}

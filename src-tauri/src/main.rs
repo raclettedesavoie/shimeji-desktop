@@ -1897,19 +1897,35 @@ fn boucle(
             Err(_) => None,
         };
 
-        // Les tenues de tous les présents, pour les coches du menu et pour
-        // résoudre une commande « Tout le monde ». Un acteur en départ n'est
-        // plus là : il ne compte pas.
-        let tenues_de_tous: Vec<Option<behavior::tenue::Tenue>> = acteurs
-            .iter()
-            .filter(|a| a.depart.is_none())
-            .map(|a| a.ch.tenue)
-            .collect();
+        // Les présents — ce que chacun tient, et ce qu'il PEUT tenir là où il
+        // est —, pour les coches du menu et pour résoudre une commande « Tout
+        // le monde ». Un acteur en départ n'est plus là : il ne compte pas.
+        //
+        // Calculés SEULEMENT quand ils servent (une commande « Tout le monde »,
+        // ou un menu qui peut s'ouvrir à cette image) : ce sont quelques `Vec`
+        // par personnage, qu'il serait absurde de payer 60 fois par seconde
+        // pour rien (CLAUDE.md, « Mesurer le CPU »).
+        let presents: Vec<menu_perso::Present> =
+            if commande_pour_tous.is_some() || front_descendant_droit || menu_de_demonstration {
+                acteurs
+                    .iter()
+                    .filter(|a| a.depart.is_none())
+                    .map(|a| menu_perso::Present {
+                        tenue: a.ch.tenue,
+                        peut_tenir: behavior::tenue::Tenue::TOUTES
+                            .into_iter()
+                            .filter(|t| behavior::tenue::peut_tenir(*t, &a.ch, &table))
+                            .collect(),
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
 
         // Résolue UNE fois, pour tous — voir `menu_perso::resoudre_pour_tous`.
         // `map` : ne s'applique que s'il y a une commande.
         let commande_pour_tous =
-            commande_pour_tous.map(|c| menu_perso::resoudre_pour_tous(c, &tenues_de_tous));
+            commande_pour_tous.map(|c| menu_perso::resoudre_pour_tous(c, &presents));
 
         // Caché par l'utilisateur, OU session verrouillée : on calcule tout,
         // on ne dessine rien. Lu une fois, il vaut pour tous les acteurs.
@@ -2077,7 +2093,7 @@ fn boucle(
                     &table,
                     ou,
                     acteur.ch.tenue,
-                    &tenues_de_tous,
+                    &presents,
                 );
 
                 // ── Le menu, dans sa fenêtre ────────────────────────────

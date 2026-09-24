@@ -273,20 +273,10 @@ pub fn pas(
             }
 
             crate::menu_perso::Commande::Tenir(t) => {
-                // Le garde-fou de l'endroit, le même que pour une intention
-                // de sol : une tenue de sol sur une paroi le ferait tomber,
-                // « Rester accroché » au sol n'a pas de sens. Seul `Grimper`
-                // vaut partout — au sol il part au mur, sur un mur il reprend.
-                let sur_une_paroi = matches!(
-                    ch.attachment,
-                    crate::character::attach::Attachment::On { face, .. } if face != Face::Top
-                );
-                let a_sa_place = match t {
-                    tenue::Tenue::Grimper => true,
-                    tenue::Tenue::ResterAccroche => sur_une_paroi,
-                    _ => !sur_une_paroi,
-                };
-                if a_sa_place && table.jouable(&ch.manifest, t.intention()) {
+                // Le garde-fou de l'endroit et des poses, le même que pour une
+                // intention de sol — voir `tenue::peut_tenir`, qui sert aussi
+                // la section « Tout le monde » : une seule règle, deux usages.
+                if tenue::peut_tenir(t, ch, table) {
                     ch.tenue = Some(t);
                     ch.intention = Some(tenue::intention_pour(
                         t,

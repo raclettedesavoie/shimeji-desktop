@@ -366,6 +366,14 @@ fn le_menu_n_a_aucun_separateur_mal_place() {
 
 use crate::behavior::tenue::Tenue;
 
+/// Un présent qui peut tenir toutes les actions — le cas de `blob`.
+fn capable(tenue: Option<Tenue>) -> Present {
+    Present {
+        tenue,
+        peut_tenir: Tenue::TOUTES.to_vec(),
+    }
+}
+
 fn coche_de(lignes: &[Ligne], cherche: &str) -> Option<bool> {
     lignes.iter().find_map(|l| match l {
         Ligne::Entree { id, coche, .. } if *id == cherche => Some(*coche),
@@ -376,7 +384,7 @@ fn coche_de(lignes: &[Ligne], cherche: &str) -> Option<bool> {
 #[test]
 fn la_coche_du_personnage_suit_sa_tenue() {
     let (table, blob) = table_et_blob();
-    let l = lignes(&blob, &table, Ou::Sol, Some(Tenue::Asseoir), &[Some(Tenue::Asseoir)]);
+    let l = lignes(&blob, &table, Ou::Sol, Some(Tenue::Asseoir), &[capable(Some(Tenue::Asseoir))]);
     assert_eq!(coche_de(&l, "perso.asseoir"), Some(true));
     assert_eq!(coche_de(&l, "perso.flaner"), Some(false));
     // Une action ponctuelle n'a jamais de coche.
@@ -386,10 +394,10 @@ fn la_coche_du_personnage_suit_sa_tenue() {
 #[test]
 fn tout_le_monde_n_est_coche_que_si_tous_la_tiennent() {
     let (table, blob) = table_et_blob();
-    let un_seul = lignes(&blob, &table, Ou::Sol, None, &[Some(Tenue::Asseoir), None]);
+    let un_seul = lignes(&blob, &table, Ou::Sol, None, &[capable(Some(Tenue::Asseoir)), capable(None)]);
     assert_eq!(coche_de(&un_seul, "tous.asseoir"), Some(false));
 
-    let tous = lignes(&blob, &table, Ou::Sol, None, &[Some(Tenue::Asseoir), Some(Tenue::Asseoir)]);
+    let tous = lignes(&blob, &table, Ou::Sol, None, &[capable(Some(Tenue::Asseoir)), capable(Some(Tenue::Asseoir))]);
     assert_eq!(coche_de(&tous, "tous.asseoir"), Some(true));
 }
 
@@ -397,7 +405,7 @@ fn tout_le_monde_n_est_coche_que_si_tous_la_tiennent() {
 fn la_section_tout_le_monde_suit_son_titre_avec_les_actions_du_sol() {
     let (table, blob) = table_et_blob();
     // Même au mur : la section « Tout le monde » ne propose que le sol.
-    let l = lignes(&blob, &table, Ou::Mur, None, &[None]);
+    let l = lignes(&blob, &table, Ou::Mur, None, &[capable(None)]);
     let titre = l
         .iter()
         .position(|x| *x == Ligne::Titre { texte: "Tout le monde" })
@@ -434,7 +442,7 @@ fn les_identifiants_tous_ne_vont_pas_au_demandeur() {
 fn resoudre_pour_tous_tient_si_un_seul_ne_la_tient_pas() {
     let c = resoudre_pour_tous(
         Commande::Basculer(Tenue::Asseoir),
-        &[Some(Tenue::Asseoir), None],
+        &[capable(Some(Tenue::Asseoir)), capable(None)],
     );
     assert_eq!(c, Commande::Tenir(Tenue::Asseoir));
 }
@@ -443,7 +451,7 @@ fn resoudre_pour_tous_tient_si_un_seul_ne_la_tient_pas() {
 fn resoudre_pour_tous_relache_si_tous_la_tiennent() {
     let c = resoudre_pour_tous(
         Commande::Basculer(Tenue::Asseoir),
-        &[Some(Tenue::Asseoir), Some(Tenue::Asseoir)],
+        &[capable(Some(Tenue::Asseoir)), capable(Some(Tenue::Asseoir))],
     );
     assert_eq!(c, Commande::Relacher(Tenue::Asseoir));
 }
@@ -451,7 +459,7 @@ fn resoudre_pour_tous_relache_si_tous_la_tiennent() {
 #[test]
 fn resoudre_pour_tous_laisse_passer_le_reste() {
     let c = Commande::Intention(Intention::Jouer(Jeu::TeteQuiTourne));
-    assert_eq!(resoudre_pour_tous(c, &[None]), c);
+    assert_eq!(resoudre_pour_tous(c, &[capable(None)]), c);
 }
 
 #[test]
@@ -460,11 +468,49 @@ fn chaque_entree_affichee_est_un_identifiant_connu() {
     // entrée affichée mais inconnue serait un clic sans effet.
     let (table, blob) = table_et_blob();
     for ou in [Ou::Sol, Ou::Mur, Ou::Plafond] {
-        for l in lignes(&blob, &table, ou, None, &[None]) {
+        for l in lignes(&blob, &table, ou, None, &[capable(None)]) {
             if let Ligne::Entree { id, .. } = l {
                 assert_eq!(id_connu(id), Some(id), "{id}");
             }
         }
     }
     assert_eq!(id_connu("n'importe.quoi"), None);
+}
+
+// ── Qui ne PEUT pas la tenir ne compte pas (relecture finale, n° 2) ──────
+//
+// `behavior::pas` refuse `Tenir` à qui ne peut pas obéir : un pack sans
+// poses d'escalade ignore « Grimper au mur ». Le compter dans « tous la
+// tiennent » rendait la ligne impossible à décocher — chaque clic renvoyait
+// `Tenir`, et blob restait au mur pour toujours.
+
+/// Un pack sans escalade : il peut tout tenir, sauf les tenues du mur.
+fn sans_escalade(tenue: Option<Tenue>) -> Present {
+    Present {
+        tenue,
+        peut_tenir: vec![Tenue::Asseoir, Tenue::BalancerLesJambes, Tenue::Flaner],
+    }
+}
+
+#[test]
+fn tout_le_monde_ignore_qui_ne_peut_pas_la_tenir() {
+    let presents = [capable(Some(Tenue::Grimper)), sans_escalade(None)];
+    assert_eq!(
+        resoudre_pour_tous(Commande::Basculer(Tenue::Grimper), &presents),
+        Commande::Relacher(Tenue::Grimper)
+    );
+    let (table, blob) = table_et_blob();
+    let l = lignes(&blob, &table, Ou::Sol, None, &presents);
+    assert_eq!(coche_de(&l, "tous.grimper"), Some(true));
+}
+
+#[test]
+fn si_personne_ne_peut_la_tenir_on_tient() {
+    // Personne de capable : « tous la tiennent » serait vrai par vacuité, et
+    // le clic relâcherait… personne.
+    let presents = [sans_escalade(None)];
+    assert_eq!(
+        resoudre_pour_tous(Commande::Basculer(Tenue::Grimper), &presents),
+        Commande::Tenir(Tenue::Grimper)
+    );
 }

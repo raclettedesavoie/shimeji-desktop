@@ -30,6 +30,16 @@ pub enum Tenue {
 }
 
 impl Tenue {
+    /// Toutes les tenues, pour qui doit les passer en revue — la boucle,
+    /// quand elle demande à chacun ce qu'il peut tenir.
+    pub const TOUTES: [Tenue; 5] = [
+        Tenue::Asseoir,
+        Tenue::BalancerLesJambes,
+        Tenue::Flaner,
+        Tenue::Grimper,
+        Tenue::ResterAccroche,
+    ];
+
     /// L'intention qui sert cette tenue.
     ///
     /// `ResterAccroche` rend `Grimper` : c'est une escalade arrêtée, et la
@@ -91,6 +101,36 @@ pub fn intention_pour(
         Tenue::ResterAccroche => ActiveIntention::accroche(maintenant),
         autre => ActiveIntention::nouvelle(autre.intention(), maintenant),
     }
+}
+
+/// Ce personnage peut-il tenir `t`, LÀ où il est, avec SON pack ?
+///
+/// La règle unique de `Commande::Tenir` dans `behavior::pas`, et celle que
+/// la section « Tout le monde » applique pour ne compter que les présents
+/// capables (sans quoi une ligne cochée par tous ceux qui PEUVENT ne se
+/// décocherait jamais).
+///
+/// - **Posé** (`Attachment::On`) : porté ou en chute, les réflexes passent
+///   avant et `pas` ne verrait même pas la commande.
+/// - **À sa place** : une tenue de sol sur une paroi le ferait tomber,
+///   « Rester accroché » au sol n'a pas de sens. Seul `Grimper` vaut
+///   partout — au sol il part au mur, sur un mur il reprend.
+/// - **Jouable** : son pack a les poses (couverture partielle, spec §8.6).
+pub fn peut_tenir(t: Tenue, ch: &Character, table: &TableEnvies) -> bool {
+    use crate::character::attach::Attachment;
+    use crate::geom::Face;
+
+    // `let … else` : pas posé, pas de tenue possible — on sort tout de suite.
+    let Attachment::On { face, .. } = ch.attachment else {
+        return false;
+    };
+    let sur_une_paroi = face != Face::Top;
+    let a_sa_place = match t {
+        Tenue::Grimper => true,
+        Tenue::ResterAccroche => sur_une_paroi,
+        _ => !sur_une_paroi,
+    };
+    a_sa_place && table.jouable(&ch.manifest, t.intention())
 }
 
 /// Son intention en cours sert-elle une tenue AU MUR ?
