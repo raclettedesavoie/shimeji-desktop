@@ -37,6 +37,24 @@ impl Facing {
         matches!(self, Facing::Right)
     }
 
+    /// L'orientation qui fait FACE à une paroi verticale : la face `Right`
+    /// est celle d'un mur GAUCHE d'écran (il se tient à sa droite), donc il
+    /// regarde à gauche ; et symétriquement pour `Left`. `None` pour le sol
+    /// et le plafond, où l'orientation suit le déplacement.
+    ///
+    /// **La seule règle de ce genre du programme** : l'arrivée au pied d'un
+    /// mur et le lancer contre une paroi l'appellent tous les deux. Avant, la
+    /// première comparait `x_mur < pos.x` — faux à égalité, quand il avait
+    /// flâné jusqu'au bord exact de l'écran : il s'accrochait dos au mur,
+    /// dessiné presque entièrement hors de l'écran (2026-09-24).
+    pub fn face_a_la_paroi(face: crate::geom::Face) -> Option<Facing> {
+        match face {
+            crate::geom::Face::Right => Some(Facing::Left),
+            crate::geom::Face::Left => Some(Facing::Right),
+            crate::geom::Face::Top | crate::geom::Face::Bottom => None,
+        }
+    }
+
     /// L'autre sens. Sert au demi-tour en bout de plateforme.
     pub fn inverse(&self) -> Facing {
         match self {

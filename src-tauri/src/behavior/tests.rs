@@ -1516,3 +1516,46 @@ fn tout_le_monde_s_impose_aussi_en_pleine_chute() {
     jouer_images(&mut ch, &m, &entrees(true, 1.0), &mut rng, Duration::from_secs(1), 600, |_| {});
     assert_eq!(ch.pose, POSE_SIT);
 }
+
+// ── Il fait face à sa paroi (défaut n° 2 de la spec « menu sur mesure ») ──
+//
+// « Sur le mur de gauche, il est dessiné comme sur un mur de droite —
+// presque entièrement hors de l'écran », et par moments sur celui de droite
+// aussi. Un personnage accroché à la face `Right` (mur GAUCHE de l'écran)
+// doit regarder à gauche ; à la face `Left` (mur DROIT), à droite.
+
+/// L'orientation qu'il doit avoir là où il est, s'il est sur un mur.
+fn orientation_attendue_au_mur(ch: &Character) -> Option<crate::character::Facing> {
+    match ch.attachment {
+        Attachment::On { face: Face::Right, .. } => Some(crate::character::Facing::Left),
+        Attachment::On { face: Face::Left, .. } => Some(crate::character::Facing::Right),
+        _ => None,
+    }
+}
+
+#[test]
+fn il_fait_toujours_face_a_sa_paroi() {
+    // Longue vie ordinaire, avec une forte envie de grimper, sur plusieurs
+    // graines — chacune semée UNE fois (CLAUDE.md, « Semer l'aléatoire une
+    // seule fois »). Et des départs aux deux bouts de l'écran.
+    let m = monde();
+    let mut e = entrees(true, 1.0);
+    e.biais.grimper = 20.0;
+    for (graine, offset) in [(31, 50.0), (37, 1800.0), (41, 900.0), (43, 300.0)] {
+        let mut ch = perso(&m);
+        let sol = &m.platforms()[0];
+        ch.attachment = Attachment::On { platform: sol.id, face: Face::Top, offset };
+        let mut rng = XorShift32::seeded(graine);
+        let mut image = 0u32;
+        jouer_images(&mut ch, &m, &e, &mut rng, Duration::from_secs(1), 60 * 60 * 20, |ch| {
+            image += 1;
+            if let Some(attendue) = orientation_attendue_au_mur(ch) {
+                assert_eq!(
+                    ch.facing, attendue,
+                    "graine {graine}, image {image} : {:?}, pose {}, intention {:?}",
+                    ch.attachment, ch.pose, ch.intention
+                );
+            }
+        });
+    }
+}

@@ -868,11 +868,15 @@ fn grimper(
             };
 
             // Il regarde le mur, et il marche vers lui.
-            ch.facing = if x_mur < pos.x {
-                Facing::Left
-            } else {
-                Facing::Right
-            };
+            //
+            // Déduit de la FACE du mur, pas des positions : `x_mur < pos.x`
+            // était faux à égalité — arrivé au bord exact de l'écran en
+            // flânant, il se tournait dos au mur (voir `face_a_la_paroi`).
+            // Le mur est toujours du côté où il le regarde, puisqu'il est à
+            // l'intérieur de l'écran : marcher « devant soi » y mène.
+            if let Some(f) = Facing::face_a_la_paroi(face_mur) {
+                ch.facing = f;
+            }
             // Sur ordre, il court — mais seulement s'il en a la pose : courir
             // en pose de marche aurait l'air d'un glissement, et la couverture
             // partielle (spec §8.6) veut qu'une pose absente retire l'option,

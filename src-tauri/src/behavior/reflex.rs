@@ -324,11 +324,9 @@ pub fn appliquer(
                 // qui est celle d'un mur DROIT.
                 Face::Right | Face::Left => {
                     ch.attachment = Attachment::On { platform, face, offset };
-                    ch.facing = if face == Face::Right {
-                        Facing::Left
-                    } else {
-                        Facing::Right
-                    };
+                    if let Some(f) = Facing::face_a_la_paroi(face) {
+                        ch.facing = f;
+                    }
                     ch.set_pose(POSE_GRAB_WALL, maintenant);
 
                     // ⚠️ Voir le commentaire d'`ActiveIntention::accroche` :
