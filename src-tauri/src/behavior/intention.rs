@@ -1239,25 +1239,48 @@ fn grimper(
     Issue::EnCours
 }
 
-/// Le mur de l'écran du personnage le plus proche de lui.
+/// Le mur le plus proche du personnage : sur SON écran d'abord, sinon sur
+/// n'importe quel écran.
 ///
-/// « De son écran » : c'est à cela que sert `PlatformId::meme_ecran`. Sans ce
-/// filtre, un personnage sur l'écran de gauche pourrait viser le mur droit de
-/// l'écran de droite, à 3 000 px — une marche de 60 s pour rien.
+/// « De son écran » d'abord : c'est à cela que sert `PlatformId::meme_ecran`.
+/// Sans ce filtre, un personnage sur l'écran de gauche pourrait viser le mur
+/// droit de l'écran de droite, à 3 000 px — une marche de 60 s pour rien.
 ///
-/// Rend `None` quand cet écran-là n'a aucun mur : c'est le cas de l'écran du
-/// milieu d'une rangée de trois, dont les deux bords sont recouverts par ses
-/// voisins (design §2.3).
+/// « Sinon n'importe lequel » (2026-09-24, spec « menu sur mesure » §6,
+/// défaut n° 3) : l'écran du milieu d'une rangée de trois n'a AUCUN mur, ses
+/// deux bords étant recouverts par ses voisins (design §2.3). Il y échouait
+/// toujours à grimper. Il vise maintenant le mur d'un voisin, et y marche
+/// d'un écran à l'autre par les sols voisins (`avancer`). Si le chemin est
+/// coupé (écrans décalés en hauteur), il échouera au délai d'abandon —
+/// la navigation est autorisée à échouer (décision n° 4).
+///
+/// Rend `None` seulement quand il n'existe aucun mur nulle part.
 fn mur_le_plus_proche(world: &World, depuis: PlatformId, ch: &Character) -> Option<PlatformId> {
     // `?` : pas de position connue (plateforme disparue), pas de mur à viser.
     let pos = position_actuelle(ch, world)?;
 
+    // `or_else` : la seconde recherche n'est faite que si la première n'a
+    // rien trouvé — l'équivalent d'un `match` dont la branche `None`
+    // relancerait la recherche sans le filtre d'écran.
+    mur_le_plus_proche_parmi(world, pos, |id| id.meme_ecran(depuis))
+        .or_else(|| mur_le_plus_proche_parmi(world, pos, |_| true))
+}
+
+/// Le mur le plus proche de `pos` parmi les plateformes que `garder` accepte.
+///
+/// `impl Fn(PlatformId) -> bool` : n'importe quelle fonction ou fermeture qui
+/// prend un identifiant et rend un booléen — ici « même écran » ou « tout ».
+fn mur_le_plus_proche_parmi(
+    world: &World,
+    pos: Point,
+    garder: impl Fn(PlatformId) -> bool,
+) -> Option<PlatformId> {
     // (identité, distance) — la distance ne sert qu'à comparer, et on la
     // laisse tomber à la fin. Même motif que `World::nearest_floor`.
     let mut meilleur: Option<(PlatformId, f32)> = None;
 
     for plat in world.platforms() {
-        if !plat.id.meme_ecran(depuis) {
+        if !garder(plat.id) {
             continue;
         }
         // Un mur, c'est-à-dire une plateforme dont l'unique face est

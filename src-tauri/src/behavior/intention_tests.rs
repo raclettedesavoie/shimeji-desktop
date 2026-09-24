@@ -1192,8 +1192,12 @@ fn grimper_regarde_le_mur() {
     }
 }
 
+/// L'écran du milieu d'une rangée de trois n'a aucun mur à lui. Jusqu'au
+/// 2026-09-24, « Grimper » y échouait immédiatement ; il vise désormais le
+/// mur le plus proche d'un écran voisin (spec « menu sur mesure » §6,
+/// défaut n° 3) et part le rejoindre.
 #[test]
-fn grimper_echoue_immediatement_sans_mur() {
+fn au_milieu_grimper_vise_le_mur_d_un_voisin() {
     // L'écran du MILIEU d'une rangée de trois n'a aucun mur : ses deux
     // bords sont recouverts par ses voisins (design §2.3). L'intention
     // doit échouer tout de suite pour qu'une autre soit tirée — et
@@ -1239,8 +1243,15 @@ fn grimper_echoue_immediatement_sans_mur() {
         &mut rng,
     );
 
-    assert_eq!(issue, Issue::Echouee);
-    assert!(ch.intention.is_none());
+    assert_eq!(issue, Issue::EnCours);
+    assert!(
+        matches!(
+            ch.intention.map(|i| i.etat),
+            Some(EtatIntention::Grimpe { phase: PhaseGrimpe::Rejoindre { .. }, .. })
+        ),
+        "il devrait partir rejoindre un mur : {:?}",
+        ch.intention
+    );
 }
 
 #[test]
@@ -1362,6 +1373,12 @@ fn une_escalade_complete_tient_dans_le_delai_d_abandon() {
     // la même proportion quel que soit le réglage — c'est ce test-ci qui
     // le démontre, plutôt que de ne vérifier que le facteur ×1 comme
     // avant.
+    //
+    // ⚠️ Depuis le 2026-09-24, l'écran du milieu d'une rangée de trois vise
+    // le mur d'un VOISIN (`mur_le_plus_proche`) : jusqu'à 2 880 px. À pied,
+    // cela dépasse le délai ; ce cas n'est tenu qu'à la course, c'est-à-dire
+    // sur ordre ou en tenue. Tiré au sort, il peut échouer au délai
+    // d'abandon — la navigation en a le droit (décision n° 4).
     for facteur in [1.0f32, 0.5, 0.1] {
         let config = crate::config::Config {
             vitesse: facteur,

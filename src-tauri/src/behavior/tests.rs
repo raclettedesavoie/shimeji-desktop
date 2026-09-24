@@ -1559,3 +1559,50 @@ fn il_fait_toujours_face_a_sa_paroi() {
         });
     }
 }
+
+// ── L'écran du milieu (défaut n° 3 de la spec « menu sur mesure ») ────────
+//
+// Sur trois écrans côte à côte, celui du milieu n'a AUCUN mur : ses deux
+// bords touchent un voisin, et un bord commun n'est pas un mur (voulu).
+// « Grimper au mur » y échouait donc toujours. Il doit viser le mur le plus
+// proche sur n'importe quel écran, et y marcher d'un écran à l'autre.
+
+fn trois_ecrans() -> World {
+    let ecran = |id: u64, x: f32| crate::probe::ScreenInfo {
+        id,
+        work_area: crate::geom::Rect::new(x, 0.0, 1920.0, 1032.0),
+        bounds: crate::geom::Rect::new(x, 0.0, 1920.0, 1032.0),
+        scale: 1.0,
+    };
+    World::from_screens(
+        &crate::probe::fake::FakeProbe::new(vec![ecran(1, 0.0), ecran(2, 1920.0), ecran(3, 3840.0)])
+            .screens(),
+    )
+}
+
+#[test]
+fn depuis_l_ecran_du_milieu_il_rejoint_un_mur_voisin() {
+    use crate::menu_perso::Commande;
+    let m = trois_ecrans();
+    let sol_du_milieu = m
+        .platforms()
+        .iter()
+        .find(|p| p.has_face(Face::Top) && p.rect.x == 1920.0)
+        .expect("le sol de l'écran du milieu");
+    let mut ch = perso(&m);
+    ch.attachment = Attachment::On { platform: sol_du_milieu.id, face: Face::Top, offset: 700.0 };
+    ch.pos_connue = sol_du_milieu.rect.point_on(Face::Top, 700.0);
+    let mut rng = XorShift32::seeded(47);
+
+    commander(&mut ch, &m, Commande::Intention(intention::Intention::Grimper), Duration::from_secs(1), &mut rng);
+
+    // 700 px jusqu'au bord gauche du milieu, puis 1920 px à traverser : à la
+    // course (100 px/s), moins d'une minute. Deux minutes laissent la marge.
+    let mut sur_un_mur = false;
+    jouer_images(&mut ch, &m, &entrees(true, 1.0), &mut rng, Duration::from_secs(1), 120 * 60, |ch| {
+        if matches!(ch.attachment, Attachment::On { face: Face::Left | Face::Right, .. }) {
+            sur_un_mur = true;
+        }
+    });
+    assert!(sur_un_mur, "il n'a jamais atteint de mur : {:?}", ch.attachment);
+}
