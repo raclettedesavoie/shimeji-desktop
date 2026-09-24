@@ -1915,8 +1915,8 @@ fn boucle(
             Err(_) => None,
         };
 
-        // Les présents — ce que chacun tient, et ce qu'il PEUT tenir là où il
-        // est —, pour les coches du menu et pour résoudre une commande « Tout
+        // Les présents — ce que chacun tient, et ce que son pack lui permet
+        // de tenir —, pour les coches du menu et pour résoudre une commande « Tout
         // le monde ». Un acteur en départ n'est plus là : il ne compte pas.
         //
         // Calculés SEULEMENT quand ils servent (une commande « Tout le monde »,
@@ -1930,9 +1930,13 @@ fn boucle(
                     .filter(|a| a.depart.is_none())
                     .map(|a| menu_perso::Present {
                         tenue: a.ch.tenue,
+                        // Les POSES seulement, pas l'endroit : un ordre
+                        // « Tout le monde » s'impose où qu'il soit
+                        // (`Commande::Imposer`) ; seul un pack qui n'a pas
+                        // les poses le refuse, et ne doit donc pas compter.
                         peut_tenir: behavior::tenue::Tenue::TOUTES
                             .into_iter()
-                            .filter(|t| behavior::tenue::peut_tenir(*t, &a.ch, &table))
+                            .filter(|t| table.jouable(&a.ch.manifest, t.intention()))
                             .collect(),
                     })
                     .collect()

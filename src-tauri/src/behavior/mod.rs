@@ -177,6 +177,19 @@ pub fn pas(
     // ── Couche 1 : les réflexes ─────────────────────────────────────────
     // S'ils s'imposent, les couches 2 et 3 ne tournent pas du tout dans
     // cette image (spec §7.1).
+    //
+    // Sauf pour un point : un ordre « Tout le monde » s'IMPOSE, même à qui
+    // tombe ou qu'on porte (demande de l'auteur). Les réflexes gardent la
+    // main — on ne touche pas à son vol —, on lui donne seulement la tenue,
+    // qu'il jouera dès qu'il aura touché le sol (relance plus bas).
+    if let Some(crate::menu_perso::Commande::Imposer(t)) = e.commande {
+        if !matches!(ch.attachment, Attachment::On { .. })
+            && table.jouable(&ch.manifest, t.intention())
+        {
+            ch.tenue = Some(t);
+        }
+    }
+
     let r = reflex::appliquer(ch, world, e, maintenant, dt);
     if r != reflex::Reflexe::Aucun {
         return r;
@@ -272,21 +285,45 @@ pub fn pas(
                 }
             }
 
-            crate::menu_perso::Commande::Tenir(t) => {
+            // `|` dans un motif : les deux variantes partagent ce bras, et la
+            // garde `if` s'applique aux deux.
+            crate::menu_perso::Commande::Tenir(t) | crate::menu_perso::Commande::Imposer(t)
+                if tenue::peut_tenir(t, ch, table) =>
+            {
                 // Le garde-fou de l'endroit et des poses, le même que pour une
-                // intention de sol — voir `tenue::peut_tenir`, qui sert aussi
-                // la section « Tout le monde » : une seule règle, deux usages.
-                if tenue::peut_tenir(t, ch, table) {
+                // intention de sol — voir `tenue::peut_tenir`.
+                ch.tenue = Some(t);
+                ch.intention = Some(tenue::intention_pour(
+                    t,
+                    e,
+                    reglages,
+                    table,
+                    &ch.manifest,
+                    maintenant,
+                ));
+                return r;
+            }
+
+            // `Tenir` refusé : le garde-fou ci-dessus a dit non, on ignore.
+            crate::menu_perso::Commande::Tenir(_) => {}
+
+            crate::menu_perso::Commande::Imposer(t) => {
+                // L'ordre collectif, là où `Tenir` refuserait : une tenue de
+                // SOL alors qu'il est sur une paroi. Il la prend quand même,
+                // et l'on efface son intention — la règle de sécurité du
+                // monde vertical, juste plus bas, le fait lâcher dans cette
+                // image (comme « Se lâcher »). Il atterrit, et la tenue se
+                // relance au sol.
+                //
+                // `au_sol()` : « Rester accroché » imposé au sol n'a aucun
+                // moyen de devenir vrai ; le prendre relancerait un échec à
+                // chaque image. Un pack sans les poses refuse, comme partout.
+                if t.au_sol()
+                    && table.jouable(&ch.manifest, t.intention())
+                    && matches!(ch.attachment, Attachment::On { .. })
+                {
                     ch.tenue = Some(t);
-                    ch.intention = Some(tenue::intention_pour(
-                        t,
-                        e,
-                        reglages,
-                        table,
-                        &ch.manifest,
-                        maintenant,
-                    ));
-                    return r;
+                    ch.intention = None;
                 }
             }
 

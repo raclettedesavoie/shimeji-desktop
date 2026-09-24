@@ -439,12 +439,12 @@ fn les_identifiants_tous_ne_vont_pas_au_demandeur() {
 }
 
 #[test]
-fn resoudre_pour_tous_tient_si_un_seul_ne_la_tient_pas() {
+fn resoudre_pour_tous_impose_si_un_seul_ne_la_tient_pas() {
     let c = resoudre_pour_tous(
         Commande::Basculer(Tenue::Asseoir),
         &[capable(Some(Tenue::Asseoir)), capable(None)],
     );
-    assert_eq!(c, Commande::Tenir(Tenue::Asseoir));
+    assert_eq!(c, Commande::Imposer(Tenue::Asseoir));
 }
 
 #[test]
@@ -505,12 +505,12 @@ fn tout_le_monde_ignore_qui_ne_peut_pas_la_tenir() {
 }
 
 #[test]
-fn si_personne_ne_peut_la_tenir_on_tient() {
+fn si_personne_ne_peut_la_tenir_on_impose() {
     // Personne de capable : « tous la tiennent » serait vrai par vacuité, et
-    // le clic relâcherait… personne.
+    // le clic relâcherait… personne. On impose (chacun refusera).
     let presents = [sans_escalade(None)];
     assert_eq!(
         resoudre_pour_tous(Commande::Basculer(Tenue::Grimper), &presents),
-        Commande::Tenir(Tenue::Grimper)
+        Commande::Imposer(Tenue::Grimper)
     );
 }

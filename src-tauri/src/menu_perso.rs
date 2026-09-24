@@ -57,6 +57,13 @@ pub enum Commande {
     /// section « Tout le monde » quand tous ne la tiennent pas encore.
     Tenir(Tenue),
 
+    /// La tenir **quoi qu'il fasse et où qu'il soit** : ce que devient un
+    /// `Basculer` de la section « Tout le monde » (demande de l'auteur,
+    /// 2026-09-24 — un ordre collectif doit valoir pour TOUS). Accroché à un
+    /// mur, une tenue de sol le fait se lâcher ; en chute ou porté, il la
+    /// jouera en touchant le sol. Seul un pack sans les poses la refuse.
+    Imposer(Tenue),
+
     /// La relâcher s'il la tient, ne rien faire sinon. L'intention en cours
     /// continue : il reprend sa vie normale à la fin de celle-ci.
     Relacher(Tenue),
@@ -310,7 +317,7 @@ pub fn id_connu(id: &str) -> Option<&'static str> {
 }
 
 /// Un personnage présent, vu par la section « Tout le monde » : ce qu'il
-/// tient, et ce qu'il PEUT tenir là où il est (`tenue::peut_tenir`).
+/// tient, et ce que son pack lui permet de tenir (ses poses).
 ///
 /// `peut_tenir` : sans lui, un pack sans escalade compterait parmi ceux qui
 /// « ne tiennent pas encore » Grimper au mur, alors que `behavior::pas` lui
@@ -335,8 +342,8 @@ pub fn tous_la_tiennent(t: Tenue, presents: &[Present]) -> bool {
 
 /// Ce que devient une commande de la section « Tout le monde » pour les
 /// personnages présents (spec §3) : coché si tous ceux qui PEUVENT la tenir
-/// la tiennent, donc un clic relâche chez tous ; sinon, un clic la donne à
-/// tous (et chacun refuse ce qu'il ne peut pas faire).
+/// la tiennent, donc un clic relâche chez tous ; sinon, un clic l'IMPOSE à
+/// tous, par-dessus leur propre action (seul un pack sans les poses refuse).
 ///
 /// Résolue UNE fois par la boucle, avant de servir les acteurs : chaque
 /// acteur résolvant son propre `Basculer`, un personnage déjà assis se
@@ -347,7 +354,7 @@ pub fn resoudre_pour_tous(c: Commande, presents: &[Present]) -> Commande {
             if tous_la_tiennent(t, presents) {
                 Commande::Relacher(t)
             } else {
-                Commande::Tenir(t)
+                Commande::Imposer(t)
             }
         }
         autre => autre,
@@ -421,7 +428,10 @@ pub fn lignes(
         // exige déjà pour être là où le menu les propose.
         let jouable = match commande {
             Commande::Intention(i) => table.jouable(manifeste, *i),
-            Commande::Basculer(t) | Commande::Tenir(t) | Commande::Relacher(t) => {
+            Commande::Basculer(t)
+            | Commande::Tenir(t)
+            | Commande::Imposer(t)
+            | Commande::Relacher(t) => {
                 table.jouable(manifeste, t.intention())
             }
             Commande::Redescendre | Commande::SeLacher => true,

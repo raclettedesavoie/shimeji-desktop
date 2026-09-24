@@ -1475,3 +1475,44 @@ fn peut_tenir_suit_l_endroit_et_l_attache() {
     ch.attachment = Attachment::Dragged;
     assert!(!peut_tenir(Tenue::Asseoir, &ch, &table));
 }
+
+// ── « Tout le monde » s'impose à tous (demande de l'auteur, 2026-09-24) ───
+//
+// Un ordre collectif remplace l'action tenue de chacun, où qu'il soit : au
+// mur, il se lâche et s'assoit en atterrissant ; en chute, il s'assoit en
+// touchant le sol.
+
+#[test]
+fn tout_le_monde_s_asseoir_fait_descendre_celui_qui_grimpe() {
+    use crate::menu_perso::Commande;
+    let m = monde();
+    let mut ch = perso_au_mur(&m, tenue::Tenue::Grimper);
+    let mut rng = XorShift32::seeded(29);
+
+    commander(&mut ch, &m, Commande::Imposer(tenue::Tenue::Asseoir), Duration::from_secs(2), &mut rng);
+    assert_eq!(ch.tenue, Some(tenue::Tenue::Asseoir));
+    assert!(matches!(ch.attachment, Attachment::Falling { .. }), "{:?}", ch.attachment);
+
+    // Dix secondes : la chute, l'atterrissage, puis la pose assise.
+    jouer_images(&mut ch, &m, &entrees(true, 1.0), &mut rng, Duration::from_secs(2), 600, |_| {});
+    assert_eq!(ch.tenue, Some(tenue::Tenue::Asseoir));
+    assert_eq!(ch.pose, POSE_SIT);
+}
+
+#[test]
+fn tout_le_monde_s_impose_aussi_en_pleine_chute() {
+    use crate::menu_perso::Commande;
+    let m = monde();
+    let mut ch = perso(&m);
+    ch.attachment = Attachment::Falling {
+        pos: Point::new(ch.pos_connue.x, ch.pos_connue.y - 200.0),
+        vel: crate::geom::Vec2::zero(),
+    };
+    let mut rng = XorShift32::seeded(29);
+
+    commander(&mut ch, &m, Commande::Imposer(tenue::Tenue::Asseoir), Duration::from_secs(1), &mut rng);
+    assert_eq!(ch.tenue, Some(tenue::Tenue::Asseoir));
+
+    jouer_images(&mut ch, &m, &entrees(true, 1.0), &mut rng, Duration::from_secs(1), 600, |_| {});
+    assert_eq!(ch.pose, POSE_SIT);
+}
