@@ -1,7 +1,7 @@
 //! Le menu du **clic droit sur le personnage** (spec §3.3, §9.1).
 //!
 //! Responsabilité unique : **décrire** ce menu (`lignes`). L'afficher est
-//! l'affaire de `menu_natif.rs`, et ce qu'une entrée *fait* celle
+//! l'affaire de `menu_fenetre.rs` (et de `ui/menu.*`), et ce qu'une entrée *fait* celle
 //! d'`actions.rs` — ici on ne décide rien, on propose.
 //!
 //! # Le menu est reconstruit à chaque clic droit
@@ -292,6 +292,23 @@ pub fn commande_de_tous(id: &str) -> Option<Commande> {
     TOUS.iter().find(|(i, _, _)| *i == id).map(|(_, _, c)| *c)
 }
 
+/// L'identifiant `&'static` qui correspond à `id`, s'il est l'une de nos
+/// entrées ; `None` sinon.
+///
+/// La fenêtre du menu renvoie une `String` : c'est ici qu'elle redevient
+/// un identifiant du programme. **N'accepter que ce qu'on connaît** —
+/// `actions::executer` ne recevra jamais une chaîne arbitraire venue d'un
+/// webview.
+pub fn id_connu(id: &str) -> Option<&'static str> {
+    let communs = [ID_P_CACHER_CE, ID_P_CACHER, ID_CATALOGUE, ID_QUITTER];
+    ENVIES
+        .iter()
+        .map(|(i, _, _, _)| *i)
+        .chain(TOUS.iter().map(|(i, _, _)| *i))
+        .chain(communs)
+        .find(|i| *i == id)
+}
+
 /// Ce que devient une commande de la section « Tout le monde » pour les
 /// personnages présents (spec §3) : coché si TOUS la tiennent, donc un clic
 /// relâche chez tous ; sinon, un clic la donne à tous.
@@ -319,10 +336,16 @@ pub fn resoudre_pour_tous(c: Commande, tenues: &[Option<Tenue>]) -> Commande {
 /// Une ligne du menu : une entrée cliquable, un titre de section, ou un
 /// séparateur.
 ///
-/// Le menu est **décrit** ici et **affiché** ailleurs (`menu_natif.rs`) :
+/// Le menu est **décrit** ici et **affiché** ailleurs (`menu_fenetre.rs`) :
 /// la description est une fonction pure, donc testable sans écran, et
 /// l'affichage ne sait rien des envies ni des packs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// `Serialize` avec `tag = "type"` : chaque ligne devient un objet JSON
+/// portant son genre — `{"type":"Entree","id":…,"libelle":…,"coche":…}`,
+/// `{"type":"Titre","texte":…}`, `{"type":"Separateur"}` — que `menu.js`
+/// lit par `ligne.type`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "type")]
 pub enum Ligne {
     /// `id` est l'identifiant que reçoit `actions::executer` ; `coche` dit
     /// si l'action est tenue — DÉDUITE de la tenue, jamais stockée.

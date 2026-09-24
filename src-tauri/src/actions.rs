@@ -283,16 +283,17 @@ impl Actions {
             .unwrap_or(0)
     }
 
-    /// Exécute le choix fait dans le menu **natif** du personnage
-    /// (`menu_natif.rs`), par le même `executer` que le tray.
+    /// Exécute le choix fait dans le menu du personnage (`menu_fenetre.rs`,
+    /// via la commande `choisir_entree_menu`), par le même `executer` que le
+    /// tray.
     ///
-    /// Ce n'est **pas** un second `on_menu_event` : le menu natif n'est pas
-    /// un menu Tauri, aucun événement n'est émis, et c'est donc à nous de
+    /// Ce n'est **pas** un second `on_menu_event` : ce menu n'est pas un
+    /// menu Tauri, aucun événement n'est émis, et c'est donc à nous de
     /// porter l'identifiant choisi jusqu'au gestionnaire unique.
     ///
     /// `run_on_main_thread` : `executer` a été écrit pour le thread
     /// principal, d'où le tray l'appelle — il ouvre des fenêtres, coche des
-    /// cases, quitte l'application. L'appeler depuis le thread du menu
+    /// cases, quitte l'application. L'appeler depuis le thread d'une commande
     /// marcherait peut-être ; le renvoyer là où il a toujours tourné évite
     /// d'avoir à le vérifier cas par cas.
     ///

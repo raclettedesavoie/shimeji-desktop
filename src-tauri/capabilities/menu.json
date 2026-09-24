@@ -1,0 +1,6 @@
+{
+  "identifier": "menu",
+  "description": "Permet a la fenetre du menu du clic droit d'appeler Rust (placer_menu, choisir_entree_menu, fermer_menu). Portee a CETTE fenetre, comme celles du catalogue et de l'assistant.",
+  "windows": ["menu"],
+  "permissions": ["core:default"]
+}

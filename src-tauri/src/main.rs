@@ -38,7 +38,7 @@ mod commandes;
 mod config;
 mod geom;
 mod maj;
-mod menu_natif;
+mod menu_fenetre;
 mod menu_perso;
 mod overlay;
 mod probe;
@@ -363,7 +363,10 @@ fn lancer_application() {
             commandes::definir_compte,
             commandes::supprimer,
             commandes::onboarding_etat,
-            commandes::onboarding_terminer
+            commandes::onboarding_terminer,
+            commandes::placer_menu,
+            commandes::choisir_entree_menu,
+            commandes::fermer_menu
         ])
         // ── Le schéma URI qui sert les PNG externes ─────────────────────
         // Les personnages sont des fichiers externes au binaire (spec §8.1),
@@ -509,6 +512,10 @@ fn lancer_application() {
             // ainsi que les commandes de la bibliotheque atteignent le roster.
             tauri::Manager::manage(app, actions.clone());
 
+            // L'état du menu du clic droit, partagé entre la boucle (qui
+            // l'ouvre) et les commandes (qui le placent et le ferment).
+            tauri::Manager::manage(app, menu_fenetre::EtatMenu::default());
+
             // ── Deux équivalents scriptables des clics de la bibliothèque ─
             //
             // Règle du projet : tout ce qui demanderait un clic en reçoit un.
@@ -576,6 +583,14 @@ fn lancer_application() {
                 actions.clone(),
             ) {
                 eprintln!("tray non installé : {e}");
+            }
+
+            // La fenêtre du menu, créée MAINTENANT et cachée : la créer au
+            // premier clic droit gèlerait le thread principal (voir l'en-tête
+            // de `menu_fenetre.rs`). Non bloquante : sans elle, le clic droit
+            // ne fait rien, mais le personnage vit.
+            if let Err(e) = menu_fenetre::creer(app.handle()) {
+                eprintln!("{e}");
             }
 
             // ── La vérification de mise à jour ──────────────────────────
@@ -1323,6 +1338,11 @@ fn boucle(
     // en boucle dès sa fermeture.
     let mut bouton_droit_precedent = false;
 
+    // `SHIMEJI_MENU_OUVERT=1` : ouvre le menu du premier personnage dès qu'il
+    // est posé — l'équivalent scriptable du clic droit (CLAUDE.md, « tout ce
+    // qui demanderait un clic reçoit un équivalent scriptable »).
+    let mut menu_de_demonstration = std::env::var_os("SHIMEJI_MENU_OUVERT").is_some();
+
     // Le label de l'acteur **qui a ouvert le dernier menu contextuel**.
     //
     // ⚠️ **C'est lui, et pas l'acteur sous le curseur, qui reçoit la
@@ -1337,14 +1357,14 @@ fn boucle(
     let mut demandeur_du_menu: Option<String> = None;
 
     // Le menu contextuel **en cours d'affichage**, s'il y en a un : l'id de
-    // l'acteur sur qui il a été ouvert, le drapeau que le thread du menu
-    // lève en se refermant, et l'instant de l'ouverture — auquel son image
+    // l'acteur sur qui il a été ouvert, le drapeau que `menu_fenetre::fermer`
+    // lève en le refermant, et l'instant de l'ouverture — auquel son image
     // reste figée (voir `instant_fige`).
     //
-    // ⚠️ **Seul CET acteur s'arrête** (2026-09-23). Le menu vit sur son
-    // propre thread (`menu_natif`), la boucle continue donc de tourner :
-    // les autres personnages vivent pendant qu'on choisit. Avant, le menu
-    // bloquait la boucle, et tout le monde se figeait.
+    // ⚠️ **Seul CET acteur s'arrête** (2026-09-23). Le menu vit dans sa
+    // propre fenêtre (`menu_fenetre`), sans boucle modale : la boucle continue
+    // de tourner, et les autres personnages vivent pendant qu'on choisit.
+    // Avant, le menu bloquait la boucle, et tout le monde se figeait.
     //
     // `Arc<AtomicBool>` : partagé entre deux threads, et un booléen n'a pas
     // besoin d'un verrou — `load`/`store` sont atomiques par construction.
@@ -1800,6 +1820,20 @@ fn boucle(
             }
         }
 
+        // ── Le filet du « clic ailleurs » (Review Focus n° 3) ───────────
+        //
+        // `blur` ferme le menu quand on clique ailleurs — si Windows lui a
+        // donné le premier plan. Quand il l'a refusé, `blur` ne vient
+        // jamais : un bouton enfoncé hors du rectangle du menu le ferme.
+        if menu_en_cours.is_some() && (m.left_down || m.right_down) {
+            if let Some(rect) = menu_fenetre::rect_ouvert(&handle) {
+                let p = (m.pos.x.round() as i32, m.pos.y.round() as i32);
+                if menu_fenetre::hors_du_menu(p, rect) {
+                    menu_fenetre::fermer(&handle);
+                }
+            }
+        }
+
         // ⚠️ **Rien n'est pris dans la boîte tant que le menu est ouvert.**
         // La commande lue ici est jetée si son destinataire ne la consomme
         // pas dans l'image ; or l'acteur du menu est à l'arrêt, et ne
@@ -2014,15 +2048,24 @@ fn boucle(
             //
             // 1. c'est la convention de Windows — l'explorateur, comme toute
             //    application, ouvre son menu contextuel sur `WM_RBUTTONUP` ;
-            // 2. ouvrir au bouton encore enfoncé lance `TrackPopupMenu`
-            //    pendant que Windows suit toujours un clic droit en cours.
-            //    Le menu hérite alors d'un suivi de souris qui ne lui
-            //    appartient pas, et se referme mal.
-            // `menu_en_cours.is_none()` : un seul menu à la fois. Le menu
-            // natif est modal pour la souris, un second clic droit ne
-            // devrait pas arriver jusqu'ici — mais s'il arrivait, deux
-            // menus superposés se disputeraient le premier plan.
-            if front_descendant_droit && sur_le_personnage && menu_en_cours.is_none() {
+            // 2. ouvrir au bouton encore enfoncé montrerait le menu pendant
+            //    que Windows suit toujours un clic droit en cours : le
+            //    relâchement tomberait sur une entrée du menu.
+            //
+            // `menu_en_cours.is_none()` : un seul menu à la fois. Un second
+            // clic droit pendant qu'il est ouvert ferme d'abord le premier
+            // (le filet du « clic ailleurs »), et ne rouvre rien dans la même
+            // image : deux menus se disputeraient la même fenêtre.
+            //
+            // `demonstration` : `SHIMEJI_MENU_OUVERT`, l'équivalent
+            // scriptable du clic droit — voir sa déclaration.
+            let demonstration = menu_de_demonstration
+                && i == 0
+                && matches!(acteur.ch.attachment, character::attach::Attachment::On { .. });
+            if (front_descendant_droit && sur_le_personnage || demonstration)
+                && menu_en_cours.is_none()
+            {
+                menu_de_demonstration = false;
                 // `ou_de` : le menu proposé dépend de l'endroit où il est
                 // accroché — voir `menu_perso::Ou`. C'est ce qui corrige le
                 // bug rapporté à l'écran : un menu de sol proposé à un
@@ -2037,31 +2080,26 @@ fn boucle(
                     &tenues_de_tous,
                 );
 
-                // ── Le menu, sur son propre thread ──────────────────────
+                // ── Le menu, dans sa fenêtre ────────────────────────────
                 //
-                // `menu_natif::choisir` BLOQUE jusqu'au choix : sur ce
-                // thread-ci, il figerait tout le monde. Sur le sien, seul
-                // l'acteur cliqué s'arrête (voir `fige`, plus bas) — et le
-                // pourquoi d'un menu Win32 plutôt que celui de Tauri est en
-                // tête de `menu_natif.rs`.
-                //
-                // `move` : la fermeture emporte ce dont elle a besoin. Tout
-                // est cloné ou possédé — les `lignes` sont un `Vec` à elle,
-                // et un `AppHandle`/`Arc` se clone pour trois fois rien.
+                // `ouvrir` ne bloque pas : il envoie les lignes à la fenêtre
+                // du menu et rend la main. La fermeture, d'où qu'elle vienne,
+                // lèvera `ferme` — et seul ce personnage attend.
+                // Le point où ouvrir : le curseur, sauf pour la démonstration,
+                // où c'est le personnage lui-même — le curseur peut être
+                // n'importe où, et même sur un autre écran.
+                let point = if demonstration { acteur.ch.pos_connue } else { m.pos };
                 let ferme = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-                let ferme_du_menu = ferme.clone();
-                let actions_du_menu = actions.clone();
-                let app_du_menu = handle.clone();
-                std::thread::spawn(move || {
-                    let choix = menu_natif::choisir(&lignes);
-                    if let Some(id) = choix {
-                        actions_du_menu.executer_choix_du_menu(app_du_menu, id);
-                    }
-                    // `Release` : fait voir à la boucle (son `Acquire`) tout
-                    // ce qui a été fait avant — la commande déjà confiée au
-                    // thread principal, notamment.
-                    ferme_du_menu.store(true, std::sync::atomic::Ordering::Release);
-                });
+                let curseur = (point.x.round() as i32, point.y.round() as i32);
+                // `ecran_sous` rend un id ; on retrouve l'écran lui-même pour
+                // ses bornes et son échelle. Sans écran sous le curseur, pas
+                // de menu : on le dit fermé tout de suite.
+                let ecran = ecran_sous(&ecrans_courants, point)
+                    .and_then(|id| ecrans_courants.iter().find(|e| e.id == id));
+                match ecran {
+                    Some(ecran) => menu_fenetre::ouvrir(&handle, &lignes, curseur, ecran, ferme.clone()),
+                    None => ferme.store(true, std::sync::atomic::Ordering::Release),
+                }
 
                 // Mémorisé MAINTENANT : c'est la seule image où l'on sait
                 // encore qui a fait le clic droit. C'est lui, et pas l'acteur

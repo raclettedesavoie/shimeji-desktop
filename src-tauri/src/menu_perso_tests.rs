@@ -453,3 +453,18 @@ fn resoudre_pour_tous_laisse_passer_le_reste() {
     let c = Commande::Intention(Intention::Jouer(Jeu::TeteQuiTourne));
     assert_eq!(resoudre_pour_tous(c, &[None]), c);
 }
+
+#[test]
+fn chaque_entree_affichee_est_un_identifiant_connu() {
+    // `choisir_entree_menu` n'accepte que ce que `id_connu` reconnaît : une
+    // entrée affichée mais inconnue serait un clic sans effet.
+    let (table, blob) = table_et_blob();
+    for ou in [Ou::Sol, Ou::Mur, Ou::Plafond] {
+        for l in lignes(&blob, &table, ou, None, &[None]) {
+            if let Ligne::Entree { id, .. } = l {
+                assert_eq!(id_connu(id), Some(id), "{id}");
+            }
+        }
+    }
+    assert_eq!(id_connu("n'importe.quoi"), None);
+}

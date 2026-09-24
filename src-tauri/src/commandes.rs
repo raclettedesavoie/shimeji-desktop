@@ -439,3 +439,38 @@ pub fn onboarding_terminer(
     }
     Ok(())
 }
+
+// ── Le menu du clic droit (spec « menu sur mesure » §4) ─────────────────
+
+/// `menu.js` a dessiné et mesuré le menu : le placer et le montrer.
+#[tauri::command]
+pub fn placer_menu(app: tauri::AppHandle, largeur: f32, hauteur: f32) {
+    crate::menu_fenetre::placer(&app, largeur, hauteur);
+}
+
+/// Une entrée a été choisie. Le menu se ferme D'ABORD — son personnage
+/// repart, et le focus revient à l'application d'avant — puis le choix
+/// passe par le même `executer` que le tray.
+///
+/// `id_connu` : on n'exécute que nos identifiants, jamais une chaîne
+/// arbitraire venue d'un webview.
+#[tauri::command]
+pub fn choisir_entree_menu(
+    app: tauri::AppHandle,
+    actions: tauri::State<'_, std::sync::Arc<crate::actions::Actions>>,
+    id: String,
+) {
+    crate::menu_fenetre::fermer(&app);
+    match crate::menu_perso::id_connu(&id) {
+        // `inner().clone()` : un `Arc` de plus sur les mêmes actions — la
+        // méthode le consomme pour l'emporter sur le thread principal.
+        Some(id) => actions.inner().clone().executer_choix_du_menu(app, id),
+        None => eprintln!("menu : identifiant inconnu « {id} », ignoré"),
+    }
+}
+
+/// Clic ailleurs ou Échap.
+#[tauri::command]
+pub fn fermer_menu(app: tauri::AppHandle) {
+    crate::menu_fenetre::fermer(&app);
+}

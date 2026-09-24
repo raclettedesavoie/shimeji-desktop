@@ -62,6 +62,25 @@ pub fn appliquer_styles_etendus(win: &WebviewWindow) -> Result<(), String> {
     Ok(())
 }
 
+/// Pose `WS_EX_TOOLWINDOW` seul : hors d'Alt+Tab, mais activable.
+///
+/// Pour la fenêtre du menu, qui DOIT prendre le focus — c'est ce qui lui
+/// permet de se fermer au clic ailleurs. `appliquer_styles_etendus`, qui
+/// pose aussi `WS_EX_NOACTIVATE`, l'en empêcherait.
+pub fn appliquer_style_outil(win: &WebviewWindow) -> Result<(), String> {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetWindowLongPtrW, SetWindowLongPtrW, GWL_EXSTYLE, WS_EX_TOOLWINDOW,
+    };
+    let hwnd = win.hwnd().map_err(|e| format!("hwnd indisponible : {e}"))?;
+    // `|` : on AJOUTE le bit sans écraser ceux que Tauri a posés — même
+    // raisonnement que dans `appliquer_styles_etendus`.
+    unsafe {
+        let actuels = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, actuels | WS_EX_TOOLWINDOW.0 as isize);
+    }
+    Ok(())
+}
+
 /// Retient la fenêtre actuellement au premier plan, pour pouvoir la lui
 /// rendre.
 ///
@@ -99,8 +118,8 @@ pub fn fenetre_au_premier_plan() -> Option<windows::Win32::Foundation::HWND> {
     }
 }
 
-/// Met la fenêtre propriétaire du menu au premier plan, avant d'ouvrir le
-/// menu. Rend `true` si Windows a accepté.
+/// Met la fenêtre du menu au premier plan, une fois montrée. Rend `true` si
+/// Windows a accepté.
 ///
 /// # Pourquoi vérifier le résultat
 ///
@@ -109,10 +128,10 @@ pub fn fenetre_au_premier_plan() -> Option<windows::Win32::Foundation::HWND> {
 /// voit le clic droit que par `GetCursorPos` — il ne reçoit aucun message.
 ///
 /// Et un refus ne se voit pas : le menu s'affiche quand même. C'est le piège
-/// Win32 classique du **menu qui ne se referme pas** quand on clique ailleurs
-/// — `TrackPopupMenu` termine sa boucle modale sur la perte d'activation de
-/// son propriétaire, et un propriétaire qui n'a jamais été activé n'en perd
-/// jamais.
+/// du **menu qui ne se referme pas** quand on clique ailleurs — la fenêtre
+/// du menu se ferme sur `blur`, et une fenêtre qui n'a jamais eu le focus ne
+/// le perd jamais. Le filet de la boucle (`menu_fenetre::hors_du_menu`)
+/// couvre ce cas.
 ///
 /// # Le repli par `AttachThreadInput`
 ///
@@ -122,10 +141,9 @@ pub fn fenetre_au_premier_plan() -> Option<windows::Win32::Foundation::HWND> {
 /// partagent la notion de « qui a le focus », et `SetForegroundWindow`
 /// redevient autorisé.
 ///
-/// ⚠️ **C'est le thread PROPRIÉTAIRE de la fenêtre qu'on attache.** Depuis
-/// que le menu a son propre thread (`menu_natif`), c'est aussi celui qui
-/// appelle — mais le demander à la fenêtre reste juste quel que soit
-/// l'appelant. D'où `GetWindowThreadProcessId(hwnd)` plutôt que
+/// ⚠️ **C'est le thread PROPRIÉTAIRE de la fenêtre qu'on attache.** Pour la
+/// fenêtre du menu (`menu_fenetre`), c'est le thread principal de Tauri —
+/// mais le demander à la fenêtre reste juste quel que soit l'appelant. D'où `GetWindowThreadProcessId(hwnd)` plutôt que
 /// `GetCurrentThreadId()` — c'est l'erreur silencieuse classique de cette
 /// recette, et elle rendrait le repli inopérant sans le moindre message.
 ///
@@ -175,27 +193,6 @@ pub fn prendre_le_premier_plan(hwnd: windows::Win32::Foundation::HWND) -> bool {
         let _ = AttachThreadInput(thread_nous, thread_devant, false);
 
         ok
-    }
-}
-
-/// Poste un message vide dans la file de la fenêtre, **après** la fermeture
-/// du menu.
-///
-/// La seconde moitié de la recette de KB135788, et celle qu'on oublie
-/// toujours parce qu'elle n'a aucun effet visible le premier coup :
-/// `TrackPopupMenu` laisse sa fenêtre propriétaire dans un état où le menu
-/// **suivant** peut refuser de s'afficher ou de se refermer, tant qu'un
-/// message quelconque n'est pas passé dans sa file. `WM_NULL` est le message
-/// qui ne fait rien, choisi exactement pour cet usage.
-///
-/// L'échec est ignoré : si la fenêtre vient de disparaître, il n'y a plus de
-/// file, et plus de menu à débloquer non plus.
-pub fn reveiller_la_file(hwnd: windows::Win32::Foundation::HWND) {
-    use windows::Win32::Foundation::{LPARAM, WPARAM};
-    use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_NULL};
-
-    unsafe {
-        let _ = PostMessageW(Some(hwnd), WM_NULL, WPARAM(0), LPARAM(0));
     }
 }
 
