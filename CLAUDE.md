@@ -860,7 +860,7 @@ ramassant, sautant, puis tombant hors de l'écran. Une poubelle supprime un pack
 du disque. Le reste est inchangé — marche, escalade, attrape-souris, tray,
 `config.json`.
 
-**388 tests.** Et le CPU, mesuré sur le programme réel (release, 60 s, 3 écrans) :
+**398 tests.** Et le CPU, mesuré sur le programme réel (release, 60 s, 3 écrans) :
 
 | Roster | Caché | En marche | dont `shimeji-desktop` | Latence de la file |
 |---|---|---|---|---|
@@ -1008,3 +1008,10 @@ donc une rencontre est une vérification côté coordinateur.
 > personnage accroché à un mur. Marche à suivre : `cargo build` puis `cargo run` avec
 > `SHIMEJI_ESCALADE=1`. Si le rendu ne convient pas, l'ancre se corrige dans
 > `characters/blob/mascot.json`, **jamais** dans `attach.rs` (décision n° 1).
+>
+> Avant de juger l'ancre, noter que le « dessiné presque hors de l'écran » avait
+> une autre cause, corrigée le 2026-09-24 : arrivé au bord exact de l'écran, il
+> s'accrochait **dos au mur** (`Facing::face_a_la_paroi`). Le test
+> `il_fait_toujours_face_a_sa_paroi` le verrouille. Même jour : la pause au mur
+> dure enfin 20 à 60 s (`DUREE_ACCROCHE`, en ticks de 40 ms comme **toutes** les
+> durées de Shimeji-ee), et l'écran du milieu vise le mur d'un voisin.
