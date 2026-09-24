@@ -83,6 +83,7 @@ pub fn intention_pour(
     reglages: &Reglages,
     table: &TableEnvies,
     manifeste: &Manifest,
+    sur_paroi: bool,
     maintenant: Duration,
 ) -> ActiveIntention {
     let assoupi = t.au_sol()
@@ -97,8 +98,12 @@ pub fn intention_pour(
         // Un ORDRE : il court jusqu'au mur, et sur un mur il reprend
         // l'escalade là où il est (phase `Choisir`).
         Tenue::Grimper => ActiveIntention::grimper_sur_ordre(maintenant),
-        // L'intention qu'un lancer contre une paroi installe déjà.
-        Tenue::ResterAccroche => ActiveIntention::accroche(maintenant),
+        // Déjà sur une paroi : il se fige là — l'intention qu'un lancer
+        // contre une paroi installe déjà. Au sol : il part au mur (file
+        // comprise), monte, et s'y figera — la pause `Accroche` d'un
+        // `ResterAccroche` ne finit jamais (`intention::grimper`).
+        Tenue::ResterAccroche if sur_paroi => ActiveIntention::accroche(maintenant),
+        Tenue::ResterAccroche => ActiveIntention::grimper_sur_ordre(maintenant),
         autre => ActiveIntention::nouvelle(autre.intention(), maintenant),
     }
 }
@@ -112,9 +117,10 @@ pub fn intention_pour(
 ///
 /// - **Posé** (`Attachment::On`) : porté ou en chute, les réflexes passent
 ///   avant et `pas` ne verrait même pas la commande.
-/// - **À sa place** : une tenue de sol sur une paroi le ferait tomber,
-///   « Rester accroché » au sol n'a pas de sens. Seul `Grimper` vaut
-///   partout — au sol il part au mur, sur un mur il reprend.
+/// - **À sa place** : une tenue de sol sur une paroi le ferait tomber.
+///   `Grimper` et `ResterAccroche` valent partout — au sol il part au mur ;
+///   sur un mur il reprend, ou se fige (« Rester accroché » au sol depuis le
+///   2026-09-24, pour « Tout le monde › Rester accroché »).
 /// - **Jouable** : son pack a les poses (couverture partielle, spec §8.6).
 pub fn peut_tenir(t: Tenue, ch: &Character, table: &TableEnvies) -> bool {
     use crate::character::attach::Attachment;
@@ -126,8 +132,7 @@ pub fn peut_tenir(t: Tenue, ch: &Character, table: &TableEnvies) -> bool {
     };
     let sur_une_paroi = face != Face::Top;
     let a_sa_place = match t {
-        Tenue::Grimper => true,
-        Tenue::ResterAccroche => sur_une_paroi,
+        Tenue::Grimper | Tenue::ResterAccroche => true,
         _ => !sur_une_paroi,
     };
     a_sa_place && table.jouable(&ch.manifest, t.intention())

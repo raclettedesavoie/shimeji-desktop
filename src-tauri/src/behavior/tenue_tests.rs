@@ -62,7 +62,7 @@ fn utilisateur_present_chaque_tenue_joue_la_sienne() {
     let (r, t, m) = (reglages(), TableEnvies::defaut(), blob());
     let e = entrees(true, 1.0);
     for tenue in [Tenue::Asseoir, Tenue::BalancerLesJambes, Tenue::Flaner, Tenue::Grimper] {
-        let ai = intention_pour(tenue, &e, &r, &t, &m, Duration::from_secs(1));
+        let ai = intention_pour(tenue, &e, &r, &t, &m, false, Duration::from_secs(1));
         assert_eq!(ai.kind, tenue.intention(), "{tenue:?}");
     }
 }
@@ -73,7 +73,7 @@ fn utilisateur_parti_une_tenue_de_sol_s_assoupit() {
     let (r, t, m) = (reglages(), TableEnvies::defaut(), blob());
     let e = entrees(false, 8.0);
     for tenue in [Tenue::Asseoir, Tenue::BalancerLesJambes, Tenue::Flaner] {
-        let ai = intention_pour(tenue, &e, &r, &t, &m, Duration::from_secs(1));
+        let ai = intention_pour(tenue, &e, &r, &t, &m, false, Duration::from_secs(1));
         assert_eq!(ai.kind, Intention::SeReposer, "{tenue:?}");
     }
 }
@@ -83,11 +83,15 @@ fn au_mur_l_absence_ne_change_rien() {
     // Décision de l'auteur : au mur, rien n'interrompt une action tenue.
     let (r, t, m) = (reglages(), TableEnvies::defaut(), blob());
     let e = entrees(false, 8.0);
-    let ai = intention_pour(Tenue::Grimper, &e, &r, &t, &m, Duration::from_secs(1));
+    let ai = intention_pour(Tenue::Grimper, &e, &r, &t, &m, true, Duration::from_secs(1));
     assert_eq!(ai.kind, Intention::Grimper);
-    let ai = intention_pour(Tenue::ResterAccroche, &e, &r, &t, &m, Duration::from_secs(1));
-    assert!(matches!(
-        ai.etat,
-        EtatIntention::Grimpe { phase: PhaseGrimpe::Accroche, .. }
-    ));
+    let ai = intention_pour(Tenue::ResterAccroche, &e, &r, &t, &m, true, Duration::from_secs(1));
+    assert!(matches!(ai.etat, EtatIntention::Grimpe { phase: PhaseGrimpe::Accroche, .. }));
+}
+
+#[test]
+fn rester_accroche_au_sol_part_d_abord_au_mur() {
+    let (r, t, m) = (reglages(), TableEnvies::defaut(), blob());
+    let ai = intention_pour(Tenue::ResterAccroche, &entrees(true, 1.0), &r, &t, &m, false, Duration::from_secs(1));
+    assert!(matches!(ai.etat, EtatIntention::Grimpe { phase: PhaseGrimpe::Choisir { presse: true }, .. }));
 }

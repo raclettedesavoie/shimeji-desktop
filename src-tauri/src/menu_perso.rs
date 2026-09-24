@@ -286,6 +286,9 @@ const TOUS: &[(&str, &str, Commande)] = &[
     ),
     ("tous.jambes", "Balancer les jambes", Commande::Basculer(Tenue::BalancerLesJambes)),
     ("tous.grimper", "Grimper au mur", Commande::Basculer(Tenue::Grimper)),
+    // « Tout le monde › Rester accroché » (demande de l'auteur, 2026-09-24) :
+    // ceux qui sont au sol montent puis se figent, les autres se figent là.
+    ("tous.rester", "Rester accroché", Commande::Basculer(Tenue::ResterAccroche)),
 ];
 
 /// La commande que désigne un identifiant d'entrée, s'il en désigne une.

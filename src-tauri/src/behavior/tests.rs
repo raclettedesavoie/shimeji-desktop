@@ -1396,6 +1396,7 @@ fn perso_au_mur(m: &World, t: tenue::Tenue) -> Character {
         &reglages_defaut(),
         &desire::TableEnvies::defaut(),
         &ch.manifest,
+        true,
         Duration::from_secs(1),
     ));
     ch
@@ -1459,10 +1460,11 @@ fn peut_tenir_suit_l_endroit_et_l_attache() {
     let table = desire::TableEnvies::defaut();
     let mut ch = perso(&m);
 
-    // Au sol.
+    // Au sol. « Rester accroché » y vaut depuis le 2026-09-24 : il part au
+    // mur, puis s'y fige (« Tout le monde › Rester accroché »).
     assert!(peut_tenir(Tenue::Asseoir, &ch, &table));
     assert!(peut_tenir(Tenue::Grimper, &ch, &table));
-    assert!(!peut_tenir(Tenue::ResterAccroche, &ch, &table));
+    assert!(peut_tenir(Tenue::ResterAccroche, &ch, &table));
 
     // Sur un mur.
     let mur = mur_gauche(&m);
@@ -1805,10 +1807,25 @@ fn verifier_effet(
         Commande::Relacher(t) => {
             return (ch.tenue == Some(t)).then(|| "toujours tenue".to_string());
         }
-        Commande::Tenir(Tenue::ResterAccroche) => {
+        Commande::Tenir(Tenue::ResterAccroche) | Commande::Imposer(Tenue::ResterAccroche) => {
+            // Au sol, il part d'abord au mur (jusqu'à 90 s) ; puis il ne
+            // bouge plus pendant 10 s.
+            let accroche = |ch: &Character| {
+                matches!(ch.attachment, Attachment::On { face, .. } if face != Face::Top)
+                    && matches!(ch.intention, Some(intention::ActiveIntention { etat: intention::EtatIntention::Grimpe { phase: intention::PhaseGrimpe::Accroche, .. }, .. }))
+            };
+            let mut t = t0;
+            let mut n = 0;
+            while !accroche(&ch) && n < 5400 {
+                t = jouer_images(&mut ch, m, &entrees(true, 1.0), rng, t, 1, |_| {});
+                n += 1;
+            }
+            if !accroche(&ch) {
+                return Some(format!("jamais accroché en 90 s : {:?}", ch.attachment));
+            }
             let depart = ch.attachment;
             let mut bouge = false;
-            jouer_images(&mut ch, m, &entrees(true, 1.0), rng, t0, 600, |ch| {
+            jouer_images(&mut ch, m, &entrees(true, 1.0), rng, t, 600, |ch| {
                 bouge |= ch.attachment != depart;
             });
             return (bouge || ch.tenue != Some(Tenue::ResterAccroche))
@@ -2181,4 +2198,26 @@ fn la_file_ne_joue_que_sur_le_sol_du_mur() {
             assert!(place::attend_le_mur(&ch).is_none(), "il fait la file loin du mur");
         }
     }
+}
+
+#[test]
+fn tout_le_monde_reste_accroche_depuis_le_sol() {
+    use crate::menu_perso::Commande;
+    let m = monde();
+    let mut persos = foule_au_meme_endroit(&m, 3, 400.0);
+    let mut rng = XorShift32::seeded(103);
+    let t0 = Duration::from_secs(1);
+    commander_foule(&mut persos, &m, Commande::Imposer(tenue::Tenue::ResterAccroche), t0, &mut rng);
+    // 150 s pour monter tous, un par un.
+    let t = jouer_foule(&mut persos, &m, &entrees(true, 1.0), &mut rng, t0, 60 * 150, |_| {});
+    let figes: Vec<_> = persos.iter().map(|c| c.attachment).collect();
+    for c in &persos {
+        assert!(matches!(c.attachment, Attachment::On { face, .. } if face != Face::Top), "{:?}", c.attachment);
+        assert_eq!(c.tenue, Some(tenue::Tenue::ResterAccroche));
+    }
+    // Puis 10 s : plus personne ne bouge.
+    jouer_foule(&mut persos, &m, &entrees(true, 1.0), &mut rng, t, 600, |p| {
+        let maintenant: Vec<_> = p.iter().map(|c| c.attachment).collect();
+        assert_eq!(maintenant, figes);
+    });
 }

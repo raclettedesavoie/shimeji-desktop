@@ -158,6 +158,11 @@ pub(crate) fn lacher_si_accroche(ch: &mut Character, world: &World) -> bool {
     false
 }
 
+/// Accroché à un mur ou au plafond ?
+fn sur_une_paroi(ch: &crate::character::Character) -> bool {
+    matches!(ch.attachment, Attachment::On { face, .. } if face != Face::Top)
+}
+
 /// `Basculer` devient `Relacher` s'il tient déjà cette tenue, `Tenir`
 /// sinon ; toute autre commande passe telle quelle.
 ///
@@ -180,7 +185,6 @@ fn resoudre_basculer(
 /// ce qu'il fera en touchant le sol, sans toucher à son vol (les réflexes
 /// gardent la main). Voir l'appel, en tête de `pas`.
 ///
-/// `ResterAccroche` n'a aucun sens au sol : refusé, comme par `peut_tenir`.
 fn en_l_air(
     c: crate::menu_perso::Commande,
     ch: &mut crate::character::Character,
@@ -188,8 +192,8 @@ fn en_l_air(
 ) {
     use crate::menu_perso::Commande;
     match c {
-        Commande::Tenir(t) | Commande::Imposer(t)
-            if t != tenue::Tenue::ResterAccroche && table.jouable(&ch.manifest, t.intention()) =>
+        // `ResterAccroche` compris : il atterrira, puis partira au mur.
+        Commande::Tenir(t) | Commande::Imposer(t) if table.jouable(&ch.manifest, t.intention()) =>
         {
             ch.tenue = Some(t);
         }
@@ -382,6 +386,7 @@ pub fn pas_parmi(
                     reglages,
                     table,
                     &ch.manifest,
+                    sur_une_paroi(ch),
                     maintenant,
                 ));
                 return r;
@@ -672,6 +677,7 @@ pub fn pas_parmi(
                 reglages,
                 table,
                 &ch.manifest,
+                sur_une_paroi(ch),
                 maintenant,
             ));
             return r;

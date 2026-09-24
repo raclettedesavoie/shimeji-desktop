@@ -404,7 +404,9 @@ fn tout_le_monde_n_est_coche_que_si_tous_la_tiennent() {
 #[test]
 fn la_section_tout_le_monde_suit_son_titre_avec_les_actions_du_sol() {
     let (table, blob) = table_et_blob();
-    // Même au mur : la section « Tout le monde » ne propose que le sol.
+    // Même au mur, la section « Tout le monde » est la même partout : les
+    // actions du sol, plus « Rester accroché » (2026-09-24) — ceux qui sont
+    // au sol montent puis se figent.
     let l = lignes(&blob, &table, Ou::Mur, None, &[capable(None)], None);
     let titre = l
         .iter()
@@ -417,7 +419,7 @@ fn la_section_tout_le_monde_suit_son_titre_avec_les_actions_du_sol() {
             _ => None,
         })
         .collect();
-    assert_eq!(apres, ["tous.flaner", "tous.asseoir", "tous.tete", "tous.jambes", "tous.grimper"]);
+    assert_eq!(apres, ["tous.flaner", "tous.asseoir", "tous.tete", "tous.jambes", "tous.grimper", "tous.rester"]);
 }
 
 #[test]
