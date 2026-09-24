@@ -213,15 +213,19 @@ pub fn rect_ouvert(app: &AppHandle) -> Option<(i32, i32, i32, i32)> {
     e.as_ref()?.rect
 }
 
-/// Le menu est-il placé ? `None` si l'état est verrouillé en ce moment
-/// (`placer` ou `fermer` en cours) : la boucle ne décide rien cette image-là,
-/// elle réessaiera à la suivante. `Some(false)` s'il n'y a aucun menu.
+/// Le menu ouvert est-il placé ? `None` s'il n'y a AUCUN menu (déjà fermé
+/// par un choix, `blur` ou le filet), ou si l'état est verrouillé en ce
+/// moment (`placer` ou `fermer` en cours) : la boucle ne décide rien, elle
+/// réessaiera à l'image suivante.
+///
+/// ⚠️ « Aucun menu » ne doit PAS valoir `Some(false)` : le filet du clic
+/// ailleurs ferme le menu dans la même image que le contrôle d'abandon, qui
+/// le déclarait alors « jamais placé » à chaque fois (vu à l'écran).
 pub fn est_place(app: &AppHandle) -> Option<bool> {
     let etat = app.state::<EtatMenu>();
     let e = etat.0.try_lock().ok()?;
-    // `as_ref` puis `is_some_and` : « il y a un menu, et son rectangle est
-    // connu » — faux dans les deux autres cas.
-    Some(e.as_ref().is_some_and(|m| m.rect.is_some()))
+    // `as_ref()?` : pas de menu, pas de réponse ; `map` lit son rectangle.
+    e.as_ref().map(|m| m.rect.is_some())
 }
 
 /// Un menu ouvert à `ouvert_a` et toujours pas placé à `maintenant` est-il à
