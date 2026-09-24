@@ -919,10 +919,12 @@ fn grimper(
 
                     if !a_mon_tour {
                         // Sa place dans la file : la place libre la plus
-                        // proche du pied du mur. Visée à chaque image, c'est
-                        // ce qui fait AVANCER la file quand le premier part.
+                        // proche du pied du mur, derrière ceux qui sont
+                        // devant lui (`place_dans_la_file`). Visée à chaque
+                        // image, c'est ce qui fait AVANCER la file quand le
+                        // premier part.
                         let longueur_sol = world.get(sol).map(|p| p.rect.face_length(Face::Top)).unwrap_or(0.0);
-                        let place = super::place::place_libre(voisins, sol, pied, demi, longueur_sol).unwrap_or(offset);
+                        let place = super::place::place_dans_la_file(voisins, mur, sol, pied, demi, longueur_sol, ecart).unwrap_or(offset);
                         let arrive = marcher_vers(ch, place, reglages, maintenant, dt);
                         let attend_depuis = if arrive {
                             // Arrivé à sa place : il attend, face au mur.

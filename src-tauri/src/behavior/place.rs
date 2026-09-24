@@ -153,21 +153,68 @@ fn chevauche(a: f32, demi_a: f32, b: f32, demi_b: f32) -> bool {
 /// qui ne chevauche personne gagne. Aucune recherche plus fine : une place
 /// libre est forcément collée à un occupant, ou là où il est déjà.
 pub fn place_libre(v: &Voisinage, platform: PlatformId, offset: f32, demi: f32, longueur: f32) -> Option<f32> {
+    place_libre_parmi(v, platform, offset, demi, longueur, |_| true)
+}
+
+/// Sa place dans la file de `mur` : la place libre la plus proche du pied
+/// (`pied`, sur le sol `sol`), en ne comptant, parmi ceux qui visent ce mur,
+/// que ceux qui sont DEVANT lui — plus près du pied que `mon_ecart`, ou à
+/// égalité avec un plus petit numéro (le même ordre que
+/// `premier_de_la_file`). Les autres occupants à l'arrêt (un assis au pied
+/// du mur) comptent toujours.
+///
+/// Sans ce départage (relecture finale), deux personnages arrivés à la même
+/// image voyaient chacun l'autre arrêté, visaient la place d'à côté, se
+/// voyaient en marche l'image suivante, revenaient — et tremblotaient sans
+/// fin au même endroit.
+pub fn place_dans_la_file(
+    v: &Voisinage,
+    mur: PlatformId,
+    sol: PlatformId,
+    pied: f32,
+    demi: f32,
+    longueur_sol: f32,
+    mon_ecart: f32,
+) -> Option<f32> {
+    let moi = v.moi;
+    place_libre_parmi(v, sol, pied, demi, longueur_sol, |o| {
+        if o.vise_le_mur != Some(mur) {
+            return true;
+        }
+        let son_ecart = (o.offset - pied).abs();
+        son_ecart < mon_ecart || (son_ecart == mon_ecart && o.acteur < moi)
+    })
+}
+
+/// `place_libre`, en ne comptant que les occupants que `compte` retient.
+///
+/// `impl Fn(&Occupant) -> bool` : n'importe quelle fonction ou fermeture qui
+/// dit oui ou non pour un occupant — le filtre que chaque appelant fournit.
+fn place_libre_parmi(
+    v: &Voisinage,
+    platform: PlatformId,
+    offset: f32,
+    demi: f32,
+    longueur: f32,
+    compte: impl Fn(&Occupant) -> bool,
+) -> Option<f32> {
     // Un sol trop court pour lui : aucune place.
     if longueur < 2.0 * demi {
         return None;
     }
     let dans_le_sol = |x: f32| x.clamp(demi, longueur - demi);
+    // `collect` une fois : la liste filtrée sert deux fois ci-dessous.
+    let pris: Vec<&Occupant> = arretes_sur(v, platform).filter(|o| compte(o)).collect();
 
     let mut candidats = vec![dans_le_sol(offset)];
-    for o in arretes_sur(v, platform) {
+    for o in &pris {
         candidats.push(dans_le_sol(o.offset - o.demi_largeur - demi));
         candidats.push(dans_le_sol(o.offset + o.demi_largeur + demi));
     }
 
     let mut meilleur: Option<f32> = None;
     for c in candidats {
-        let libre = arretes_sur(v, platform).all(|o| !chevauche(c, demi, o.offset, o.demi_largeur));
+        let libre = pris.iter().all(|o| !chevauche(c, demi, o.offset, o.demi_largeur));
         if !libre {
             continue;
         }

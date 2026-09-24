@@ -149,3 +149,29 @@ fn seul_le_plus_proche_du_mur_part_le_premier() {
     let v = Voisinage { moi: 9, autres: &[] };
     assert!(premier_de_la_file(&v, mur(), 0.0, 135.0));
 }
+
+#[test]
+fn dans_la_file_on_ne_tient_compte_que_de_ceux_de_devant() {
+    // Relecture finale : deux personnages en file, arrêtés au même endroit
+    // (le pied, à 45). Le plus petit numéro est devant : il garde sa place ;
+    // l'autre se range derrière lui, sans que les deux ne bougent.
+    let en_file = |acteur, offset| Occupant {
+        attend_le_mur: Some(mur()),
+        vise_le_mur: Some(mur()),
+        ..assis(acteur, offset, 1)
+    };
+    let autres = [en_file(1, 45.0), en_file(2, 45.0)];
+    let v1 = Voisinage { moi: 1, autres: &autres };
+    assert_eq!(place_dans_la_file(&v1, mur(), sol(), 0.0, 45.0, 1920.0, 45.0), Some(45.0));
+    let v2 = Voisinage { moi: 2, autres: &autres };
+    assert_eq!(place_dans_la_file(&v2, mur(), sol(), 0.0, 45.0, 1920.0, 45.0), Some(135.0));
+}
+
+#[test]
+fn dans_la_file_un_assis_compte_toujours() {
+    // Quelqu'un assis au pied du mur, sans viser le mur : la file se range
+    // après lui, quel que soit son numéro.
+    let autres = [assis(1, 45.0, 1)];
+    let v = Voisinage { moi: 0, autres: &autres };
+    assert_eq!(place_dans_la_file(&v, mur(), sol(), 0.0, 45.0, 1920.0, 300.0), Some(135.0));
+}

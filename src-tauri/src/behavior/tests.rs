@@ -2221,3 +2221,45 @@ fn tout_le_monde_reste_accroche_depuis_le_sol() {
         assert_eq!(maintenant, figes);
     });
 }
+
+/// Relecture finale : partis du même point avec un mur pris, les suivants
+/// s'empilaient à la même place de la file et tremblotaient sans fin
+/// (chacun voyait l'autre arrêté, visait la place d'à côté, puis revenait).
+/// La file doit se ranger — pas de chevauchement entre ceux qui attendent —
+/// et rester immobile.
+#[test]
+fn la_file_se_range_meme_partis_du_meme_point() {
+    let m = monde();
+    let longueur = longueur_mur_gauche(&m);
+    let mut bloqueur = perso_au_mur(&m, tenue::Tenue::ResterAccroche);
+    if let Attachment::On { platform, face, .. } = bloqueur.attachment {
+        bloqueur.attachment = Attachment::On { platform, face, offset: longueur };
+    }
+    let t0 = Duration::from_secs(1);
+    let mut persos = vec![bloqueur];
+    for _ in 0..3 {
+        let mut ch = foule_au_meme_endroit(&m, 1, 300.0).remove(0);
+        ch.intention = Some(intention::ActiveIntention::grimper_sur_ordre(t0));
+        persos.push(ch);
+    }
+    let mut rng = XorShift32::seeded(107);
+    // 30 s pour arriver et se ranger.
+    let t = jouer_foule(&mut persos, &m, &entrees(true, 1.0), &mut rng, t0, 60 * 30, |_| {});
+    let (demi, _) = place::corps(&persos[1], 1.0);
+    let offset = |c: &Character| match c.attachment {
+        Attachment::On { offset, .. } => offset,
+        _ => f32::NAN,
+    };
+    for i in 1..4 {
+        for j in (i + 1)..4 {
+            let d = (offset(&persos[i]) - offset(&persos[j])).abs();
+            assert!(d >= 2.0 * demi - 1.0, "{i} et {j} empilés dans la file : écart {d}");
+        }
+    }
+    // Puis 5 s : plus personne ne bouge dans la file.
+    let avant: Vec<_> = persos.iter().map(|c| (c.attachment, c.facing)).collect();
+    jouer_foule(&mut persos, &m, &entrees(true, 1.0), &mut rng, t, 300, |p| {
+        let maintenant: Vec<_> = p.iter().map(|c| (c.attachment, c.facing)).collect();
+        assert_eq!(maintenant, avant, "la file tremblote");
+    });
+}
