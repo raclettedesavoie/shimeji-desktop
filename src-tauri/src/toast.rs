@@ -30,6 +30,16 @@ use tauri_plugin_notification::NotificationExt;
 ///
 /// `SHIMEJI_TOAST=1` trace la remise au plugin.
 fn emettre(app: &AppHandle, titre: &str, corps: &str) -> bool {
+    // En « Ne pas déranger », Windows range le toast sans bannière : on
+    // montre la notification maison à la place (demande de l'auteur,
+    // 2026-09-24). Si elle ne peut pas s'afficher, on retombe sur le toast.
+    if crate::ne_pas_deranger::actif() && crate::notif_maison::afficher(app, titre, corps) {
+        if std::env::var("SHIMEJI_TOAST").is_ok() {
+            println!("[toast] Ne pas déranger : notification maison — {titre}");
+        }
+        return true;
+    }
+
     let resultat = app.notification().builder().title(titre).body(corps).show();
     let trace = std::env::var("SHIMEJI_TOAST").is_ok();
     match resultat {
@@ -67,9 +77,12 @@ pub fn test(app: &AppHandle) {
     emettre(
         app,
         "Shimeji Desktop — notification de test",
-        "Si vous lisez ceci, les notifications Windows fonctionnent.",
+        "Si vous lisez ceci, les notifications de Shimeji Desktop s'affichent.",
     );
-    println!("[toast] test remis au plugin (voir `emettre` : rien de plus n'est garanti)");
+    println!(
+        "[toast] test émis — Ne pas déranger : {}",
+        if crate::ne_pas_deranger::actif() { "actif, notification maison" } else { "inactif, toast Windows" }
+    );
 }
 
 /// Annonce qu'une nouvelle version est disponible (vérification au

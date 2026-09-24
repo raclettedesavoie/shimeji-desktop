@@ -39,6 +39,8 @@ mod config;
 mod geom;
 mod maj;
 mod menu_fenetre;
+mod ne_pas_deranger;
+mod notif_maison;
 mod menu_perso;
 mod overlay;
 mod probe;
@@ -603,6 +605,13 @@ fn lancer_application() {
                 eprintln!("{e}");
             }
 
+            // La notification maison, pour le mode « Ne pas déranger »
+            // (`notif_maison.rs`). Créée ici, une fois, pour la même raison
+            // que le menu. Non bloquante : sans elle, on retombe sur le toast.
+            if let Err(e) = notif_maison::creer(app.handle()) {
+                eprintln!("{e}");
+            }
+
             // ── La vérification de mise à jour ──────────────────────────
             //
             // APRÈS `tray::installer`, et ce n'est pas un détail : c'est lui
@@ -752,6 +761,19 @@ fn lancer_application() {
             // interface dessus (tâche 8 du catalogue).
             if std::env::var("SHIMEJI_CATALOGUE").is_ok() {
                 actions::ouvrir_catalogue(&poignee);
+            }
+
+            // `SHIMEJI_TEST_NOTIF=1` (debug) : la notification de test trois
+            // secondes après le démarrage — l'équivalent scriptable de
+            // « Tester une notification » du tray. Avec
+            // `SHIMEJI_NE_PAS_DERANGER=1`, c'est la notification maison.
+            #[cfg(debug_assertions)]
+            if std::env::var("SHIMEJI_TEST_NOTIF").is_ok() {
+                let app_test = poignee.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs(3));
+                    toast::test(&app_test);
+                });
             }
 
             Ok(())

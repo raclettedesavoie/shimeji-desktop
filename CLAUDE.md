@@ -66,7 +66,10 @@ réagissent l'un à l'autre. Ajouter un personnage est une **opération de conte
   « mis à jour en vX » au lancement suivant
   (`derniereVersionLancee`, tenue par la release seule). Rien du personnage.
   ⚠️ Le plugin rend `Ok` sans savoir si le toast s'affiche (`toast::emettre`) : un
-  toast invisible, c'est d'abord le mode « Ne pas déranger »
+  toast invisible, c'est d'abord le mode « Ne pas déranger ». Ce mode, détecté par
+  l'état WNF `WNF_SHEL_QUIETHOURS_ACTIVE_PROFILE_CHANGED` (`ne_pas_deranger.rs` — la
+  seule API documentée, `SHQueryUserNotificationState`, ne le voit PAS), fait passer
+  chaque notification par une fenêtre maison en bas à droite (`notif_maison.rs`)
 - ❌ **Pas un jeu** — pas de score, pas de progression
 - ❌ **Pas de charge CPU comme signal** — écarté explicitement
 - ❌ **Pas de bulles de dialogue**
@@ -163,7 +166,7 @@ cargo tauri build                      # l'INSTALLATEUR NSIS, voir l'avertisseme
 > `%APPDATA%\shimeji-desktop\characters\`, puis le `characters/` du dépôt —
 > qui ne contient plus que `blob`. Voir « Les packs livrés » plus bas.
 
-**Quinze variables d'environnement de diagnostic.** Les trois premières ont chacune
+**Dix-sept variables d'environnement de diagnostic.** Les trois premières ont chacune
 servi à démentir une hypothèse fausse — voir « Mesurer le CPU » plus bas ; les autres
 remplacent un clic dans le tray ou dans une fenêtre, ou rendent observable un calcul qui,
 sinon, ne se verrait qu'à l'œil et sur plusieurs minutes :
@@ -185,6 +188,8 @@ sinon, ne se verrait qu'à l'œil et sur plusieurs minutes :
 | `SHIMEJI_TOAST=1` | trace la **remise** des toasts au plugin — pas leur affichage, qu'il ne rapporte pas. En debug, le tray a aussi « Tester une notification » |
 | `SHIMEJI_MAJ=1` | trace la **vérification de mise à jour** : version trouvée, déjà à jour, ou pourquoi elle a échoué. Sans elle, une vérification ratée est parfaitement muette — ce qui est voulu pour l'utilisateur, et ingérable pour qui met au point |
 | `SHIMEJI_MENU_OUVERT=1` | ouvre le **menu du clic droit** du premier personnage dès qu'il est posé ; avec `SHIMEJI_MENU=1`, imprime `menu placé : W×H @ (x, y)` — la preuve que les lignes arrivent au webview, qu'il se mesure et que l'IPC répond |
+| `SHIMEJI_NE_PAS_DERANGER=1` | fait croire que Windows est en **Ne pas déranger** : chaque notification passe par la fenêtre maison (`notif_maison.rs`) au lieu du toast |
+| `SHIMEJI_TEST_NOTIF=1` | (debug) émet la notification de test 3 s après le démarrage — l'équivalent de « Tester une notification » du tray |
 
 **Et un fichier témoin** : créer `characters/recharger.txt` déclenche un rechargement à
 chaud, puis le fichier est supprimé.
@@ -881,7 +886,7 @@ ramassant, sautant, puis tombant hors de l'écran. Une poubelle supprime un pack
 du disque. Le reste est inchangé — marche, escalade, attrape-souris, tray,
 `config.json`.
 
-**407 tests.** Et le CPU, mesuré sur le programme réel (release, 60 s, 3 écrans) :
+**413 tests.** Et le CPU, mesuré sur le programme réel (release, 60 s, 3 écrans) :
 
 | Roster | Caché | En marche | dont `shimeji-desktop` | Latence de la file |
 |---|---|---|---|---|
