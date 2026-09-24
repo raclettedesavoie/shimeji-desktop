@@ -128,6 +128,18 @@ pub fn installation_en_cours(app: &AppHandle, version: &str) {
     );
 }
 
+/// En debug, un clic sur « Mettre à jour » trouve une version mais
+/// n'installe rien (voir `maj::verifier_puis_installer`) : on le dit.
+/// `cfg_attr` : en release, rien ne l'appelle.
+#[cfg_attr(not(debug_assertions), allow(dead_code))]
+pub fn installation_desactivee_en_debug(app: &AppHandle, version: &str) {
+    emettre(
+        app,
+        &format!("v{version} disponible — rien n'est installé en debug"),
+        "Depuis cargo run, l'installation est désactivée : elle écraserait la version installée.",
+    );
+}
+
 /// Au premier lancement après une mise à jour (`maj::constater_au_demarrage`,
 /// en release seulement — d'où le `allow` en debug).
 #[cfg_attr(debug_assertions, allow(dead_code))]

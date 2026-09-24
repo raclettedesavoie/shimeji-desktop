@@ -830,13 +830,11 @@ sur Windows, appliquer une mise à jour relance l'installateur NSIS, donc
 ferme l'application — le faire d'autorité ferait disparaître les personnages
 au milieu d'une session.
 
-> ⚠️⚠️ **Tant que le dépôt est PRIVÉ, la mise à jour automatique ne peut pas
-> marcher** (constaté le 2026-09-24). L'updater lit `latest.json` sans
-> authentification : une release privée lui rend une 404
-> (« Could not fetch a valid release JSON »). La vérification du démarrage
-> échouait en silence, par conception — c'est le libellé « Vérification
-> impossible » du clic qui l'a révélé. À trancher par l'auteur : rendre le
-> dépôt public, ou publier les releases dans un dépôt public à part.
+> ⚠️⚠️ **L'updater lit `latest.json` SANS authentification** : il faut un
+> dépôt **public**. Le 2026-09-24, une 404 (« Could not fetch a valid release
+> JSON ») a fait croire à un défaut ; le dépôt avait été public entre-temps, et
+> tout est rentré dans l'ordre. La vérification du démarrage échoue en
+> silence, par conception : c'est un clic sur « Vérifier » qui le révèle.
 
 > ⚠️ **La clé privée de signature ne vit QUE dans les secrets GitHub**
 > (`TAURI_SIGNING_PRIVATE_KEY` et `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`). La

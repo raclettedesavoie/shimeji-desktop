@@ -223,9 +223,11 @@ pub fn verifier_puis_installer(app: AppHandle) {
         actions.afficher_etat_maj(&EtatMaj::Disponible(version.clone()));
 
         if cfg!(debug_assertions) {
-            // Pas de toast « mise à jour en cours » : il mentirait. Le
-            // libellé du tray dit déjà ce qui a été trouvé.
+            // Pas de toast « mise à jour en cours » : il mentirait. Mais un
+            // clic muet ressemblait à un clic sans effet (2026-09-24) : on
+            // dit ce qui a été trouvé, et pourquoi rien ne s'installe.
             println!("[maj] v{version} disponible — installation désactivée en debug");
+            crate::toast::installation_desactivee_en_debug(&app, &version);
             return;
         }
 
