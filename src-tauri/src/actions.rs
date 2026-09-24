@@ -80,14 +80,6 @@ pub const ID_P_CACHER: &str = "perso.cacher";
 /// que l'interrupteur de la bibliothèque s'interdit (CLAUDE.md).
 pub const ID_P_CACHER_CE: &str = "perso.cacher_ce";
 
-/// « Tout le monde grimpe au mur » — proposée par les DEUX menus (2026-09-23).
-///
-/// Un identifiant propre et **non une ligne d'`ENVIES`** (`menu_perso.rs`) :
-/// les envies vont au seul personnage qui a ouvert le menu, celle-ci va à
-/// tous. Elle a donc sa propre boîte, `Actions::pour_tous`, et c'est ce qui
-/// empêche les deux destinations de se mélanger.
-pub const ID_TOUS_AU_MUR: &str = "tous.grimper";
-
 /// La boîte aux lettres qui porte une commande choisie au menu jusqu'à la
 /// boucle 60 Hz.
 ///
@@ -146,8 +138,10 @@ pub struct Actions {
     pub demande: Demande,
     pub commande: BoiteCommande,
 
-    /// La boîte des commandes adressées à TOUS les personnages — « Tout le
-    /// monde au mur ».
+    /// La boîte des commandes adressées à TOUS les personnages — celles de
+    /// la section « Tout le monde » du menu (`tous.*`, spec « menu sur
+    /// mesure » §3). La boucle les résout une fois pour tous
+    /// (`menu_perso::resoudre_pour_tous`) avant de les servir.
     ///
     /// ⚠️ **Distincte de `commande`, et c'est tout son intérêt.** `commande`
     /// n'est servie qu'au demandeur du menu (`menu_perso::commande_pour`) :
@@ -440,18 +434,6 @@ pub fn executer(actions: &Actions, app: &AppHandle, id: &str, cases_du_tray: &Ca
         }
 
         // ── Les entrées communes aux deux menus ─────────────────────────
-        ID_TOUS_AU_MUR => {
-            // Aucun personnage à désigner : la boucle le donne à chacun, et
-            // `behavior::pas` refuse l'ordre à ceux qui ne peuvent pas obéir
-            // (portés, en chute, pack sans poses d'escalade).
-            deposer_dans(
-                &actions.pour_tous,
-                crate::menu_perso::Commande::Intention(
-                    crate::behavior::intention::Intention::Grimper,
-                ),
-            );
-        }
-
         ID_CATALOGUE => {
             ouvrir_catalogue(app);
         }
@@ -472,10 +454,19 @@ pub fn executer(actions: &Actions, app: &AppHandle, id: &str, cases_du_tray: &Ca
         }
 
         // ── Une envie ou une action demandée par le menu du personnage ───
-        autre => match crate::menu_perso::commande_de(autre) {
-            Some(commande) => deposer_commande(actions, commande),
-            None => eprintln!("entrée de menu non gérée : {autre}"),
-        },
+        //
+        // Deux tables, deux boîtes : `perso.*` va au seul demandeur,
+        // `tous.*` à tous les présents (spec §3). C'est l'identifiant qui
+        // décide, jamais le menu d'où vient le clic.
+        autre => {
+            if let Some(commande) = crate::menu_perso::commande_de(autre) {
+                deposer_commande(actions, commande);
+            } else if let Some(commande) = crate::menu_perso::commande_de_tous(autre) {
+                deposer_dans(&actions.pour_tous, commande);
+            } else {
+                eprintln!("entrée de menu non gérée : {autre}");
+            }
+        }
     }
 }
 

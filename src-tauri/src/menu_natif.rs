@@ -57,7 +57,7 @@ pub fn choisir(lignes: &[Ligne]) -> Option<&'static str> {
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows::Win32::UI::WindowsAndMessaging::{
         AppendMenuW, CreatePopupMenu, CreateWindowExW, DestroyMenu, DestroyWindow, GetCursorPos,
-        RegisterClassW, TrackPopupMenu, MF_SEPARATOR, MF_STRING, TPM_LEFTALIGN, TPM_RETURNCMD,
+        RegisterClassW, TrackPopupMenu, MF_CHECKED, MF_GRAYED, MF_SEPARATOR, MF_STRING, TPM_LEFTALIGN, TPM_RETURNCMD,
         TPM_RIGHTBUTTON, WNDCLASSW, WS_EX_TOOLWINDOW, WS_POPUP,
     };
 
@@ -108,11 +108,16 @@ pub fn choisir(lignes: &[Ligne]) -> Option<&'static str> {
         };
         for (rang, ligne) in lignes.iter().enumerate() {
             match ligne {
-                Ligne::Entree { libelle, .. } => {
-                    // `HSTRING` : la chaîne UTF-16 terminée par un zéro que
-                    // Windows attend. Les accents passent tels quels.
+                Ligne::Entree { libelle, coche, .. } => {
                     let texte = windows::core::HSTRING::from(*libelle);
-                    let _ = AppendMenuW(menu, MF_STRING, rang + 1, &texte);
+                    // `|` : les drapeaux Win32 se combinent bit à bit.
+                    let drapeaux = if *coche { MF_STRING | MF_CHECKED } else { MF_STRING };
+                    let _ = AppendMenuW(menu, drapeaux, rang + 1, &texte);
+                }
+                Ligne::Titre { texte } => {
+                    // Grisé : un titre ne se choisit pas.
+                    let texte = windows::core::HSTRING::from(*texte);
+                    let _ = AppendMenuW(menu, MF_STRING | MF_GRAYED, rang + 1, &texte);
                 }
                 Ligne::Separateur => {
                     let _ = AppendMenuW(menu, MF_SEPARATOR, 0, windows::core::PCWSTR::null());

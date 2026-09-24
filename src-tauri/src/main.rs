@@ -1863,6 +1863,20 @@ fn boucle(
             Err(_) => None,
         };
 
+        // Les tenues de tous les présents, pour les coches du menu et pour
+        // résoudre une commande « Tout le monde ». Un acteur en départ n'est
+        // plus là : il ne compte pas.
+        let tenues_de_tous: Vec<Option<behavior::tenue::Tenue>> = acteurs
+            .iter()
+            .filter(|a| a.depart.is_none())
+            .map(|a| a.ch.tenue)
+            .collect();
+
+        // Résolue UNE fois, pour tous — voir `menu_perso::resoudre_pour_tous`.
+        // `map` : ne s'applique que s'il y a une commande.
+        let commande_pour_tous =
+            commande_pour_tous.map(|c| menu_perso::resoudre_pour_tous(c, &tenues_de_tous));
+
         // Caché par l'utilisateur, OU session verrouillée : on calcule tout,
         // on ne dessine rien. Lu une fois, il vaut pour tous les acteurs.
         //
@@ -2015,7 +2029,13 @@ fn boucle(
                 // personnage accroché à un mur le faisait tomber au premier
                 // clic, quelle que soit l'entrée choisie.
                 let ou = menu_perso::ou_de(&acteur.ch.attachment);
-                let lignes = menu_perso::lignes(&acteur.ch.manifest, &table, ou);
+                let lignes = menu_perso::lignes(
+                    &acteur.ch.manifest,
+                    &table,
+                    ou,
+                    acteur.ch.tenue,
+                    &tenues_de_tous,
+                );
 
                 // ── Le menu, sur son propre thread ──────────────────────
                 //

@@ -18,9 +18,10 @@
 //! « remettre les entrées d'accord avec l'état », qui est exactement la
 //! classe de bugs que ce projet évite ailleurs par recalcul (décision n° 1).
 
-use crate::actions::{ID_CATALOGUE, ID_P_CACHER, ID_P_CACHER_CE, ID_QUITTER, ID_TOUS_AU_MUR};
+use crate::actions::{ID_CATALOGUE, ID_P_CACHER, ID_P_CACHER_CE, ID_QUITTER};
 use crate::behavior::desire::TableEnvies;
 use crate::behavior::intention::{Intention, Jeu};
+use crate::behavior::tenue::Tenue;
 use crate::character::attach::Attachment;
 use crate::character::manifest::Manifest;
 use crate::geom::Face;
@@ -50,15 +51,15 @@ pub enum Commande {
     /// ce que fait un clic sur une ligne du menu du personnage, dont la coche
     /// dit l'état (spec §3). Résolue par `behavior::pas`, qui seul connaît
     /// `ch.tenue` au moment où la commande arrive.
-    Basculer(crate::behavior::tenue::Tenue),
+    Basculer(Tenue),
 
     /// La tenir, quoi qu'il tienne déjà. Ce que devient un `Basculer` de la
     /// section « Tout le monde » quand tous ne la tiennent pas encore.
-    Tenir(crate::behavior::tenue::Tenue),
+    Tenir(Tenue),
 
     /// La relâcher s'il la tient, ne rien faire sinon. L'intention en cours
     /// continue : il reprend sa vie normale à la fin de celle-ci.
-    Relacher(crate::behavior::tenue::Tenue),
+    Relacher(Tenue),
 
     /// Reprend l'escalade en cours pour viser le BAS du mur — jamais
     /// proposée au plafond, où « redescendre » n'a pas de sens (design
@@ -197,22 +198,19 @@ pub fn ou_de(attachment: &Attachment) -> Ou {
 /// dupliquer la ligne par contexte serait une seconde source de vérité pour
 /// le même identifiant.
 ///
-/// « Grimper au mur » et « Monter plus haut » sont en revanche deux LIGNES
-/// distinctes — deux identifiants, deux libellés — qui partagent la MÊME
-/// commande (`Commande::Intention(Intention::Grimper)`) : c'est la même
-/// action de fond (grimper), seul son libellé change selon qu'on la propose
-/// pour la déclencher ou pour la reprendre. Deux identifiants gardent le
-/// décodage sans ambiguïté — un seul identifiant affiché avec deux libellés
-/// différents selon le contexte aurait, lui, demandé au décodage de
-/// connaître le contexte, ce qui n'a rien à y faire.
+/// « Grimper au mur » est de même **une seule ligne**, proposée au sol, au
+/// mur et au plafond : tenue, elle ne change pas de sens selon qu'on la
+/// lance ou qu'on la reprend. « Monter plus haut », qui la doublait au mur
+/// sous un autre identifiant, a disparu (spec « menu sur mesure » §2).
+///
+/// # Tenue ou ponctuelle
+///
+/// Une ligne `Commande::Basculer(…)` est une action **tenue** : elle a une
+/// coche, et dure jusqu'à ce qu'on la décoche. Une ligne
+/// `Commande::Intention(…)` est **ponctuelle** : elle se joue une fois.
 const ENVIES: &[(&str, &str, &[Ou], Commande)] = &[
-    ("perso.flaner", "Flâner", &[Ou::Sol], Commande::Intention(Intention::Flaner)),
-    (
-        "perso.asseoir",
-        "S'asseoir",
-        &[Ou::Sol],
-        Commande::Intention(Intention::SeReposer),
-    ),
+    ("perso.flaner", "Flâner", &[Ou::Sol], Commande::Basculer(Tenue::Flaner)),
+    ("perso.asseoir", "S'asseoir", &[Ou::Sol], Commande::Basculer(Tenue::Asseoir)),
     // Le libellé ne décrit PAS le dessin, et c'est délibéré. `spinHead` est
     // un numéro de slot Shimeji (`SitAndSpinHeadAction`), pas une promesse :
     // `blob` y fait tourner sa tête, un autre pack y mange ou y joue sa pose
@@ -233,38 +231,46 @@ const ENVIES: &[(&str, &str, &[Ou], Commande)] = &[
         "perso.jambes",
         "Balancer les jambes",
         &[Ou::Sol],
-        Commande::Intention(Intention::Jouer(Jeu::JambesQuiBalancent)),
+        Commande::Basculer(Tenue::BalancerLesJambes),
     ),
+    // Une seule ligne pour les trois endroits : tenue, elle ne change pas
+    // de sens selon qu'on la lance ou qu'on la reprend. « Monter plus
+    // haut », qui la doublait au mur, a disparu (spec §2).
     (
         "perso.grimper",
         "Grimper au mur",
-        &[Ou::Sol],
-        Commande::Intention(Intention::Grimper),
-    ),
-    (
-        "perso.monter",
-        "Monter plus haut",
-        &[Ou::Mur],
-        Commande::Intention(Intention::Grimper),
+        &[Ou::Sol, Ou::Mur, Ou::Plafond],
+        Commande::Basculer(Tenue::Grimper),
     ),
     (
         "perso.rester",
         "Rester accroché",
         &[Ou::Mur, Ou::Plafond],
-        Commande::Basculer(crate::behavior::tenue::Tenue::ResterAccroche),
+        Commande::Basculer(Tenue::ResterAccroche),
     ),
+    ("perso.redescendre", "Redescendre", &[Ou::Mur], Commande::Redescendre),
+    ("perso.lacher", "Se lâcher", &[Ou::Mur, Ou::Plafond], Commande::SeLacher),
+];
+
+/// La section « Tout le monde » (spec §3) : les actions du SOL, données à
+/// tous les présents par la boîte `Actions::pour_tous`.
+///
+/// Une table à part et non une colonne d'`ENVIES` : ses identifiants sont
+/// DIFFÉRENTS (`tous.*`), et c'est ce qui les envoie dans l'autre boîte.
+/// Réutiliser `perso.asseoir` ferait asseoir le seul demandeur.
+///
+/// Seulement le sol : les autres sont n'importe où, et « Se lâcher » n'a
+/// de sens que pour qui est accroché.
+const TOUS: &[(&str, &str, Commande)] = &[
+    ("tous.flaner", "Flâner", Commande::Basculer(Tenue::Flaner)),
+    ("tous.asseoir", "S'asseoir", Commande::Basculer(Tenue::Asseoir)),
     (
-        "perso.redescendre",
-        "Redescendre",
-        &[Ou::Mur],
-        Commande::Redescendre,
+        "tous.tete",
+        "Faire son petit truc",
+        Commande::Intention(Intention::Jouer(Jeu::TeteQuiTourne)),
     ),
-    (
-        "perso.lacher",
-        "Se lâcher",
-        &[Ou::Mur, Ou::Plafond],
-        Commande::SeLacher,
-    ),
+    ("tous.jambes", "Balancer les jambes", Commande::Basculer(Tenue::BalancerLesJambes)),
+    ("tous.grimper", "Grimper au mur", Commande::Basculer(Tenue::Grimper)),
 ];
 
 /// La commande que désigne un identifiant d'entrée, s'il en désigne une.
@@ -280,19 +286,53 @@ pub fn commande_de(id: &str) -> Option<Commande> {
         .map(|(_, _, _, c)| *c)
 }
 
-/// Une ligne du menu : une entrée cliquable, ou un séparateur.
+/// La commande d'une entrée de la section « Tout le monde », si `id` en
+/// désigne une. Le pendant de `commande_de` pour la table `TOUS`.
+pub fn commande_de_tous(id: &str) -> Option<Commande> {
+    TOUS.iter().find(|(i, _, _)| *i == id).map(|(_, _, c)| *c)
+}
+
+/// Ce que devient une commande de la section « Tout le monde » pour les
+/// personnages présents (spec §3) : coché si TOUS la tiennent, donc un clic
+/// relâche chez tous ; sinon, un clic la donne à tous.
+///
+/// Résolue UNE fois par la boucle, avant de servir les acteurs : chaque
+/// acteur résolvant son propre `Basculer`, un personnage déjà assis se
+/// relèverait pendant que les autres s'assoient.
+///
+/// `!is_empty()` : sans personne, « tous la tiennent » serait vrai par
+/// vacuité, et le clic relâcherait… personne. On tient.
+pub fn resoudre_pour_tous(c: Commande, tenues: &[Option<Tenue>]) -> Commande {
+    match c {
+        Commande::Basculer(t) => {
+            let tous = !tenues.is_empty() && tenues.iter().all(|x| *x == Some(t));
+            if tous {
+                Commande::Relacher(t)
+            } else {
+                Commande::Tenir(t)
+            }
+        }
+        autre => autre,
+    }
+}
+
+/// Une ligne du menu : une entrée cliquable, un titre de section, ou un
+/// séparateur.
 ///
 /// Le menu est **décrit** ici et **affiché** ailleurs (`menu_natif.rs`) :
 /// la description est une fonction pure, donc testable sans écran, et
 /// l'affichage ne sait rien des envies ni des packs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ligne {
-    /// `id` est l'identifiant que reçoit `actions::executer`, exactement
-    /// comme s'il venait d'un menu Tauri ; `libelle` est le texte affiché.
+    /// `id` est l'identifiant que reçoit `actions::executer` ; `coche` dit
+    /// si l'action est tenue — DÉDUITE de la tenue, jamais stockée.
     Entree {
         id: &'static str,
         libelle: &'static str,
+        coche: bool,
     },
+    /// Un intitulé de section, non cliquable.
+    Titre { texte: &'static str },
     Separateur,
 }
 
@@ -314,7 +354,16 @@ pub enum Ligne {
 /// Aucun `Actions` en paramètre, et c'est la conséquence directe du
 /// gestionnaire unique : ce fichier ne déclenche **rien**, il propose. Le
 /// choix atterrit dans `actions::executer`.
-pub fn lignes(manifeste: &Manifest, table: &TableEnvies, ou: Ou) -> Vec<Ligne> {
+///
+/// `tenue` est celle du personnage cliqué, `tenues_de_tous` celles de tous
+/// les présents — lui compris. Ce sont les seules sources des coches.
+pub fn lignes(
+    manifeste: &Manifest,
+    table: &TableEnvies,
+    ou: Ou,
+    tenue: Option<Tenue>,
+    tenues_de_tous: &[Option<Tenue>],
+) -> Vec<Ligne> {
     let mut lignes: Vec<Ligne> = Vec::new();
 
     // ── Les envies jouables par CE personnage, LÀ où il est ─────────────
@@ -334,7 +383,10 @@ pub fn lignes(manifeste: &Manifest, table: &TableEnvies, ou: Ou) -> Vec<Ligne> {
             Commande::Redescendre | Commande::SeLacher => true,
         };
         if jouable {
-            lignes.push(Ligne::Entree { id, libelle });
+            // Seul un `Basculer` a une coche : une action ponctuelle n'a
+            // pas d'état à montrer.
+            let coche = matches!(commande, Commande::Basculer(t) if tenue == Some(*t));
+            lignes.push(Ligne::Entree { id, libelle, coche });
         }
     }
 
@@ -344,21 +396,30 @@ pub fn lignes(manifeste: &Manifest, table: &TableEnvies, ou: Ou) -> Vec<Ligne> {
         lignes.push(Ligne::Separateur);
     }
 
+    // ── La section « Tout le monde » (spec §3) ──────────────────────────
+    //
+    // Un titre plutôt que « tout le monde » répété à chaque ligne : c'est la
+    // demande de l'auteur. Toujours proposée, même à un pack sans escalade :
+    // elle s'adresse aux AUTRES aussi, et chacun refuse ce qu'il ne peut pas
+    // exécuter (`behavior::pas`).
+    lignes.push(Ligne::Titre { texte: "Tout le monde" });
+    for (id, libelle, commande) in TOUS {
+        let coche = match commande {
+            Commande::Basculer(t) => {
+                !tenues_de_tous.is_empty() && tenues_de_tous.iter().all(|x| *x == Some(*t))
+            }
+            _ => false,
+        };
+        lignes.push(Ligne::Entree { id, libelle, coche });
+    }
+    lignes.push(Ligne::Separateur);
+
     // ── Les entrées communes avec le tray ───────────────────────────────
     //
     // « Démarrer avec Windows » est délibérément absent : c'est un réglage du
     // système, pas une humeur du personnage, et il n'a rien à faire au milieu
     // de « Flâner » et « S'asseoir ». Il reste dans le tray, qui est
     // justement l'endroit des réglages.
-    //
-    // « Tout le monde grimpe au mur » : un ordre à TOUS, donc rangé avec les
-    // entrées communes et non parmi les envies de CE personnage. Toujours
-    // proposé, même à un pack sans escalade : il s'adresse aux AUTRES
-    // aussi, et chacun le refuse s'il ne peut pas l'exécuter.
-    lignes.push(Ligne::Entree {
-        id: ID_TOUS_AU_MUR,
-        libelle: "Tout le monde grimpe au mur",
-    });
 
     // Deux « Cacher », et le libellé doit dire lequel est lequel : « ce
     // personnage » s'en va seul (voir `actions::ID_P_CACHER_CE`), « tous »
@@ -366,14 +427,17 @@ pub fn lignes(manifeste: &Manifest, table: &TableEnvies, ou: Ou) -> Vec<Ligne> {
     lignes.push(Ligne::Entree {
         id: ID_P_CACHER_CE,
         libelle: "Cacher ce personnage",
+        coche: false,
     });
     lignes.push(Ligne::Entree {
         id: ID_P_CACHER,
         libelle: "Cacher tous les personnages",
+        coche: false,
     });
     lignes.push(Ligne::Entree {
         id: ID_CATALOGUE,
         libelle: "Catalogue de personnages…",
+        coche: false,
     });
 
     // « Quitter » en dernier, derrière son propre séparateur.
@@ -386,6 +450,7 @@ pub fn lignes(manifeste: &Manifest, table: &TableEnvies, ou: Ou) -> Vec<Ligne> {
     lignes.push(Ligne::Entree {
         id: ID_QUITTER,
         libelle: "Quitter",
+        coche: false,
     });
 
     lignes
