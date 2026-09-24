@@ -20,6 +20,14 @@ fn defauts() -> crate::config::Config {
     crate::config::Config::default()
 }
 
+/// La plus longue immobilité que le comportement choisit : le délai
+/// d'abandon (20 s) ou la pause d'accroche au mur (jusqu'à 60 s). Au-delà,
+/// c'est un blocage (décision n° 4).
+fn immobilite_voulue_max() -> Duration {
+    let accroche = Duration::from_secs_f32(crate::character::physics::DUREE_ACCROCHE[1]);
+    crate::behavior::intention::DELAI_ABANDON.max(accroche)
+}
+
 #[test]
 fn une_simulation_courte_produit_un_resume_coherent() {
     let r = executer(2, 42, blob(), &defauts()).expect("la simulation doit aboutir");
@@ -55,7 +63,11 @@ fn il_n_est_jamais_bloque_plus_que_le_delai_d_abandon() {
     // changé (voir le commentaire de l'empreinte).
     let r = executer(30, 42, blob(), &defauts()).expect("la simulation doit aboutir");
 
-    let limite = crate::behavior::intention::DELAI_ABANDON + Duration::from_secs(1);
+    // La plus longue immobilité VOULUE : le délai d'abandon, ou la pause
+    // d'accroche à un mur (20 à 60 s, `HoldOntoWall`) — immobile par
+    // construction, comme chez Shimeji-ee. Tant qu'elle était lue en
+    // millisecondes (0,5 à 1,5 s), le délai d'abandon suffisait.
+    let limite = immobilite_voulue_max() + Duration::from_secs(1);
     assert!(
         r.blocage_max <= limite,
         "bloqué {:?}, limite {:?}",
@@ -210,7 +222,7 @@ fn une_journee_entiere_dort_au_bon_moment() {
     // Le sommeil est la plus longue immobilité du programme : c'est ici
     // qu'un blocage se verrait.
     assert!(
-        r.blocage_max < crate::behavior::intention::DELAI_ABANDON,
+        r.blocage_max < immobilite_voulue_max(),
         "blocage de {:?}, au-delà du délai d'abandon",
         r.blocage_max
     );

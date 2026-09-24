@@ -31,7 +31,7 @@
   "escalade": {
     "poidsLacher": 1,
     "poidsRedescendre": 2,
-    "dureeAccroche": [0.5, 1.5]
+    "dureeAccroche": [20, 60]
   },
 
   "dureeAuSol": [1, 2],
