@@ -106,6 +106,18 @@ pub fn a_jour(app: &AppHandle, version: &str) {
     );
 }
 
+/// « Vérifier les mises à jour » au clic : la vérification ou l'installation
+/// a échoué (demande de l'auteur, 2026-09-24 — le libellé du tray seul ne se
+/// voyait qu'en rouvrant le menu). Seulement sur un clic : au démarrage,
+/// être hors ligne reste un état normal, et muet.
+pub fn maj_impossible(app: &AppHandle, raison: &str) {
+    emettre(
+        app,
+        "Impossible de vérifier les mises à jour",
+        &format!("Réessayez depuis le menu de l'icône. ({raison})"),
+    );
+}
+
 /// Le téléchargement commence : quelques secondes où rien d'autre ne se
 /// voit, avant que l'installateur ferme l'application.
 pub fn installation_en_cours(app: &AppHandle, version: &str) {

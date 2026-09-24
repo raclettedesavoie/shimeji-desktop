@@ -62,7 +62,8 @@ réagissent l'un à l'autre. Ajouter un personnage est une **opération de conte
   configuration ; une mise à jour disponible, **une fois par version**
   (`derniereVersionSignalee`) ; et, depuis le 2026-09-24 à la demande de l'auteur,
   « à jour » **sur un clic** de « Vérifier les mises à jour », « mise à jour en
-  cours » avant le téléchargement, « mis à jour en vX » au lancement suivant
+  cours » avant le téléchargement, « impossible de vérifier » sur un clic qui échoue,
+  « mis à jour en vX » au lancement suivant
   (`derniereVersionLancee`, tenue par la release seule). Rien du personnage.
   ⚠️ Le plugin rend `Ok` sans savoir si le toast s'affiche (`toast::emettre`) : un
   toast invisible, c'est d'abord le mode « Ne pas déranger »
@@ -828,6 +829,14 @@ un toast le dit **une fois par version**. Rien ne s'installe sans un clic :
 sur Windows, appliquer une mise à jour relance l'installateur NSIS, donc
 ferme l'application — le faire d'autorité ferait disparaître les personnages
 au milieu d'une session.
+
+> ⚠️⚠️ **Tant que le dépôt est PRIVÉ, la mise à jour automatique ne peut pas
+> marcher** (constaté le 2026-09-24). L'updater lit `latest.json` sans
+> authentification : une release privée lui rend une 404
+> (« Could not fetch a valid release JSON »). La vérification du démarrage
+> échouait en silence, par conception — c'est le libellé « Vérification
+> impossible » du clic qui l'a révélé. À trancher par l'auteur : rendre le
+> dépôt public, ou publier les releases dans un dépôt public à part.
 
 > ⚠️ **La clé privée de signature ne vit QUE dans les secrets GitHub**
 > (`TAURI_SIGNING_PRIVATE_KEY` et `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`). La

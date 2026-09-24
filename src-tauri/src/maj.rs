@@ -179,7 +179,7 @@ fn signaler(app: &AppHandle, actions: &Actions, version: &str) {
 /// Ce que l'utilisateur voit (demande de l'auteur, 2026-09-24) : à jour, le
 /// libellé « À jour (vX) » et un toast ; une version trouvée, un toast
 /// « Mise à jour vers la vX… » avant le téléchargement ; un échec, le
-/// libellé « Vérification impossible — réessayer », sans toast.
+/// libellé « Vérification impossible — réessayer » et un toast qui le dit.
 ///
 /// ⚠️ **En debug, on n'installe JAMAIS** : la branche porte souvent une
 /// version plus ancienne que celle installée, et le clic réinstallait la
@@ -195,6 +195,7 @@ pub fn verifier_puis_installer(app: AppHandle) {
             Err(e) => {
                 eprintln!("[maj] updater indisponible : {e}");
                 actions.afficher_etat_maj(&EtatMaj::Impossible);
+                crate::toast::maj_impossible(&app, "mise à jour mal configurée");
                 return;
             }
         };
@@ -211,6 +212,9 @@ pub fn verifier_puis_installer(app: AppHandle) {
             Err(e) => {
                 eprintln!("[maj] vérification impossible : {e}");
                 actions.afficher_etat_maj(&EtatMaj::Impossible);
+                // Le message du plugin est technique et en anglais : la
+                // raison affichée est la nôtre, le détail reste dans la trace.
+                crate::toast::maj_impossible(&app, "serveur de mise à jour injoignable");
                 return;
             }
         };
@@ -249,6 +253,7 @@ pub fn verifier_puis_installer(app: AppHandle) {
                 // télécharger l'installateur à la main.
                 eprintln!("[maj] installation échouée : {e}");
                 actions.afficher_etat_maj(&EtatMaj::Impossible);
+                crate::toast::maj_impossible(&app, "l'installation a échoué");
             }
         }
     });
