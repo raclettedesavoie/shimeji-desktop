@@ -1834,6 +1834,24 @@ fn boucle(
             }
         }
 
+        // ── Le filet du menu jamais placé (relecture finale) ────────────
+        //
+        // `menu.js` n'a pas rappelé `placer_menu` : la fenêtre est restée
+        // cachée, et rien d'autre ne la fermera. On lève `ferme` NOUS-MÊMES
+        // en plus d'appeler `fermer` : si l'état du menu n'a jamais été
+        // enregistré, `fermer` n'a rien à fermer et ne lèverait rien.
+        if let Some((_, ferme, ouvert_a)) = &menu_en_cours {
+            if menu_fenetre::est_place(&handle) == Some(false)
+                && menu_fenetre::est_abandonne(*ouvert_a, maintenant, false)
+            {
+                if std::env::var_os("SHIMEJI_MENU").is_some() {
+                    eprintln!("menu : jamais placé, abandonné");
+                }
+                menu_fenetre::fermer(&handle);
+                ferme.store(true, std::sync::atomic::Ordering::Release);
+            }
+        }
+
         // ⚠️ **Rien n'est pris dans la boîte tant que le menu est ouvert.**
         // La commande lue ici est jetée si son destinataire ne la consomme
         // pas dans l'image ; or l'acteur du menu est à l'arrêt, et ne

@@ -52,3 +52,18 @@ fn un_clic_hors_du_menu_est_detecte() {
     assert!(hors_du_menu((99, 150), rect));
     assert!(hors_du_menu((150, 401), rect));
 }
+
+#[test]
+fn un_menu_jamais_place_est_abandonne() {
+    // Relecture finale, n° 1 : si `menu.js` ne rappelle jamais `placer_menu`
+    // (page encore en chargement, exception JS), la fenêtre reste cachée —
+    // ni `blur`, ni Échap, ni le filet. Sans ce délai, le personnage cliqué
+    // restait figé et le clic droit mort jusqu'au redémarrage.
+    use std::time::Duration;
+    let ouvert = Duration::from_secs(10);
+    assert!(!est_abandonne(ouvert, ouvert + Duration::from_millis(500), false));
+    assert!(est_abandonne(ouvert, ouvert + DELAI_PLACEMENT + Duration::from_millis(1), false));
+    // Placé : il reste ouvert tant qu'on ne le ferme pas, si longtemps
+    // que l'utilisateur hésite.
+    assert!(!est_abandonne(ouvert, ouvert + Duration::from_secs(600), true));
+}

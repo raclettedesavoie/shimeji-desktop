@@ -33,6 +33,12 @@ pub const LABEL: &str = "menu";
 /// place dans la fenêtre. **Doit valoir `--marge` de `ui/menu.css`.**
 pub const MARGE_CSS: f32 = 12.0;
 
+/// Le temps laissé à `menu.js` pour dessiner, mesurer et rappeler
+/// `placer_menu`. Il lui faut quelques millisecondes ; au-delà d'une seconde,
+/// il ne le fera plus (page pas encore chargée, exception JS), et le menu est
+/// abandonné — voir `est_abandonne`.
+pub const DELAI_PLACEMENT: std::time::Duration = std::time::Duration::from_secs(1);
+
 /// Le menu en cours d'affichage.
 struct MenuOuvert {
     /// Le curseur au clic droit, en pixels physiques du bureau virtuel.
@@ -205,6 +211,32 @@ pub fn rect_ouvert(app: &AppHandle) -> Option<(i32, i32, i32, i32)> {
     let etat = app.state::<EtatMenu>();
     let e = etat.0.try_lock().ok()?;
     e.as_ref()?.rect
+}
+
+/// Le menu est-il placé ? `None` si l'état est verrouillé en ce moment
+/// (`placer` ou `fermer` en cours) : la boucle ne décide rien cette image-là,
+/// elle réessaiera à la suivante. `Some(false)` s'il n'y a aucun menu.
+pub fn est_place(app: &AppHandle) -> Option<bool> {
+    let etat = app.state::<EtatMenu>();
+    let e = etat.0.try_lock().ok()?;
+    // `as_ref` puis `is_some_and` : « il y a un menu, et son rectangle est
+    // connu » — faux dans les deux autres cas.
+    Some(e.as_ref().is_some_and(|m| m.rect.is_some()))
+}
+
+/// Un menu ouvert à `ouvert_a` et toujours pas placé à `maintenant` est-il à
+/// abandonner ?
+///
+/// Le filet de la boucle (`hors_du_menu`) a besoin du rectangle ; `blur` et
+/// Échap ont besoin d'une fenêtre visible. Un menu jamais placé n'a ni l'un
+/// ni l'autre : sans ce délai, rien ne le fermerait, le personnage cliqué
+/// resterait figé et tout clic droit suivant serait refusé (relecture finale).
+pub fn est_abandonne(
+    ouvert_a: std::time::Duration,
+    maintenant: std::time::Duration,
+    place: bool,
+) -> bool {
+    !place && maintenant.saturating_sub(ouvert_a) > DELAI_PLACEMENT
 }
 
 /// Où poser la fenêtre, en pixels physiques : `(x, y, largeur, hauteur)`.
