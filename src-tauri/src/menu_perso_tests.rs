@@ -66,12 +66,18 @@ fn toute_intention_de_la_table_d_envies_est_proposee_par_le_menu() {
     // ci-dessus : celui-là interdit une entrée de menu sans ligne de
     // table, celui-ci interdit une ligne de table sans entrée de menu.
     // Il faut les deux pour que la correspondance soit exacte.
+    //
+    // Depuis les actions tenues (spec « menu sur mesure » §2), une intention
+    // est proposée soit telle quelle (ponctuelle), soit par la tenue qui la
+    // sert (`Basculer`) : les deux comptent.
     let table = TableEnvies::defaut();
     for entree in &table.entrees {
         assert!(
-            ENVIES
-                .iter()
-                .any(|(_, _, _, c)| *c == Commande::Intention(entree.intention)),
+            ENVIES.iter().any(|(_, _, _, c)| match c {
+                Commande::Intention(i) => *i == entree.intention,
+                Commande::Basculer(t) => t.intention() == entree.intention,
+                _ => false,
+            }),
             "{:?} est tirable mais absente du menu contextuel",
             entree.intention
         );
@@ -82,10 +88,10 @@ fn toute_intention_de_la_table_d_envies_est_proposee_par_le_menu() {
 /// n'en propose qu'une.
 ///
 /// C'est la couverture partielle (spec §8.6) vue depuis le menu, et la
-/// raison pour laquelle `ouvrir` filtre au lieu de tout afficher grisé.
+/// raison pour laquelle `lignes` filtre au lieu de tout afficher grisé.
 ///
 /// Ne teste que les `Commande::Intention` : les trois autres n'ont pas de
-/// pose requise propre (voir le commentaire de `ouvrir` sur ce point),
+/// pose requise propre (voir le commentaire de `lignes` sur ce point),
 /// donc rien à vérifier de leur côté de la couverture partielle.
 #[test]
 fn la_couverture_partielle_retire_les_envies_injouables() {
@@ -117,19 +123,17 @@ fn table_et_blob() -> (TableEnvies, Manifest) {
     )
 }
 
-/// Les identifiants qu'`ouvrir` proposerait pour cet endroit, en ne
-/// rejouant que la logique de filtrage (pas la construction réelle des
-/// `MenuItem`, qui demande un `AppHandle` Tauri hors de portée des
-/// tests unitaires).
+/// Les identifiants d'ENVIES que `lignes` propose pour cet endroit — les
+/// entrées communes (cacher, catalogue, quitter) écartées, puisque ces
+/// tests-ci ne portent que sur le filtrage des envies.
 fn ids_proposes(table: &TableEnvies, manifeste: &Manifest, ou: Ou) -> Vec<&'static str> {
-    ENVIES
-        .iter()
-        .filter(|(_, _, contextes, _)| contextes.contains(&ou))
-        .filter(|(_, _, _, commande)| match commande {
-            Commande::Intention(i) => table.jouable(manifeste, *i),
-            _ => true,
+    lignes(manifeste, table, ou, None, &[], None)
+        .into_iter()
+        .filter_map(|l| match l {
+            Ligne::Entree { id, .. } => Some(id),
+            Ligne::Titre { .. } | Ligne::Separateur => None,
         })
-        .map(|(id, _, _, _)| *id)
+        .filter(|id| ENVIES.iter().any(|(i, _, _, _)| i == id))
         .collect()
 }
 
@@ -138,7 +142,7 @@ fn le_menu_au_sol_ne_propose_aucune_action_d_accroche() {
     let (table, blob) = table_et_blob();
     let ids = ids_proposes(&table, &blob, Ou::Sol);
 
-    for interdit in ["perso.monter", "perso.rester", "perso.redescendre", "perso.lacher"] {
+    for interdit in ["perso.rester", "perso.redescendre", "perso.lacher"] {
         assert!(
             !ids.contains(&interdit),
             "« {interdit} » ne devrait pas apparaître au sol : {ids:?}"
@@ -153,16 +157,15 @@ fn le_menu_sur_un_mur_ne_propose_aucune_envie_de_sol() {
     let (table, blob) = table_et_blob();
     let ids = ids_proposes(&table, &blob, Ou::Mur);
 
-    for interdit in ["perso.flaner", "perso.asseoir", "perso.tete", "perso.jambes", "perso.grimper"] {
+    for interdit in ["perso.flaner", "perso.asseoir", "perso.tete", "perso.jambes"] {
         assert!(
             !ids.contains(&interdit),
             "« {interdit} » ne devrait pas apparaître sur un mur : {ids:?}"
         );
     }
-    // « Monter plus haut », « Rester accroché », « Redescendre », « Se
-    // lâcher ».
+    // Grimper au mur, Rester accroché, Redescendre, Se lâcher.
     assert_eq!(ids.len(), 4, "{ids:?}");
-    assert!(ids.contains(&"perso.monter"));
+    assert!(ids.contains(&"perso.grimper"));
     assert!(ids.contains(&"perso.rester"));
     assert!(ids.contains(&"perso.redescendre"));
     assert!(ids.contains(&"perso.lacher"));
@@ -178,10 +181,13 @@ fn le_menu_au_plafond_ne_propose_ni_envie_de_sol_ni_redescendre() {
     // navigation calculée, que la décision n° 4 exclut (YAGNI). Shimeji
     // ne le propose pas non plus.
     assert!(!ids.contains(&"perso.redescendre"), "{ids:?}");
-    for interdit in ["perso.flaner", "perso.asseoir", "perso.tete", "perso.jambes", "perso.grimper", "perso.monter"] {
+    for interdit in ["perso.flaner", "perso.asseoir", "perso.tete", "perso.jambes"] {
         assert!(!ids.contains(&interdit), "« {interdit} » : {ids:?}");
     }
-    assert_eq!(ids.len(), 2, "{ids:?}");
+    // Grimper au mur (tenu, il traverse le plafond), Rester accroché, Se
+    // lâcher.
+    assert_eq!(ids.len(), 3, "{ids:?}");
+    assert!(ids.contains(&"perso.grimper"));
     assert!(ids.contains(&"perso.rester"));
     assert!(ids.contains(&"perso.lacher"));
 }
@@ -245,11 +251,11 @@ fn ou_de_lit_correctement_les_quatre_etats() {
 #[test]
 fn la_commande_revient_a_celui_qui_a_ouvert_le_menu() {
     let mut demandeur = Some("pet-3".to_string());
-    let mut boite = Some(Commande::ResterAccroche);
+    let mut boite = Some(Commande::Basculer(crate::behavior::tenue::Tenue::ResterAccroche));
 
     assert_eq!(
         commande_pour(&mut demandeur, &mut boite, "pet-3"),
-        Some(Commande::ResterAccroche)
+        Some(Commande::Basculer(crate::behavior::tenue::Tenue::ResterAccroche))
     );
     // Servie une fois et une seule : ni la boîte ni le demandeur ne
     // resserviraient l'image suivante.
@@ -281,4 +287,277 @@ fn sans_commande_le_demandeur_est_garde() {
 
     assert_eq!(commande_pour(&mut demandeur, &mut boite, "pet-3"), None);
     assert_eq!(demandeur, Some("pet-3".to_string()));
+}
+
+// ── « Tout le monde grimpe au mur » (2026-09-23) ───────────────────────────────
+
+#[test]
+fn l_ordre_a_tous_est_servi_a_qui_n_a_rien_demande() {
+    let grimper = Commande::Intention(Intention::Grimper);
+    assert_eq!(commande_de_l_acteur(None, Some(grimper)), Some(grimper));
+    assert_eq!(commande_de_l_acteur(None, None), None);
+}
+
+#[test]
+fn la_commande_personnelle_l_emporte_sur_l_ordre_a_tous() {
+    // Choisir « S'asseoir » pour CE personnage ne doit pas l'envoyer au mur
+    // parce qu'un ordre collectif est tombé dans la même image.
+    let asseoir = Commande::Intention(Intention::SeReposer);
+    let grimper = Commande::Intention(Intention::Grimper);
+    assert_eq!(commande_de_l_acteur(Some(asseoir), Some(grimper)), Some(asseoir));
+}
+
+// ── Les deux « Cacher » (2026-09-23) ─────────────────────────────────────
+
+/// Le libellé d'une entrée, ou `None` si elle n'est pas dans le menu.
+fn libelle_de(lignes: &[Ligne], cherche: &str) -> Option<&'static str> {
+    lignes.iter().find_map(|l| match l {
+        Ligne::Entree { id, libelle, .. } if *id == cherche => Some(*libelle),
+        _ => None,
+    })
+}
+
+/// « Cacher ce personnage » est proposé partout — au sol, au mur, au
+/// plafond — et « Cacher tous les personnages » dit enfin qu'il cache tout
+/// le monde : les deux côte à côte, un libellé ambigu ferait hésiter.
+#[test]
+fn les_deux_cacher_sont_proposes_partout_et_se_distinguent() {
+    let (table, blob) = table_et_blob();
+    for ou in [Ou::Sol, Ou::Mur, Ou::Plafond] {
+        let l = lignes(&blob, &table, ou, None, &[], None);
+        assert_eq!(
+            libelle_de(&l, crate::actions::ID_P_CACHER_CE),
+            Some("Cacher ce personnage"),
+            "{ou:?}"
+        );
+        assert_eq!(
+            libelle_de(&l, crate::actions::ID_P_CACHER),
+            Some("Cacher tous les personnages"),
+            "{ou:?}"
+        );
+    }
+}
+
+/// « Cacher ce personnage » n'est PAS une envie : il n'a pas à passer par
+/// `commande_de`, qui le rendrait à `behavior::pas` — lequel n'en ferait
+/// rien. C'est la boucle qui le traite, par `Actions::cacher_le_demandeur`.
+#[test]
+fn cacher_ce_personnage_n_est_pas_une_envie() {
+    assert_eq!(commande_de(crate::actions::ID_P_CACHER_CE), None);
+}
+
+/// Un menu ne commence ni ne finit par un séparateur, et n'en aligne jamais
+/// deux : dans les trois cas il aurait l'air cassé.
+#[test]
+fn le_menu_n_a_aucun_separateur_mal_place() {
+    let (table, blob) = table_et_blob();
+    for ou in [Ou::Sol, Ou::Mur, Ou::Plafond] {
+        let l = lignes(&blob, &table, ou, None, &[], None);
+        assert_ne!(l.first(), Some(&Ligne::Separateur), "{ou:?}");
+        assert_ne!(l.last(), Some(&Ligne::Separateur), "{ou:?}");
+        assert!(
+            !l.windows(2).any(|p| p[0] == Ligne::Separateur && p[1] == Ligne::Separateur),
+            "{ou:?}"
+        );
+    }
+}
+
+// ── Les coches et la section « Tout le monde » (spec §3) ────────────────
+
+use crate::behavior::tenue::Tenue;
+
+/// Un présent qui peut tenir toutes les actions — le cas de `blob`.
+fn capable(tenue: Option<Tenue>) -> Present {
+    Present {
+        tenue,
+        peut_tenir: Tenue::TOUTES.to_vec(),
+    }
+}
+
+fn coche_de(lignes: &[Ligne], cherche: &str) -> Option<bool> {
+    lignes.iter().find_map(|l| match l {
+        Ligne::Entree { id, coche, .. } if *id == cherche => Some(*coche),
+        _ => None,
+    })
+}
+
+#[test]
+fn la_coche_du_personnage_suit_sa_tenue() {
+    let (table, blob) = table_et_blob();
+    let l = lignes(&blob, &table, Ou::Sol, Some(Tenue::Asseoir), &[capable(Some(Tenue::Asseoir))], None);
+    assert_eq!(coche_de(&l, "perso.asseoir"), Some(true));
+    assert_eq!(coche_de(&l, "perso.flaner"), Some(false));
+    // Une action ponctuelle n'a jamais de coche.
+    assert_eq!(coche_de(&l, "perso.tete"), Some(false));
+}
+
+#[test]
+fn tout_le_monde_n_est_coche_que_si_tous_la_tiennent() {
+    let (table, blob) = table_et_blob();
+    let un_seul = lignes(&blob, &table, Ou::Sol, None, &[capable(Some(Tenue::Asseoir)), capable(None)], None);
+    assert_eq!(coche_de(&un_seul, "tous.asseoir"), Some(false));
+
+    let tous = lignes(&blob, &table, Ou::Sol, None, &[capable(Some(Tenue::Asseoir)), capable(Some(Tenue::Asseoir))], None);
+    assert_eq!(coche_de(&tous, "tous.asseoir"), Some(true));
+}
+
+#[test]
+fn la_section_tout_le_monde_suit_son_titre_avec_les_actions_du_sol() {
+    let (table, blob) = table_et_blob();
+    // Même au mur, la section « Tout le monde » est la même partout : les
+    // actions du sol, plus « Rester accroché » (2026-09-24) — ceux qui sont
+    // au sol montent puis se figent.
+    let l = lignes(&blob, &table, Ou::Mur, None, &[capable(None)], None);
+    let titre = l
+        .iter()
+        .position(|x| *x == Ligne::Titre { texte: "Tout le monde" })
+        .expect("le titre de section");
+    let apres: Vec<&str> = l[titre + 1..]
+        .iter()
+        .map_while(|x| match x {
+            Ligne::Entree { id, .. } if id.starts_with("tous.") => Some(*id),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(apres, ["tous.flaner", "tous.asseoir", "tous.tete", "tous.jambes", "tous.grimper", "tous.rester"]);
+}
+
+#[test]
+fn monter_plus_haut_a_disparu() {
+    let (table, blob) = table_et_blob();
+    for ou in [Ou::Sol, Ou::Mur, Ou::Plafond] {
+        assert_eq!(coche_de(&lignes(&blob, &table, ou, None, &[], None), "perso.monter"), None);
+    }
+}
+
+#[test]
+fn les_identifiants_tous_ne_vont_pas_au_demandeur() {
+    assert_eq!(commande_de("tous.grimper"), None);
+    assert_eq!(
+        commande_de_tous("tous.grimper"),
+        Some(Commande::Basculer(Tenue::Grimper))
+    );
+    assert_eq!(commande_de_tous("perso.grimper"), None);
+}
+
+#[test]
+fn resoudre_pour_tous_impose_si_un_seul_ne_la_tient_pas() {
+    let c = resoudre_pour_tous(
+        Commande::Basculer(Tenue::Asseoir),
+        &[capable(Some(Tenue::Asseoir)), capable(None)],
+        None,
+    );
+    assert_eq!(c, Commande::Imposer(Tenue::Asseoir));
+}
+
+#[test]
+fn resoudre_pour_tous_relache_si_tous_la_tiennent() {
+    let c = resoudre_pour_tous(
+        Commande::Basculer(Tenue::Asseoir),
+        &[capable(Some(Tenue::Asseoir)), capable(Some(Tenue::Asseoir))],
+        None,
+    );
+    assert_eq!(c, Commande::Relacher(Tenue::Asseoir));
+}
+
+#[test]
+fn resoudre_pour_tous_impose_aussi_une_action_ponctuelle() {
+    // Une action ponctuelle de « Tout le monde » s'impose comme une tenue :
+    // même à qui est au mur, qui l'ignorait sinon (2026-09-24).
+    let tete = Intention::Jouer(Jeu::TeteQuiTourne);
+    assert_eq!(
+        resoudre_pour_tous(Commande::Intention(tete), &[capable(None)], None),
+        Commande::ImposerUneFois(tete)
+    );
+}
+
+#[test]
+fn chaque_entree_affichee_est_un_identifiant_connu() {
+    // `choisir_entree_menu` n'accepte que ce que `id_connu` reconnaît : une
+    // entrée affichée mais inconnue serait un clic sans effet.
+    let (table, blob) = table_et_blob();
+    for ou in [Ou::Sol, Ou::Mur, Ou::Plafond] {
+        for l in lignes(&blob, &table, ou, None, &[capable(None)], None) {
+            if let Ligne::Entree { id, .. } = l {
+                assert_eq!(id_connu(id), Some(id), "{id}");
+            }
+        }
+    }
+    assert_eq!(id_connu("n'importe.quoi"), None);
+}
+
+// ── Qui ne PEUT pas la tenir ne compte pas (relecture finale, n° 2) ──────
+//
+// `behavior::pas` refuse `Tenir` à qui ne peut pas obéir : un pack sans
+// poses d'escalade ignore « Grimper au mur ». Le compter dans « tous la
+// tiennent » rendait la ligne impossible à décocher — chaque clic renvoyait
+// `Tenir`, et blob restait au mur pour toujours.
+
+/// Un pack sans escalade : il peut tout tenir, sauf les tenues du mur.
+fn sans_escalade(tenue: Option<Tenue>) -> Present {
+    Present {
+        tenue,
+        peut_tenir: vec![Tenue::Asseoir, Tenue::BalancerLesJambes, Tenue::Flaner],
+    }
+}
+
+#[test]
+fn tout_le_monde_ignore_qui_ne_peut_pas_la_tenir() {
+    let presents = [capable(Some(Tenue::Grimper)), sans_escalade(None)];
+    assert_eq!(
+        resoudre_pour_tous(Commande::Basculer(Tenue::Grimper), &presents, None),
+        Commande::Relacher(Tenue::Grimper)
+    );
+    let (table, blob) = table_et_blob();
+    let l = lignes(&blob, &table, Ou::Sol, None, &presents, None);
+    assert_eq!(coche_de(&l, "tous.grimper"), Some(true));
+}
+
+#[test]
+fn si_personne_ne_peut_la_tenir_on_impose() {
+    // Personne de capable : « tous la tiennent » serait vrai par vacuité, et
+    // le clic relâcherait… personne. On impose (chacun refusera).
+    let presents = [sans_escalade(None)];
+    assert_eq!(
+        resoudre_pour_tous(Commande::Basculer(Tenue::Grimper), &presents, None),
+        Commande::Imposer(Tenue::Grimper)
+    );
+}
+
+// ── L'ordre collectif reste coché (demande de l'auteur, 2026-09-24) ──────
+//
+// « Tout le monde › S'asseoir », puis on déplace l'un d'eux : il se relève,
+// les autres restent assis. La ligne doit rester COCHÉE, et la décocher
+// relever ceux qui sont encore assis — sinon il faudrait les décocher un à
+// un.
+
+#[test]
+fn l_ordre_collectif_reste_coche_tant_qu_un_seul_le_tient() {
+    let presents = [capable(Some(Tenue::Asseoir)), capable(None)];
+    let ordre = Some(Tenue::Asseoir);
+    let (table, blob) = table_et_blob();
+    let l = lignes(&blob, &table, Ou::Sol, None, &presents, ordre);
+    assert_eq!(coche_de(&l, "tous.asseoir"), Some(true));
+    assert_eq!(
+        resoudre_pour_tous(Commande::Basculer(Tenue::Asseoir), &presents, ordre),
+        Commande::Relacher(Tenue::Asseoir)
+    );
+}
+
+#[test]
+fn l_ordre_ne_coche_plus_quand_personne_ne_le_tient_encore() {
+    let presents = [capable(None), capable(None)];
+    let ordre = Some(Tenue::Asseoir);
+    assert_eq!(
+        resoudre_pour_tous(Commande::Basculer(Tenue::Asseoir), &presents, ordre),
+        Commande::Imposer(Tenue::Asseoir)
+    );
+}
+
+#[test]
+fn l_ordre_d_une_autre_action_ne_coche_pas_celle_ci() {
+    let presents = [capable(Some(Tenue::Asseoir)), capable(None)];
+    let (table, blob) = table_et_blob();
+    let l = lignes(&blob, &table, Ou::Sol, None, &presents, Some(Tenue::Flaner));
+    assert_eq!(coche_de(&l, "tous.asseoir"), Some(false));
 }

@@ -442,6 +442,7 @@ fn atterrit_sur_la_plateforme_la_plus_haute_traversee() {
         ScreenInfo {
             id: 1,
             work_area: Rect::new(0.0, 0.0, 1920.0, 1032.0),
+            bounds: Rect::new(0.0, 0.0, 1920.0, 1032.0),
             scale: 1.0,
         },
         ScreenInfo {
@@ -449,6 +450,7 @@ fn atterrit_sur_la_plateforme_la_plus_haute_traversee() {
             // Un écran fictif dont la zone de travail finit plus haut :
             // son sol est donc à y = 600.
             work_area: Rect::new(0.0, 0.0, 1920.0, 600.0),
+            bounds: Rect::new(0.0, 0.0, 1920.0, 600.0),
             scale: 1.0,
         },
     ]);
@@ -565,3 +567,15 @@ fn sous_le_bureau_est_faux_dans_un_monde_vide() {
     assert!(!sous_le_bureau(&monde, Point::new(0.0, 99_999.0)));
 }
 
+
+/// `HoldOntoWall` : `Duration="${500+Math.random()*1000}"`, en TICKS de 40 ms
+/// comme toutes les durées de Shimeji-ee — donc 20 à 60 s. Lue en
+/// millisecondes (0,5 à 1,5 s), il ne s'arrêtait jamais au mur (spec « menu
+/// sur mesure » §6, défaut n° 1).
+#[test]
+fn la_duree_d_accroche_est_en_ticks_de_40_ms() {
+    // `abs() < 1e-3` : 0,04 n'est pas exact en flottant.
+    let ticks_en_s = |t: f32| t * 0.040;
+    assert!((DUREE_ACCROCHE[0] - ticks_en_s(500.0)).abs() < 1e-3, "{DUREE_ACCROCHE:?}");
+    assert!((DUREE_ACCROCHE[1] - ticks_en_s(1500.0)).abs() < 1e-3, "{DUREE_ACCROCHE:?}");
+}

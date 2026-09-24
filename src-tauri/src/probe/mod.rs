@@ -27,6 +27,15 @@ pub struct ScreenInfo {
     /// barre des tâches (piège Windows n° 3).
     pub work_area: Rect,
 
+    /// **L'écran complet**, barre des tâches comprise (`rcMonitor`).
+    ///
+    /// Ne sert qu'à dimensionner la fenêtre de l'écran (`render.rs`) et à y
+    /// placer les sprites (`overlay::repartir`) — **jamais** au monde : le
+    /// sol reste `work_area` (piège Windows n° 3). Avant le 2026-09-23 la
+    /// fenêtre prenait `work_area`, et un personnage porté ou en chute
+    /// par-dessus la barre des tâches y était coupé net : il disparaissait.
+    pub bounds: Rect,
+
     /// Facteur d'échelle du moniteur (1.0 à 96 ppp, 1.5 à 144, 2.0 à 192).
     /// Sert **uniquement** au dimensionnement du sprite (spec §3.4).
     pub scale: f32,

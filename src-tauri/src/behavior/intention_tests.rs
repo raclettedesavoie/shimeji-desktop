@@ -66,6 +66,7 @@ fn manifeste() -> Manifest {
             "sitDangle": { "frames": [11], "anchor": [64, 112] },
             "sleep":     { "frames": [12] },
             "wake":      { "frames": [13, 14], "frameMs": 100 },
+            "sprawl":    { "frames": [19] },
             "grabWall":  { "frames": [15] },
             "climbWall": { "frames": [15, 16], "frameMs": 150, "loop": true },
             "grabCeiling":  { "frames": [17] },
@@ -1046,7 +1047,7 @@ fn choisir_depuis_un_mur_reprend_l_escalade_au_lieu_d_echouer() {
         kind: Intention::Grimper,
         depuis: Duration::ZERO,
         etat: EtatIntention::Grimpe {
-            phase: PhaseGrimpe::Choisir,
+            phase: PhaseGrimpe::Choisir { presse: false },
             jusqu_a: Duration::ZERO,
         },
     });
@@ -1191,8 +1192,12 @@ fn grimper_regarde_le_mur() {
     }
 }
 
+/// L'écran du milieu d'une rangée de trois n'a aucun mur à lui. Jusqu'au
+/// 2026-09-24, « Grimper » y échouait immédiatement ; il vise désormais le
+/// mur le plus proche d'un écran voisin (spec « menu sur mesure » §6,
+/// défaut n° 3) et part le rejoindre.
 #[test]
-fn grimper_echoue_immediatement_sans_mur() {
+fn au_milieu_grimper_vise_le_mur_d_un_voisin() {
     // L'écran du MILIEU d'une rangée de trois n'a aucun mur : ses deux
     // bords sont recouverts par ses voisins (design §2.3). L'intention
     // doit échouer tout de suite pour qu'une autre soit tirée — et
@@ -1201,16 +1206,19 @@ fn grimper_echoue_immediatement_sans_mur() {
         ScreenInfo {
             id: 1,
             work_area: Rect::new(-1920.0, 0.0, 1920.0, 1032.0),
+            bounds: Rect::new(-1920.0, 0.0, 1920.0, 1032.0),
             scale: 1.0,
         },
         ScreenInfo {
             id: 2,
             work_area: Rect::new(0.0, 0.0, 1920.0, 1032.0),
+            bounds: Rect::new(0.0, 0.0, 1920.0, 1032.0),
             scale: 1.0,
         },
         ScreenInfo {
             id: 3,
             work_area: Rect::new(1920.0, 0.0, 1920.0, 1032.0),
+            bounds: Rect::new(1920.0, 0.0, 1920.0, 1032.0),
             scale: 1.0,
         },
     ]);
@@ -1235,8 +1243,15 @@ fn grimper_echoue_immediatement_sans_mur() {
         &mut rng,
     );
 
-    assert_eq!(issue, Issue::Echouee);
-    assert!(ch.intention.is_none());
+    assert_eq!(issue, Issue::EnCours);
+    assert!(
+        matches!(
+            ch.intention.map(|i| i.etat),
+            Some(EtatIntention::Grimpe { phase: PhaseGrimpe::Rejoindre { .. }, .. })
+        ),
+        "il devrait partir rejoindre un mur : {:?}",
+        ch.intention
+    );
 }
 
 #[test]
@@ -1358,6 +1373,12 @@ fn une_escalade_complete_tient_dans_le_delai_d_abandon() {
     // la même proportion quel que soit le réglage — c'est ce test-ci qui
     // le démontre, plutôt que de ne vérifier que le facteur ×1 comme
     // avant.
+    //
+    // ⚠️ Depuis le 2026-09-24, l'écran du milieu d'une rangée de trois vise
+    // le mur d'un VOISIN (`mur_le_plus_proche`) : jusqu'à 2 880 px. À pied,
+    // cela dépasse le délai ; ce cas n'est tenu qu'à la course, c'est-à-dire
+    // sur ordre ou en tenue. Tiré au sort, il peut échouer au délai
+    // d'abandon — la navigation en a le droit (décision n° 4).
     for facteur in [1.0f32, 0.5, 0.1] {
         let config = crate::config::Config {
             vitesse: facteur,
@@ -1777,4 +1798,144 @@ fn un_pack_sans_pose_de_plafond_grimpe_quand_meme() {
     let table = crate::behavior::desire::TableEnvies::defaut();
     let sans_plafond = manifeste_sans(&[POSE_CLIMB_CEILING, POSE_GRAB_CEILING]);
     assert!(table.jouable(&sans_plafond, Intention::Grimper));
+}
+
+// ── Sur ordre, il court jusqu'au mur ────────────────────────────────────
+
+/// L'offset parcouru par `Rejoindre` pendant une seconde, et la pose
+/// observée à la fin — ce que les deux tests suivants comparent.
+///
+/// On attend d'abord que la phase `Choisir` soit passée (une image), puis
+/// on mesure sur 60 images : assez pour que l'écart marche/course soit
+/// net, trop peu pour atteindre le mur depuis l'offset 500.
+fn une_seconde_de_rejoindre(intention: ActiveIntention) -> (f32, String) {
+    let m = monde_mure();
+    let mut ch = perso_sur_le_sol(&m);
+    ch.intention = Some(intention);
+    let mut rng = XorShift32::seeded(7);
+    let reglages = reglages();
+
+    // Première image : `Choisir` tranche le mur, sans bouger.
+    poursuivre(&mut ch, &m, &entrees_neutres(), &reglages, Duration::ZERO, DT, &mut rng);
+    let depart = offset_de(&ch);
+
+    let mut t = Duration::ZERO;
+    for _ in 0..60 {
+        t += Duration::from_secs_f32(DT);
+        poursuivre(&mut ch, &m, &entrees_neutres(), &reglages, t, DT, &mut rng);
+    }
+    ((offset_de(&ch) - depart).abs(), ch.pose.clone())
+}
+
+#[test]
+fn sur_ordre_il_court_jusqu_au_mur() {
+    let (parcouru, pose) =
+        une_seconde_de_rejoindre(ActiveIntention::grimper_sur_ordre(Duration::ZERO));
+    let r = reglages();
+
+    assert_eq!(pose, POSE_RUN, "sur ordre, il doit courir vers le mur");
+    // À une image près : la mesure compte 60 pas de `vitesse_course * DT`.
+    assert!(
+        (parcouru - r.vitesse_course).abs() < r.vitesse_course * DT * 2.0,
+        "parcouru {parcouru:.1} px en 1 s, attendu ~{:.1}",
+        r.vitesse_course
+    );
+}
+
+#[test]
+fn quand_il_decide_seul_il_marche_jusqu_au_mur() {
+    // Le tirage aléatoire garde la marche : l'ordre a l'air obéi, la
+    // flânerie reste calme (décision de l'auteur, 2026-09-23).
+    let (parcouru, pose) =
+        une_seconde_de_rejoindre(ActiveIntention::nouvelle(Intention::Grimper, Duration::ZERO));
+    let r = reglages();
+
+    assert_eq!(pose, POSE_WALK);
+    assert!(
+        (parcouru - r.vitesse_marche).abs() < r.vitesse_marche * DT * 2.0,
+        "parcouru {parcouru:.1} px en 1 s, attendu ~{:.1}",
+        r.vitesse_marche
+    );
+}
+
+#[test]
+fn sur_ordre_sans_pose_run_il_marche_a_la_vitesse_de_marche() {
+    // Couverture partielle (spec §8.6) : courir en pose de marche aurait
+    // l'air d'un glissement. Sans `run`, l'ordre est obéi à pied.
+    let m = monde_mure();
+    let mut ch = perso_sur_le_sol(&m);
+    ch.manifest = manifeste_sans(&[POSE_RUN]);
+    ch.intention = Some(ActiveIntention::grimper_sur_ordre(Duration::ZERO));
+    let mut rng = XorShift32::seeded(7);
+    let reglages = reglages();
+
+    poursuivre(&mut ch, &m, &entrees_neutres(), &reglages, Duration::ZERO, DT, &mut rng);
+    let depart = offset_de(&ch);
+    let mut t = Duration::ZERO;
+    for _ in 0..60 {
+        t += Duration::from_secs_f32(DT);
+        poursuivre(&mut ch, &m, &entrees_neutres(), &reglages, t, DT, &mut rng);
+    }
+
+    assert_eq!(ch.pose, POSE_WALK);
+    let parcouru = (offset_de(&ch) - depart).abs();
+    assert!((parcouru - reglages.vitesse_marche).abs() < reglages.vitesse_marche * DT * 2.0);
+}
+
+// ── Étalé au sol après une chute ────────────────────────────────────────
+
+#[test]
+fn etale_il_reste_au_sol_puis_se_releve() {
+    // La demande de l'auteur (2026-09-23) : après une chute, il ne repart
+    // pas aussitôt. Il reste étalé 1 à 2 s (`dureeAuSol`), puis se relève
+    // par l'animation de réveil, et seulement alors l'intention finit.
+    let m = monde();
+    let mut ch = perso(&m, 500.0);
+    let mut rng = XorShift32::seeded(3);
+    let e = entrees_neutres();
+    let r = reglages();
+    ch.intention = Some(ActiveIntention::etale(Duration::ZERO));
+
+    let mut releve_a = None;
+    let mut fini_a = None;
+    for i in 0..(10 * 60) {
+        let t = Duration::from_secs_f32(i as f32 * DT);
+        let issue = poursuivre(&mut ch, &m, &e, &r, t, DT, &mut rng);
+        if issue != Issue::EnCours {
+            assert_eq!(issue, Issue::Finie, "se relever ne doit pas échouer");
+            fini_a = Some(t);
+            break;
+        }
+        if releve_a.is_none() {
+            if ch.pose == POSE_WAKE {
+                releve_a = Some(t);
+            } else {
+                assert_eq!(ch.pose, POSE_SPRAWL, "avant de se relever, il est étalé");
+            }
+        }
+        // Il ne bouge pas d'un pixel tant qu'il est au sol.
+        assert_eq!(offset_de(&ch), 500.0);
+    }
+
+    let releve_a = releve_a.expect("il ne s'est jamais relevé");
+    let fini_a = fini_a.expect("il est resté au sol pour toujours");
+    let [min, max] = r.duree_au_sol;
+    assert!(releve_a >= Duration::from_secs_f32(min), "relevé trop tôt : {releve_a:?}");
+    assert!(releve_a <= Duration::from_secs_f32(max) + ANIM_REVEIL, "trop tard : {releve_a:?}");
+    assert!(fini_a.saturating_sub(releve_a) + Duration::from_secs_f32(DT) >= ANIM_REVEIL);
+}
+
+#[test]
+fn etale_n_exige_pas_la_pose_sit() {
+    // Même exemption que `Selevant` : tomber n'est pas choisir de se
+    // reposer, un pack sans `sit` doit pouvoir rester étalé.
+    let m = monde();
+    let mut ch = perso(&m, 500.0);
+    ch.manifest = manifeste_sans(&[POSE_SIT]);
+    ch.intention = Some(ActiveIntention::etale(Duration::ZERO));
+    let mut rng = XorShift32::seeded(3);
+
+    let issue = poursuivre(&mut ch, &m, &entrees_neutres(), &reglages(), Duration::ZERO, DT, &mut rng);
+    assert_eq!(issue, Issue::EnCours);
+    assert_eq!(ch.pose, POSE_SPRAWL);
 }

@@ -453,3 +453,22 @@ fn ce_qu_ecrit_ecrire_cles_est_relu_par_charger_depuis() {
     );
     assert_eq!(c.ecran_au_demarrage, EcranDemarrage::Tray);
 }
+
+/// La case « Petite taille » du tray survit au redémarrage : sa clé est
+/// relue par `Config` (et non perdue par une faute de casse), et elle est
+/// décochée par défaut.
+#[test]
+fn petite_taille_est_relue_et_fausse_par_defaut() {
+    assert!(!Config::default().petite_taille);
+    let f = fichier_de_test(r#"{ "echelle": 1 }"#);
+    ecrire_cles(&f, &[("petiteTaille", serde_json::json!(true))]).unwrap();
+    assert!(charger_depuis(&f).petite_taille);
+}
+
+#[test]
+fn derniere_version_lancee_est_relue_et_vide_par_defaut() {
+    assert_eq!(Config::default().derniere_version_lancee, "");
+    let f = fichier_de_test(r#"{ "echelle": 1 }"#);
+    ecrire_cles(&f, &[("derniereVersionLancee", serde_json::json!("0.3.0"))]).unwrap();
+    assert_eq!(charger_depuis(&f).derniere_version_lancee, "0.3.0");
+}

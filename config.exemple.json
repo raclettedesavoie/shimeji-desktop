@@ -2,6 +2,7 @@
   "personnages": ["blob"],
 
   "echelle": 1,
+  "petiteTaille": false,
   "vitesse": 1,
 
   "_note_demarrage": "Le demarrage avec Windows n'est PAS ici : sa seule verite est le registre (HKCU\\...\\Run), lu par autostart::est_actif. La cle demarrageAutomatique qui vivait ici etait du code mort, jamais lue ni ecrite — la retirer evite une seconde verite a tenir d'accord.",
@@ -30,8 +31,10 @@
   "escalade": {
     "poidsLacher": 1,
     "poidsRedescendre": 2,
-    "dureeAccroche": [0.5, 1.5]
+    "dureeAccroche": [20, 60]
   },
+
+  "dureeAuSol": [1, 2],
 
   "signaux": {
     "inactiviteSecondes": 120,

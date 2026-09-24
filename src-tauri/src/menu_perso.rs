@@ -1,8 +1,8 @@
 //! Le menu du **clic droit sur le personnage** (spec §3.3, §9.1).
 //!
-//! Responsabilité unique : construire ce menu et l'afficher au curseur. Ce
-//! qu'une entrée *fait* est dans `actions.rs` — ici on ne décide rien, on
-//! propose.
+//! Responsabilité unique : **décrire** ce menu (`lignes`). L'afficher est
+//! l'affaire de `menu_fenetre.rs` (et de `ui/menu.*`), et ce qu'une entrée *fait* celle
+//! d'`actions.rs` — ici on ne décide rien, on propose.
 //!
 //! # Le menu est reconstruit à chaque clic droit
 //!
@@ -13,19 +13,18 @@
 //! manifeste **courant** — donc juste après un rechargement à chaud aussi
 //! (spec §8.6).
 //!
-//! Le coût est une poignée d'objets créés sur un clic humain : invisible.
+//! Le coût est un petit `Vec` construit sur un clic humain : invisible.
 //! Mémoriser le menu économiserait cela et coûterait toute la logique
 //! « remettre les entrées d'accord avec l'état », qui est exactement la
 //! classe de bugs que ce projet évite ailleurs par recalcul (décision n° 1).
 
-use crate::actions::{ID_CATALOGUE, ID_P_CACHER, ID_QUITTER};
+use crate::actions::{ID_CATALOGUE, ID_P_CACHER, ID_P_CACHER_CE, ID_QUITTER};
 use crate::behavior::desire::TableEnvies;
 use crate::behavior::intention::{Intention, Jeu};
+use crate::behavior::tenue::Tenue;
 use crate::character::attach::Attachment;
 use crate::character::manifest::Manifest;
 use crate::geom::Face;
-use tauri::menu::{IsMenuItem, Menu, MenuItem, PredefinedMenuItem};
-use tauri::{AppHandle, WebviewWindow};
 
 /// Ce que demande une entrée du menu — pas toujours une intention.
 ///
@@ -48,11 +47,34 @@ pub enum Commande {
     /// choisi ici au menu.
     Intention(Intention),
 
-    /// Reprend l'accroche là où il est — mur ou plafond, peu importe : c'est
-    /// exactement l'intention que pose déjà un lancer contre une paroi
-    /// (`ActiveIntention::accroche`). `HoldOntoWall` / `HoldOntoCeiling` de
-    /// Shimeji-ee.
-    ResterAccroche,
+    /// Tenir cette action, ou la relâcher si c'est déjà celle qu'il tient —
+    /// ce que fait un clic sur une ligne du menu du personnage, dont la coche
+    /// dit l'état (spec §3). Résolue par `behavior::pas`, qui seul connaît
+    /// `ch.tenue` au moment où la commande arrive.
+    Basculer(Tenue),
+
+    /// La tenir, quoi qu'il tienne déjà. Ce que devient un `Basculer` de la
+    /// section « Tout le monde » quand tous ne la tiennent pas encore.
+    Tenir(Tenue),
+
+    /// La tenir **quoi qu'il fasse et où qu'il soit** : ce que devient un
+    /// `Basculer` de la section « Tout le monde » (demande de l'auteur,
+    /// 2026-09-24 — un ordre collectif doit valoir pour TOUS). Accroché à un
+    /// mur, une tenue de sol le fait se lâcher ; en chute ou porté, il la
+    /// jouera en touchant le sol. Seul un pack sans les poses la refuse.
+    Imposer(Tenue),
+
+    /// Le pendant d'`Imposer` pour une action PONCTUELLE de la section
+    /// « Tout le monde » (« Faire son petit truc ») : elle aussi vaut pour
+    /// TOUS, par-dessus l'ordre précédent (rapporté par l'auteur,
+    /// 2026-09-24 — une `Intention` simple est ignorée par qui est au mur, et
+    /// il continuait donc de grimper). Au mur il se lâche, en l'air il
+    /// attend de toucher le sol ; la joue une fois, puis reprend sa vie.
+    ImposerUneFois(Intention),
+
+    /// La relâcher s'il la tient, ne rien faire sinon. L'intention en cours
+    /// continue : il reprend sa vie normale à la fin de celle-ci.
+    Relacher(Tenue),
 
     /// Reprend l'escalade en cours pour viser le BAS du mur — jamais
     /// proposée au plafond, où « redescendre » n'a pas de sens (design
@@ -112,11 +134,27 @@ pub fn commande_pour(
     Some(commande)
 }
 
+/// La commande que reçoit un acteur à cette image : la sienne d'abord, et
+/// sinon celle adressée à tous (« Tout le monde grimpe au mur »).
+///
+/// **La personnelle gagne**, parce qu'elle est plus précise : l'utilisateur
+/// qui vient de choisir « S'asseoir » pour CE personnage ne doit pas le voir
+/// partir au mur parce qu'un ordre collectif est tombé dans la même image.
+///
+/// `or` : rend `personnelle` si elle est `Some`, sinon `pour_tous` — le
+/// `match` à deux bras qu'on écrirait à la main.
+pub fn commande_de_l_acteur(
+    personnelle: Option<Commande>,
+    pour_tous: Option<Commande>,
+) -> Option<Commande> {
+    personnelle.or(pour_tous)
+}
+
 /// L'endroit d'où l'on fait un clic droit, simplifié aux trois cas qui
 /// changent le menu proposé (spec §4, design du plan menu).
 ///
 /// Dérivé de `Attachment` par `ou_de` plutôt que testé à la volée dans
-/// `ouvrir` : la correspondance face → contexte de menu ne doit vivre qu'à
+/// `lignes` : la correspondance face → contexte de menu ne doit vivre qu'à
 /// UN endroit, sans quoi elle finirait par diverger de celle utilisée par la
 /// physique.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -133,7 +171,7 @@ pub enum Ou {
 /// personnage — ou `Sol` s'il ne l'est pas du tout.
 ///
 /// **La seule fonction qui connaît cette correspondance.** `main.rs` l'appelle
-/// juste avant `ouvrir`, depuis `ch.attachment` : c'est le seul endroit où la
+/// juste avant `lignes`, depuis `ch.attachment` : c'est le seul endroit où la
 /// boucle 60 Hz sait où en est CE personnage-là.
 pub fn ou_de(attachment: &Attachment) -> Ou {
     match attachment {
@@ -175,22 +213,19 @@ pub fn ou_de(attachment: &Attachment) -> Ou {
 /// dupliquer la ligne par contexte serait une seconde source de vérité pour
 /// le même identifiant.
 ///
-/// « Grimper au mur » et « Monter plus haut » sont en revanche deux LIGNES
-/// distinctes — deux identifiants, deux libellés — qui partagent la MÊME
-/// commande (`Commande::Intention(Intention::Grimper)`) : c'est la même
-/// action de fond (grimper), seul son libellé change selon qu'on la propose
-/// pour la déclencher ou pour la reprendre. Deux identifiants gardent le
-/// décodage sans ambiguïté — un seul identifiant affiché avec deux libellés
-/// différents selon le contexte aurait, lui, demandé au décodage de
-/// connaître le contexte, ce qui n'a rien à y faire.
+/// « Grimper au mur » est de même **une seule ligne**, proposée au sol, au
+/// mur et au plafond : tenue, elle ne change pas de sens selon qu'on la
+/// lance ou qu'on la reprend. « Monter plus haut », qui la doublait au mur
+/// sous un autre identifiant, a disparu (spec « menu sur mesure » §2).
+///
+/// # Tenue ou ponctuelle
+///
+/// Une ligne `Commande::Basculer(…)` est une action **tenue** : elle a une
+/// coche, et dure jusqu'à ce qu'on la décoche. Une ligne
+/// `Commande::Intention(…)` est **ponctuelle** : elle se joue une fois.
 const ENVIES: &[(&str, &str, &[Ou], Commande)] = &[
-    ("perso.flaner", "Flâner", &[Ou::Sol], Commande::Intention(Intention::Flaner)),
-    (
-        "perso.asseoir",
-        "S'asseoir",
-        &[Ou::Sol],
-        Commande::Intention(Intention::SeReposer),
-    ),
+    ("perso.flaner", "Flâner", &[Ou::Sol], Commande::Basculer(Tenue::Flaner)),
+    ("perso.asseoir", "S'asseoir", &[Ou::Sol], Commande::Basculer(Tenue::Asseoir)),
     // Le libellé ne décrit PAS le dessin, et c'est délibéré. `spinHead` est
     // un numéro de slot Shimeji (`SitAndSpinHeadAction`), pas une promesse :
     // `blob` y fait tourner sa tête, un autre pack y mange ou y joue sa pose
@@ -211,38 +246,49 @@ const ENVIES: &[(&str, &str, &[Ou], Commande)] = &[
         "perso.jambes",
         "Balancer les jambes",
         &[Ou::Sol],
-        Commande::Intention(Intention::Jouer(Jeu::JambesQuiBalancent)),
+        Commande::Basculer(Tenue::BalancerLesJambes),
     ),
+    // Une seule ligne pour les trois endroits : tenue, elle ne change pas
+    // de sens selon qu'on la lance ou qu'on la reprend. « Monter plus
+    // haut », qui la doublait au mur, a disparu (spec §2).
     (
         "perso.grimper",
         "Grimper au mur",
-        &[Ou::Sol],
-        Commande::Intention(Intention::Grimper),
-    ),
-    (
-        "perso.monter",
-        "Monter plus haut",
-        &[Ou::Mur],
-        Commande::Intention(Intention::Grimper),
+        &[Ou::Sol, Ou::Mur, Ou::Plafond],
+        Commande::Basculer(Tenue::Grimper),
     ),
     (
         "perso.rester",
         "Rester accroché",
         &[Ou::Mur, Ou::Plafond],
-        Commande::ResterAccroche,
+        Commande::Basculer(Tenue::ResterAccroche),
     ),
+    ("perso.redescendre", "Redescendre", &[Ou::Mur], Commande::Redescendre),
+    ("perso.lacher", "Se lâcher", &[Ou::Mur, Ou::Plafond], Commande::SeLacher),
+];
+
+/// La section « Tout le monde » (spec §3) : les actions du SOL, données à
+/// tous les présents par la boîte `Actions::pour_tous`.
+///
+/// Une table à part et non une colonne d'`ENVIES` : ses identifiants sont
+/// DIFFÉRENTS (`tous.*`), et c'est ce qui les envoie dans l'autre boîte.
+/// Réutiliser `perso.asseoir` ferait asseoir le seul demandeur.
+///
+/// Seulement le sol : les autres sont n'importe où, et « Se lâcher » n'a
+/// de sens que pour qui est accroché.
+const TOUS: &[(&str, &str, Commande)] = &[
+    ("tous.flaner", "Flâner", Commande::Basculer(Tenue::Flaner)),
+    ("tous.asseoir", "S'asseoir", Commande::Basculer(Tenue::Asseoir)),
     (
-        "perso.redescendre",
-        "Redescendre",
-        &[Ou::Mur],
-        Commande::Redescendre,
+        "tous.tete",
+        "Faire son petit truc",
+        Commande::Intention(Intention::Jouer(Jeu::TeteQuiTourne)),
     ),
-    (
-        "perso.lacher",
-        "Se lâcher",
-        &[Ou::Mur, Ou::Plafond],
-        Commande::SeLacher,
-    ),
+    ("tous.jambes", "Balancer les jambes", Commande::Basculer(Tenue::BalancerLesJambes)),
+    ("tous.grimper", "Grimper au mur", Commande::Basculer(Tenue::Grimper)),
+    // « Tout le monde › Rester accroché » (demande de l'auteur, 2026-09-24) :
+    // ceux qui sont au sol montent puis se figent, les autres se figent là.
+    ("tous.rester", "Rester accroché", Commande::Basculer(Tenue::ResterAccroche)),
 ];
 
 /// La commande que désigne un identifiant d'entrée, s'il en désigne une.
@@ -258,17 +304,129 @@ pub fn commande_de(id: &str) -> Option<Commande> {
         .map(|(_, _, _, c)| *c)
 }
 
-/// Construit et affiche le menu au curseur. **Bloque** jusqu'à sa fermeture.
+/// La commande d'une entrée de la section « Tout le monde », si `id` en
+/// désigne une. Le pendant de `commande_de` pour la table `TOUS`.
+pub fn commande_de_tous(id: &str) -> Option<Commande> {
+    TOUS.iter().find(|(i, _, _)| *i == id).map(|(_, _, c)| *c)
+}
+
+/// L'identifiant `&'static` qui correspond à `id`, s'il est l'une de nos
+/// entrées ; `None` sinon.
 ///
-/// Appelée depuis le thread de la boucle 60 Hz, qui est donc figé pendant que
-/// le menu est ouvert — le personnage s'immobilise. C'est voulu : c'est ce
-/// que fait Shimeji-ee, et un personnage qui continuerait de marcher sous un
-/// menu ouvert sur lui serait plus déroutant qu'amusant.
+/// La fenêtre du menu renvoie une `String` : c'est ici qu'elle redevient
+/// un identifiant du programme. **N'accepter que ce qu'on connaît** —
+/// `actions::executer` ne recevra jamais une chaîne arbitraire venue d'un
+/// webview.
+pub fn id_connu(id: &str) -> Option<&'static str> {
+    let communs = [ID_P_CACHER_CE, ID_P_CACHER, ID_CATALOGUE, ID_QUITTER];
+    ENVIES
+        .iter()
+        .map(|(i, _, _, _)| *i)
+        .chain(TOUS.iter().map(|(i, _, _)| *i))
+        .chain(communs)
+        .find(|i| *i == id)
+}
+
+/// Un personnage présent, vu par la section « Tout le monde » : ce qu'il
+/// tient, et ce que son pack lui permet de tenir (ses poses).
+///
+/// `peut_tenir` : sans lui, un pack sans escalade compterait parmi ceux qui
+/// « ne tiennent pas encore » Grimper au mur, alors que `behavior::pas` lui
+/// refuse l'ordre — et la ligne ne se décocherait jamais.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Present {
+    pub tenue: Option<Tenue>,
+    pub peut_tenir: Vec<Tenue>,
+}
+
+/// Vrai si TOUS les présents capables de tenir `t` la tiennent — et qu'il y
+/// en a au moins un. Sans personne de capable, « tous la tiennent » serait
+/// vrai par vacuité, et un clic relâcherait… personne : on tient.
+///
+/// `peekable` : un itérateur qui permet de regarder le premier élément sans
+/// le consommer — ici, pour savoir s'il y a au moins un capable avant de
+/// vérifier qu'ils la tiennent tous.
+pub fn tous_la_tiennent(t: Tenue, presents: &[Present]) -> bool {
+    let mut capables = presents.iter().filter(|p| p.peut_tenir.contains(&t)).peekable();
+    capables.peek().is_some() && capables.all(|p| p.tenue == Some(t))
+}
+
+/// La ligne `t` de la section « Tout le monde » est-elle cochée ?
+///
+/// Deux façons de l'être :
+///
+/// 1. **tous** ceux qui peuvent la tenir la tiennent (chacun l'a choisie, ou
+///    l'ordre collectif vient d'être donné) ;
+/// 2. **l'ordre collectif** `ordre` porte sur elle, et **au moins un**
+///    présent la tient encore (demande de l'auteur, 2026-09-24) : déplacer
+///    un personnage le fait sortir de l'ordre, mais la ligne reste cochée
+///    pour les autres — et la décocher les relève tous d'un coup, au lieu de
+///    les décocher un par un.
+///
+/// `ordre` n'est PAS une seconde vérité sur les tenues : il dit seulement
+/// qu'un ordre a été donné. Ce que chacun tient reste lu dans `presents`, et
+/// la coche disparaît d'elle-même quand plus personne ne la tient.
+pub fn coche_pour_tous(t: Tenue, presents: &[Present], ordre: Option<Tenue>) -> bool {
+    let quelqu_un = presents.iter().any(|p| p.tenue == Some(t));
+    tous_la_tiennent(t, presents) || (ordre == Some(t) && quelqu_un)
+}
+
+/// Ce que devient une commande de la section « Tout le monde » pour les
+/// personnages présents (spec §3) : cochée (`coche_pour_tous`), un clic la
+/// relâche chez tous ; sinon, un clic l'IMPOSE à tous, par-dessus leur
+/// propre action (seul un pack sans les poses refuse). Une action
+/// ponctuelle, elle, n'a pas de coche : elle est toujours imposée.
+///
+/// Résolue UNE fois par la boucle, avant de servir les acteurs : chaque
+/// acteur résolvant son propre `Basculer`, un personnage déjà assis se
+/// relèverait pendant que les autres s'assoient.
+pub fn resoudre_pour_tous(c: Commande, presents: &[Present], ordre: Option<Tenue>) -> Commande {
+    match c {
+        Commande::Basculer(t) => {
+            if coche_pour_tous(t, presents, ordre) {
+                Commande::Relacher(t)
+            } else {
+                Commande::Imposer(t)
+            }
+        }
+        Commande::Intention(i) => Commande::ImposerUneFois(i),
+        autre => autre,
+    }
+}
+
+/// Une ligne du menu : une entrée cliquable, un titre de section, ou un
+/// séparateur.
+///
+/// Le menu est **décrit** ici et **affiché** ailleurs (`menu_fenetre.rs`) :
+/// la description est une fonction pure, donc testable sans écran, et
+/// l'affichage ne sait rien des envies ni des packs.
+///
+/// `Serialize` avec `tag = "type"` : chaque ligne devient un objet JSON
+/// portant son genre — `{"type":"Entree","id":…,"libelle":…,"coche":…}`,
+/// `{"type":"Titre","texte":…}`, `{"type":"Separateur"}` — que `menu.js`
+/// lit par `ligne.type`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "type")]
+pub enum Ligne {
+    /// `id` est l'identifiant que reçoit `actions::executer` ; `coche` dit
+    /// si l'action est tenue — DÉDUITE de la tenue, jamais stockée.
+    Entree {
+        id: &'static str,
+        libelle: &'static str,
+        coche: bool,
+    },
+    /// Un intitulé de section, non cliquable.
+    Titre { texte: &'static str },
+    Separateur,
+}
+
+/// Le menu d'un personnage, ligne par ligne, **tel qu'il doit être LÀ où il
+/// est**.
 ///
 /// # Ce que `manifeste`, `table` et `ou` servent
 ///
 /// `manifeste` et `table` retirent les envies injouables (spec §8.6) — ils
-/// viennent du personnage **de cette fenêtre-là**, ce qui est la raison pour
+/// viennent du personnage **qui a été cliqué**, ce qui est la raison pour
 /// laquelle cette fonction est appelée depuis la boucle et non depuis
 /// `setup` : c'est le seul endroit où le manifeste courant est connu.
 ///
@@ -279,26 +437,22 @@ pub fn commande_de(id: &str) -> Option<Commande> {
 ///
 /// Aucun `Actions` en paramètre, et c'est la conséquence directe du
 /// gestionnaire unique : ce fichier ne déclenche **rien**, il propose. Le
-/// clic repart dans la boucle d'événements de Tauri et atterrit dans
-/// `actions::executer`.
+/// choix atterrit dans `actions::executer`.
 ///
-/// Rend `Err` si la construction ou l'affichage échoue. L'appelant se
-/// contente de le signaler — un menu qui ne s'ouvre pas n'empêche pas le
-/// personnage de vivre.
-pub fn ouvrir(
-    app: &AppHandle,
-    win: &WebviewWindow,
+/// `tenue` est celle du personnage cliqué, `presents` décrit tous les
+/// présents — lui compris —, et `ordre_pour_tous` le dernier ordre collectif
+/// donné (voir `coche_pour_tous`). Ce sont les seules sources des coches.
+pub fn lignes(
     manifeste: &Manifest,
     table: &TableEnvies,
     ou: Ou,
-) -> Result<(), String> {
+    tenue: Option<Tenue>,
+    presents: &[Present],
+    ordre_pour_tous: Option<Tenue>,
+) -> Vec<Ligne> {
+    let mut lignes: Vec<Ligne> = Vec::new();
+
     // ── Les envies jouables par CE personnage, LÀ où il est ─────────────
-    //
-    // On construit d'abord un `Vec` de valeurs possédées, puis un second de
-    // références de trait. En un seul passage, les `MenuItem` seraient
-    // temporaires et les références pendantes — c'est l'emprunt de Rust qui
-    // l'impose, et c'est une erreur qu'on ne peut pas commettre par accident.
-    let mut entrees: Vec<MenuItem<tauri::Wry>> = Vec::new();
     for (id, libelle, contextes, commande) in ENVIES {
         if !contextes.contains(&ou) {
             continue;
@@ -308,16 +462,44 @@ pub fn ouvrir(
         // pas de pose particulière au-delà de celles que l'escalade en cours
         // exige déjà pour être là où le menu les propose.
         let jouable = match commande {
-            Commande::Intention(i) => table.jouable(manifeste, *i),
-            Commande::ResterAccroche | Commande::Redescendre | Commande::SeLacher => true,
+            Commande::Intention(i) | Commande::ImposerUneFois(i) => table.jouable(manifeste, *i),
+            Commande::Basculer(t)
+            | Commande::Tenir(t)
+            | Commande::Imposer(t)
+            | Commande::Relacher(t) => {
+                table.jouable(manifeste, t.intention())
+            }
+            Commande::Redescendre | Commande::SeLacher => true,
         };
         if jouable {
-            entrees.push(
-                MenuItem::with_id(app, *id, *libelle, true, None::<&str>)
-                    .map_err(|e| format!("entrée « {libelle} » : {e}"))?,
-            );
+            // Seul un `Basculer` a une coche : une action ponctuelle n'a
+            // pas d'état à montrer.
+            let coche = matches!(commande, Commande::Basculer(t) if tenue == Some(*t));
+            lignes.push(Ligne::Entree { id, libelle, coche });
         }
     }
+
+    // Pas de séparateur si aucune envie n'est jouable : un menu qui
+    // commencerait par une barre horizontale aurait l'air cassé.
+    if !lignes.is_empty() {
+        lignes.push(Ligne::Separateur);
+    }
+
+    // ── La section « Tout le monde » (spec §3) ──────────────────────────
+    //
+    // Un titre plutôt que « tout le monde » répété à chaque ligne : c'est la
+    // demande de l'auteur. Toujours proposée, même à un pack sans escalade :
+    // elle s'adresse aux AUTRES aussi, et chacun refuse ce qu'il ne peut pas
+    // exécuter (`behavior::pas`).
+    lignes.push(Ligne::Titre { texte: "Tout le monde" });
+    for (id, libelle, commande) in TOUS {
+        let coche = match commande {
+            Commande::Basculer(t) => coche_pour_tous(*t, presents, ordre_pour_tous),
+            _ => false,
+        };
+        lignes.push(Ligne::Entree { id, libelle, coche });
+    }
+    lignes.push(Ligne::Separateur);
 
     // ── Les entrées communes avec le tray ───────────────────────────────
     //
@@ -325,29 +507,25 @@ pub fn ouvrir(
     // système, pas une humeur du personnage, et il n'a rien à faire au milieu
     // de « Flâner » et « S'asseoir ». Il reste dans le tray, qui est
     // justement l'endroit des réglages.
-    let cacher = MenuItem::with_id(
-        app,
-        ID_P_CACHER,
-        "Cacher les personnages",
-        true,
-        None::<&str>,
-    )
-    .map_err(|e| format!("entrée « cacher » : {e}"))?;
 
-    let catalogue = MenuItem::with_id(
-        app,
-        ID_CATALOGUE,
-        "Catalogue de personnages…",
-        true,
-        None::<&str>,
-    )
-    .map_err(|e| format!("entrée « catalogue » : {e}"))?;
-
-    // **Deux séparateurs distincts et non un réutilisé** : une entrée de menu
-    // ne peut occuper qu'une position, la poser deux fois ne la duplique pas.
-    let separateur = PredefinedMenuItem::separator(app).map_err(|e| format!("séparateur : {e}"))?;
-    let separateur_final =
-        PredefinedMenuItem::separator(app).map_err(|e| format!("séparateur final : {e}"))?;
+    // Deux « Cacher », et le libellé doit dire lequel est lequel : « ce
+    // personnage » s'en va seul (voir `actions::ID_P_CACHER_CE`), « tous »
+    // cache tout le monde jusqu'au prochain « Afficher » du tray.
+    lignes.push(Ligne::Entree {
+        id: ID_P_CACHER_CE,
+        libelle: "Cacher ce personnage",
+        coche: false,
+    });
+    lignes.push(Ligne::Entree {
+        id: ID_P_CACHER,
+        libelle: "Cacher tous les personnages",
+        coche: false,
+    });
+    lignes.push(Ligne::Entree {
+        id: ID_CATALOGUE,
+        libelle: "Catalogue de personnages…",
+        coche: false,
+    });
 
     // « Quitter » en dernier, derrière son propre séparateur.
     //
@@ -355,86 +533,14 @@ pub fn ouvrir(
     // surtout pas cliquer de travers en visant « Catalogue ». La
     // mettre à part et tout en bas est la convention de toutes les
     // applications, pour cette raison exacte.
-    let quitter = MenuItem::with_id(app, ID_QUITTER, "Quitter", true, None::<&str>)
-        .map_err(|e| format!("entrée « quitter » : {e}"))?;
+    lignes.push(Ligne::Separateur);
+    lignes.push(Ligne::Entree {
+        id: ID_QUITTER,
+        libelle: "Quitter",
+        coche: false,
+    });
 
-    // `&[&dyn IsMenuItem<R>]` : les entrées n'ont pas le même type concret
-    // (`MenuItem`, `CheckMenuItem`, `PredefinedMenuItem`), donc on passe par
-    // des références de trait. C'est la raison du `&` devant chacune.
-    let mut refs: Vec<&dyn IsMenuItem<tauri::Wry>> = Vec::new();
-    for e in &entrees {
-        refs.push(e);
-    }
-    // Pas de séparateur si aucune envie n'est jouable : un menu qui
-    // commencerait par une barre horizontale aurait l'air cassé.
-    if !entrees.is_empty() {
-        refs.push(&separateur);
-    }
-    refs.push(&cacher);
-    refs.push(&catalogue);
-    refs.push(&separateur_final);
-    refs.push(&quitter);
-
-    let menu = Menu::with_items(app, &refs).map_err(|e| format!("menu : {e}"))?;
-
-    // ── L'affichage ─────────────────────────────────────────────────────
-    //
-    // `autoriser_activation` retire `WS_EX_NOACTIVATE` le temps du menu :
-    // sans ça le menu resterait collé à l'écran. Le pourquoi complet est dans
-    // le commentaire de cette fonction — il n'est pas devinable.
-    // À qui rendre le focus après le menu — retenu AVANT de l'avoir pris.
-    // Voir `fenetre_au_premier_plan` : sans cette restitution, un clic droit
-    // sur le personnage laisserait l'éditeur muet.
-    let precedente = crate::render::fenetre_au_premier_plan();
-
-    let _ = crate::render::autoriser_activation(win, true);
-
-    // Puis on prend RÉELLEMENT le premier plan, et on vérifie que Windows a
-    // accepté — `muda` le demande aussi mais ignore son refus, et un refus
-    // donne précisément le menu qui ne se referme pas quand on clique
-    // ailleurs. Tout le raisonnement est dans `prendre_le_premier_plan`.
-    let devant = crate::render::prendre_le_premier_plan(win).unwrap_or(false);
-
-    // Un diagnostic plutôt qu'un `if` : on ne peut RIEN faire d'utile d'un
-    // refus ici — afficher quand même vaut mieux que ne rien afficher. Mais
-    // si le menu se recolle un jour à l'écran, cette ligne dit en une seconde
-    // si la cause est là ou ailleurs, au lieu de relire trois crates.
-    if !devant && std::env::var_os("SHIMEJI_MENU").is_some() {
-        eprintln!(
-            "menu : Windows a refusé le premier plan — le menu risque de ne pas se refermer au clic"
-        );
-    }
-
-    // `popup_menu` place le menu au curseur et **bloque** jusqu'au choix.
-    // Vérifié : `WebviewWindow::popup_menu`
-    // (`tauri-2.11.5/src/webview/webview_window.rs:1681`), qui délègue à
-    // `Window::popup_menu` (`src/window/mod.rs:1454`).
-    let resultat = win
-        .popup_menu(&menu)
-        .map_err(|e| format!("affichage du menu : {e}"));
-
-    // **Remis quoi qu'il arrive**, y compris si l'affichage a échoué : voir
-    // l'avertissement de `autoriser_activation`. C'est la raison pour
-    // laquelle le résultat est mis de côté au lieu d'être propagé par `?`.
-    let _ = crate::render::autoriser_activation(win, false);
-
-    // La seconde moitié de la recette : sans ce message vide, c'est le menu
-    // SUIVANT qui se comporte mal. Voir `reveiller_la_file`.
-    crate::render::reveiller_la_file(win);
-
-    // Puis on rend le focus. Après avoir remis `WS_EX_NOACTIVATE`, pour que
-    // notre fenêtre ne puisse plus le reprendre entre les deux appels.
-    //
-    // `if let Some` : il n'y avait pas forcément de premier plan à l'ouverture
-    // (bureau sécurisé), auquel cas il n'y a rien à restaurer.
-    if let Some(hwnd) = precedente {
-        crate::render::rendre_le_premier_plan(hwnd);
-    }
-
-    // L'action, elle, ne s'exécute pas ici : le clic est parti dans la boucle
-    // d'événements de Tauri et atterrira dans l'unique gestionnaire installé
-    // par `tray.rs`. Voir l'avertissement en tête d'`actions.rs`.
-    resultat
+    lignes
 }
 
 // Les tests de ce module vivent dans `menu_perso_tests.rs`

@@ -1181,3 +1181,1085 @@ fn une_commande_de_sol_recue_pendant_l_escalade_est_ignoree() {
         "l'escalade en cours ne doit pas être interrompue par une commande refusée"
     );
 }
+
+/// Attraper un personnage efface son action tenue (spec §2.2) : le lâcher
+/// le fait tomber, puis il reprend sa vie normale.
+#[test]
+fn l_attraper_efface_son_action_tenue() {
+    let m = monde();
+    let mut ch = perso(&m);
+    ch.tenue = Some(tenue::Tenue::Asseoir);
+    let table = desire::TableEnvies::defaut();
+    let reglages = crate::config::Reglages::depuis(&crate::config::Config::default());
+    let mut rng = XorShift32::seeded(7);
+
+    let mut e = entrees(true, 1.0);
+    e.bouton_gauche = true;
+    e.curseur_sur_le_personnage = true;
+
+    pas(&mut ch, &m, &e, &table, &reglages, Duration::from_secs(1), DT, &mut rng);
+
+    assert_eq!(ch.attachment, Attachment::Dragged);
+    assert_eq!(ch.tenue, None);
+}
+
+// ── Les actions tenues (spec « menu sur mesure » §2) ──────────────────────
+
+fn reglages_defaut() -> crate::config::Reglages {
+    crate::config::Reglages::depuis(&crate::config::Config::default())
+}
+
+/// Joue `n` images d'affilée avec les mêmes entrées, à partir de `debut`.
+/// Rend l'instant de la dernière. Le RNG est semé UNE fois par l'appelant
+/// (CLAUDE.md, « Semer l'aléatoire une seule fois »).
+fn jouer_images(
+    ch: &mut Character,
+    m: &World,
+    e: &Entrees,
+    rng: &mut XorShift32,
+    debut: Duration,
+    n: u32,
+    mut chaque: impl FnMut(&Character),
+) -> Duration {
+    let table = desire::TableEnvies::defaut();
+    let reglages = reglages_defaut();
+    let mut t = debut;
+    for _ in 0..n {
+        t += Duration::from_secs_f32(DT);
+        pas(ch, m, e, &table, &reglages, t, DT, rng);
+        chaque(ch);
+    }
+    t
+}
+
+fn commander(ch: &mut Character, m: &World, c: crate::menu_perso::Commande, t: Duration, rng: &mut XorShift32) {
+    let mut e = entrees(true, 1.0);
+    e.commande = Some(c);
+    pas(ch, m, &e, &desire::TableEnvies::defaut(), &reglages_defaut(), t, DT, rng);
+}
+
+#[test]
+fn assis_au_menu_il_l_est_encore_une_minute_plus_tard() {
+    use crate::menu_perso::Commande;
+    let m = monde();
+    let mut ch = perso(&m);
+    let mut rng = XorShift32::seeded(11);
+    let t0 = Duration::from_secs(1);
+
+    commander(&mut ch, &m, Commande::Basculer(tenue::Tenue::Asseoir), t0, &mut rng);
+    assert_eq!(ch.tenue, Some(tenue::Tenue::Asseoir));
+
+    // Une image pour que `se_reposer` pose la pose, puis une minute : trois
+    // fois le délai d'abandon, et quatre fois la plus longue pause assise.
+    let t = jouer_images(&mut ch, &m, &entrees(true, 1.0), &mut rng, t0, 1, |_| {});
+    jouer_images(&mut ch, &m, &entrees(true, 1.0), &mut rng, t, 3600, |ch| {
+        assert_eq!(ch.tenue, Some(tenue::Tenue::Asseoir));
+        assert_eq!(ch.pose, POSE_SIT);
+    });
+}
+
+#[test]
+fn basculer_deux_fois_rend_sa_vie_normale() {
+    use crate::menu_perso::Commande;
+    let m = monde();
+    let mut ch = perso(&m);
+    let mut rng = XorShift32::seeded(11);
+
+    commander(&mut ch, &m, Commande::Basculer(tenue::Tenue::Asseoir), Duration::from_secs(1), &mut rng);
+    commander(&mut ch, &m, Commande::Basculer(tenue::Tenue::Asseoir), Duration::from_secs(2), &mut rng);
+
+    assert_eq!(ch.tenue, None);
+}
+
+#[test]
+fn une_autre_tenue_remplace_la_premiere() {
+    use crate::menu_perso::Commande;
+    let m = monde();
+    let mut ch = perso(&m);
+    let mut rng = XorShift32::seeded(11);
+
+    commander(&mut ch, &m, Commande::Basculer(tenue::Tenue::Asseoir), Duration::from_secs(1), &mut rng);
+    commander(&mut ch, &m, Commande::Basculer(tenue::Tenue::BalancerLesJambes), Duration::from_secs(2), &mut rng);
+
+    assert_eq!(ch.tenue, Some(tenue::Tenue::BalancerLesJambes));
+}
+
+#[test]
+fn une_action_ponctuelle_efface_la_tenue() {
+    use crate::menu_perso::Commande;
+    let m = monde();
+    let mut ch = perso(&m);
+    let mut rng = XorShift32::seeded(11);
+
+    commander(&mut ch, &m, Commande::Basculer(tenue::Tenue::Asseoir), Duration::from_secs(1), &mut rng);
+    commander(
+        &mut ch,
+        &m,
+        Commande::Intention(intention::Intention::Jouer(intention::Jeu::TeteQuiTourne)),
+        Duration::from_secs(2),
+        &mut rng,
+    );
+
+    assert_eq!(ch.tenue, None);
+    assert_eq!(
+        ch.intention.map(|i| i.kind),
+        Some(intention::Intention::Jouer(intention::Jeu::TeteQuiTourne))
+    );
+}
+
+#[test]
+fn il_flane_encore_une_minute_plus_tard() {
+    // La flânerie ne finit QUE par le délai d'abandon : sans relance par la
+    // tenue, il repartirait au tirage au bout de 20 s.
+    use crate::menu_perso::Commande;
+    let m = monde();
+    let mut ch = perso(&m);
+    let mut rng = XorShift32::seeded(11);
+    let t0 = Duration::from_secs(1);
+
+    commander(&mut ch, &m, Commande::Basculer(tenue::Tenue::Flaner), t0, &mut rng);
+    jouer_images(&mut ch, &m, &entrees(true, 1.0), &mut rng, t0, 3600, |ch| {
+        assert_eq!(ch.tenue, Some(tenue::Tenue::Flaner));
+        assert_eq!(ch.intention.map(|i| i.kind), Some(intention::Intention::Flaner));
+    });
+}
+
+#[test]
+fn absent_il_s_assoupit_puis_reprend_sa_tenue_au_retour() {
+    use crate::menu_perso::Commande;
+    let m = monde();
+    let mut ch = perso(&m);
+    let mut rng = XorShift32::seeded(11);
+    let t0 = Duration::from_secs(1);
+
+    commander(&mut ch, &m, Commande::Basculer(tenue::Tenue::Asseoir), t0, &mut rng);
+
+    // Parti : ×8 sur le repos, et plus aucune activité. En 60 s, la pause
+    // assise (15 s au plus) a eu le temps de basculer en sommeil.
+    let mut a_dormi = false;
+    let t = jouer_images(&mut ch, &m, &entrees(false, 8.0), &mut rng, t0, 3600, |ch| {
+        if ch.pose == POSE_SLEEP {
+            a_dormi = true;
+        }
+        assert_eq!(ch.tenue, Some(tenue::Tenue::Asseoir), "toujours cochée");
+    });
+    assert!(a_dormi, "il aurait dû s'assoupir");
+
+    // Revenu : une seconde plus tard, il est de nouveau assis, pas endormi.
+    jouer_images(&mut ch, &m, &entrees(true, 1.0), &mut rng, t, 60, |_| {});
+    assert_eq!(ch.pose, POSE_SIT);
+    assert_eq!(ch.tenue, Some(tenue::Tenue::Asseoir));
+}
+
+#[test]
+fn une_tenue_de_sol_recue_sur_un_mur_est_ignoree() {
+    use crate::menu_perso::Commande;
+    let m = monde();
+    let mur = mur_gauche(&m);
+    let mut ch = perso(&m);
+    ch.attachment = Attachment::On { platform: mur.id, face: Face::Right, offset: 300.0 };
+    ch.intention = Some(intention::ActiveIntention::accroche(Duration::from_secs(1)));
+    let mut rng = XorShift32::seeded(11);
+
+    commander(&mut ch, &m, Commande::Basculer(tenue::Tenue::Asseoir), Duration::from_secs(1), &mut rng);
+
+    assert_eq!(ch.tenue, None);
+}
+
+#[test]
+fn une_tenue_devenue_injouable_est_effacee() {
+    // Un rechargement à chaud a retiré la pose assise : la tenue ne doit
+    // pas être forcée sur une image absente (spec §2.2, Review Focus n° 4).
+    use crate::menu_perso::Commande;
+    let m = monde();
+    let mut ch = perso(&m);
+    let mut rng = XorShift32::seeded(11);
+    let t0 = Duration::from_secs(1);
+
+    commander(&mut ch, &m, Commande::Basculer(tenue::Tenue::Asseoir), t0, &mut rng);
+    ch.manifest.poses.remove(POSE_SIT);
+    // L'intention en cours échoue dès l'image suivante, et la relance est
+    // refusée : 20 images suffisent largement.
+    jouer_images(&mut ch, &m, &entrees(true, 1.0), &mut rng, t0, 20, |_| {});
+
+    assert_eq!(ch.tenue, None);
+}
+
+fn perso_au_mur(m: &World, t: tenue::Tenue) -> Character {
+    let mur = mur_gauche(m);
+    let mut ch = perso(m);
+    ch.attachment = Attachment::On { platform: mur.id, face: Face::Right, offset: 300.0 };
+    ch.tenue = Some(t);
+    ch.intention = Some(tenue::intention_pour(
+        t,
+        &entrees(true, 1.0),
+        &reglages_defaut(),
+        &desire::TableEnvies::defaut(),
+        &ch.manifest,
+        true,
+        Duration::from_secs(1),
+    ));
+    ch
+}
+
+#[test]
+fn grimper_tenu_ne_repose_jamais_le_pied_au_sol() {
+    // Dix minutes, soit cinq fois le délai d'abandon de l'escalade : il
+    // monte, redescend, passe au plafond — mais jamais au sol, jamais en l'air.
+    let m = monde();
+    let mut ch = perso_au_mur(&m, tenue::Tenue::Grimper);
+    let mut rng = XorShift32::seeded(23);
+
+    jouer_images(&mut ch, &m, &entrees(true, 1.0), &mut rng, Duration::from_secs(1), 36_000, |ch| {
+        assert!(
+            matches!(ch.attachment, Attachment::On { face, .. } if face != Face::Top),
+            "il a quitté la paroi : {:?}",
+            ch.attachment
+        );
+        assert_eq!(ch.tenue, Some(tenue::Tenue::Grimper));
+    });
+}
+
+#[test]
+fn rester_accroche_tenu_ne_bouge_plus() {
+    let m = monde();
+    let mut ch = perso_au_mur(&m, tenue::Tenue::ResterAccroche);
+    let depart = ch.attachment;
+    let mut rng = XorShift32::seeded(23);
+
+    // Cinq minutes, utilisateur absent : au mur, rien ne l'interrompt.
+    jouer_images(&mut ch, &m, &entrees(false, 8.0), &mut rng, Duration::from_secs(1), 18_000, |ch| {
+        assert_eq!(ch.attachment, depart);
+        assert_eq!(ch.tenue, Some(tenue::Tenue::ResterAccroche));
+    });
+}
+
+#[test]
+fn redescendre_met_fin_a_grimper_tenu() {
+    use crate::menu_perso::Commande;
+    let m = monde();
+    let mut ch = perso_au_mur(&m, tenue::Tenue::Grimper);
+    let mut rng = XorShift32::seeded(23);
+
+    commander(&mut ch, &m, Commande::Redescendre, Duration::from_secs(2), &mut rng);
+    assert_eq!(ch.tenue, None);
+
+    // Et il arrive bien au sol : ~730 px à 16 px/s, soit 46 s — une minute
+    // suffit.
+    jouer_images(&mut ch, &m, &entrees(true, 1.0), &mut rng, Duration::from_secs(2), 3600, |_| {});
+    assert!(matches!(ch.attachment, Attachment::On { face: Face::Top, .. }));
+}
+
+/// Ce que la section « Tout le monde » demande à chacun : peut-il tenir
+/// cette action, LÀ où il est ? La même règle que `Tenir` dans `pas`, et
+/// c'est pour cela qu'elle vit dans une seule fonction (relecture finale).
+#[test]
+fn peut_tenir_suit_l_endroit_et_l_attache() {
+    use tenue::{peut_tenir, Tenue};
+    let m = monde();
+    let table = desire::TableEnvies::defaut();
+    let mut ch = perso(&m);
+
+    // Au sol. « Rester accroché » y vaut depuis le 2026-09-24 : il part au
+    // mur, puis s'y fige (« Tout le monde › Rester accroché »).
+    assert!(peut_tenir(Tenue::Asseoir, &ch, &table));
+    assert!(peut_tenir(Tenue::Grimper, &ch, &table));
+    assert!(peut_tenir(Tenue::ResterAccroche, &ch, &table));
+
+    // Sur un mur.
+    let mur = mur_gauche(&m);
+    ch.attachment = Attachment::On { platform: mur.id, face: Face::Right, offset: 300.0 };
+    assert!(!peut_tenir(Tenue::Asseoir, &ch, &table));
+    assert!(peut_tenir(Tenue::ResterAccroche, &ch, &table));
+    assert!(peut_tenir(Tenue::Grimper, &ch, &table));
+
+    // Porté : `pas` ne verra même pas la commande, les réflexes passent avant.
+    ch.attachment = Attachment::Dragged;
+    assert!(!peut_tenir(Tenue::Asseoir, &ch, &table));
+}
+
+// ── « Tout le monde » s'impose à tous (demande de l'auteur, 2026-09-24) ───
+//
+// Un ordre collectif remplace l'action tenue de chacun, où qu'il soit : au
+// mur, il se lâche et s'assoit en atterrissant ; en chute, il s'assoit en
+// touchant le sol.
+
+#[test]
+fn tout_le_monde_s_asseoir_fait_descendre_celui_qui_grimpe() {
+    use crate::menu_perso::Commande;
+    let m = monde();
+    let mut ch = perso_au_mur(&m, tenue::Tenue::Grimper);
+    let mut rng = XorShift32::seeded(29);
+
+    commander(&mut ch, &m, Commande::Imposer(tenue::Tenue::Asseoir), Duration::from_secs(2), &mut rng);
+    assert_eq!(ch.tenue, Some(tenue::Tenue::Asseoir));
+    assert!(matches!(ch.attachment, Attachment::Falling { .. }), "{:?}", ch.attachment);
+
+    // Dix secondes : la chute, l'atterrissage, puis la pose assise.
+    jouer_images(&mut ch, &m, &entrees(true, 1.0), &mut rng, Duration::from_secs(2), 600, |_| {});
+    assert_eq!(ch.tenue, Some(tenue::Tenue::Asseoir));
+    assert_eq!(ch.pose, POSE_SIT);
+}
+
+#[test]
+fn tout_le_monde_s_impose_aussi_en_pleine_chute() {
+    use crate::menu_perso::Commande;
+    let m = monde();
+    let mut ch = perso(&m);
+    ch.attachment = Attachment::Falling {
+        pos: Point::new(ch.pos_connue.x, ch.pos_connue.y - 200.0),
+        vel: crate::geom::Vec2::zero(),
+    };
+    let mut rng = XorShift32::seeded(29);
+
+    commander(&mut ch, &m, Commande::Imposer(tenue::Tenue::Asseoir), Duration::from_secs(1), &mut rng);
+    assert_eq!(ch.tenue, Some(tenue::Tenue::Asseoir));
+
+    jouer_images(&mut ch, &m, &entrees(true, 1.0), &mut rng, Duration::from_secs(1), 600, |_| {});
+    assert_eq!(ch.pose, POSE_SIT);
+}
+
+// ── Il fait face à sa paroi (défaut n° 2 de la spec « menu sur mesure ») ──
+//
+// « Sur le mur de gauche, il est dessiné comme sur un mur de droite —
+// presque entièrement hors de l'écran », et par moments sur celui de droite
+// aussi. Un personnage accroché à la face `Right` (mur GAUCHE de l'écran)
+// doit regarder à gauche ; à la face `Left` (mur DROIT), à droite.
+
+/// L'orientation qu'il doit avoir là où il est, s'il est sur un mur.
+fn orientation_attendue_au_mur(ch: &Character) -> Option<crate::character::Facing> {
+    match ch.attachment {
+        Attachment::On { face: Face::Right, .. } => Some(crate::character::Facing::Left),
+        Attachment::On { face: Face::Left, .. } => Some(crate::character::Facing::Right),
+        _ => None,
+    }
+}
+
+#[test]
+fn il_fait_toujours_face_a_sa_paroi() {
+    // Longue vie ordinaire, avec une forte envie de grimper, sur plusieurs
+    // graines — chacune semée UNE fois (CLAUDE.md, « Semer l'aléatoire une
+    // seule fois »). Et des départs aux deux bouts de l'écran.
+    let m = monde();
+    let mut e = entrees(true, 1.0);
+    e.biais.grimper = 20.0;
+    for (graine, offset) in [(31, 50.0), (37, 1800.0), (41, 900.0), (43, 300.0)] {
+        let mut ch = perso(&m);
+        let sol = &m.platforms()[0];
+        ch.attachment = Attachment::On { platform: sol.id, face: Face::Top, offset };
+        let mut rng = XorShift32::seeded(graine);
+        let mut image = 0u32;
+        jouer_images(&mut ch, &m, &e, &mut rng, Duration::from_secs(1), 60 * 60 * 20, |ch| {
+            image += 1;
+            if let Some(attendue) = orientation_attendue_au_mur(ch) {
+                assert_eq!(
+                    ch.facing, attendue,
+                    "graine {graine}, image {image} : {:?}, pose {}, intention {:?}",
+                    ch.attachment, ch.pose, ch.intention
+                );
+            }
+        });
+    }
+}
+
+// ── L'écran du milieu (défaut n° 3 de la spec « menu sur mesure ») ────────
+//
+// Sur trois écrans côte à côte, celui du milieu n'a AUCUN mur : ses deux
+// bords touchent un voisin, et un bord commun n'est pas un mur (voulu).
+// « Grimper au mur » y échouait donc toujours. Il doit viser le mur le plus
+// proche sur n'importe quel écran, et y marcher d'un écran à l'autre.
+
+fn trois_ecrans() -> World {
+    let ecran = |id: u64, x: f32| crate::probe::ScreenInfo {
+        id,
+        work_area: crate::geom::Rect::new(x, 0.0, 1920.0, 1032.0),
+        bounds: crate::geom::Rect::new(x, 0.0, 1920.0, 1032.0),
+        scale: 1.0,
+    };
+    World::from_screens(
+        &crate::probe::fake::FakeProbe::new(vec![ecran(1, 0.0), ecran(2, 1920.0), ecran(3, 3840.0)])
+            .screens(),
+    )
+}
+
+#[test]
+fn depuis_l_ecran_du_milieu_il_rejoint_un_mur_voisin() {
+    use crate::menu_perso::Commande;
+    let m = trois_ecrans();
+    let sol_du_milieu = m
+        .platforms()
+        .iter()
+        .find(|p| p.has_face(Face::Top) && p.rect.x == 1920.0)
+        .expect("le sol de l'écran du milieu");
+    let mut ch = perso(&m);
+    ch.attachment = Attachment::On { platform: sol_du_milieu.id, face: Face::Top, offset: 700.0 };
+    ch.pos_connue = sol_du_milieu.rect.point_on(Face::Top, 700.0);
+    let mut rng = XorShift32::seeded(47);
+
+    commander(&mut ch, &m, Commande::Intention(intention::Intention::Grimper), Duration::from_secs(1), &mut rng);
+
+    // 700 px jusqu'au bord gauche du milieu, puis 1920 px à traverser : à la
+    // course (100 px/s), moins d'une minute. Deux minutes laissent la marge.
+    let mut sur_un_mur = false;
+    jouer_images(&mut ch, &m, &entrees(true, 1.0), &mut rng, Duration::from_secs(1), 120 * 60, |ch| {
+        if matches!(ch.attachment, Attachment::On { face: Face::Left | Face::Right, .. }) {
+            sur_un_mur = true;
+        }
+    });
+    assert!(sur_un_mur, "il n'a jamais atteint de mur : {:?}", ch.attachment);
+}
+
+/// Un second ordre « Tout le monde » remplace le premier, quel que soit
+/// l'instant où il tombe (rapporté par l'auteur, 2026-09-24). Balayé sur
+/// toutes les paires, à des instants variés du premier — marche vers le mur,
+/// saut, escalade, plafond.
+#[test]
+fn un_second_ordre_collectif_remplace_le_premier() {
+    use crate::menu_perso::Commande;
+    use tenue::Tenue;
+    let m = monde();
+    let tous = [Tenue::Flaner, Tenue::Asseoir, Tenue::BalancerLesJambes, Tenue::Grimper];
+    let mut echecs = Vec::new();
+    let mut rng = XorShift32::seeded(53);
+    for premier in tous {
+        for second in tous {
+            if premier == second { continue; }
+            for k in (0..4000).step_by(173) {
+                let mut ch = perso(&m);
+                let t0 = Duration::from_secs(1);
+                commander(&mut ch, &m, Commande::Imposer(premier), t0, &mut rng);
+                let t = jouer_images(&mut ch, &m, &entrees(true, 1.0), &mut rng, t0, k, |_| {});
+                let avant = (ch.attachment, ch.intention.map(|i| i.kind), ch.tenue);
+                commander(&mut ch, &m, Commande::Imposer(second), t, &mut rng);
+                let apres_cmd = ch.tenue;
+                jouer_images(&mut ch, &m, &entrees(true, 1.0), &mut rng, t, 1800, |_| {});
+                let ok_pose = match second {
+                    Tenue::Asseoir => ch.pose == POSE_SIT,
+                    Tenue::Grimper => matches!(ch.attachment, Attachment::On { face, .. } if face != Face::Top),
+                    _ => true,
+                };
+                if ch.tenue != Some(second) || !ok_pose {
+                    echecs.push(format!("{premier:?}->{second:?} k={k} avant={avant:?} apres_cmd={apres_cmd:?} fin tenue={:?} pose={} att={:?} int={:?}", ch.tenue, ch.pose, ch.attachment, ch.intention.map(|i| i.kind)));
+                }
+            }
+        }
+    }
+    for e in &echecs { println!("{e}"); }
+    assert!(echecs.is_empty(), "{} échecs", echecs.len());
+}
+
+
+/// « Tout le monde › Faire son petit truc » vaut aussi pour qui est au mur :
+/// il se lâche, et le joue en atterrissant (rapporté par l'auteur,
+/// 2026-09-24 — l'action ponctuelle y était ignorée, et il continuait de
+/// grimper sur l'ordre précédent).
+#[test]
+fn une_action_ponctuelle_pour_tous_fait_descendre_celui_qui_grimpe() {
+    use crate::menu_perso::Commande;
+    let tete = intention::Intention::Jouer(intention::Jeu::TeteQuiTourne);
+    let m = monde();
+    let mut ch = perso_au_mur(&m, tenue::Tenue::Grimper);
+    let mut rng = XorShift32::seeded(59);
+
+    commander(&mut ch, &m, Commande::ImposerUneFois(tete), Duration::from_secs(2), &mut rng);
+    assert_eq!(ch.tenue, None);
+    assert!(matches!(ch.attachment, Attachment::Falling { .. }), "{:?}", ch.attachment);
+
+    // Dix secondes : la chute, l'atterrissage, puis son petit truc.
+    let mut joue = false;
+    jouer_images(&mut ch, &m, &entrees(true, 1.0), &mut rng, Duration::from_secs(2), 600, |ch| {
+        joue |= ch.intention.map(|i| i.kind) == Some(tete);
+    });
+    assert!(joue, "il n'a jamais fait son petit truc");
+}
+
+#[test]
+fn une_action_ponctuelle_pour_tous_s_impose_aussi_en_pleine_chute() {
+    use crate::menu_perso::Commande;
+    let tete = intention::Intention::Jouer(intention::Jeu::TeteQuiTourne);
+    let m = monde();
+    let mut ch = perso(&m);
+    ch.tenue = Some(tenue::Tenue::Asseoir);
+    ch.attachment = Attachment::Falling {
+        pos: Point::new(ch.pos_connue.x, ch.pos_connue.y - 200.0),
+        vel: crate::geom::Vec2::zero(),
+    };
+    let mut rng = XorShift32::seeded(59);
+
+    commander(&mut ch, &m, Commande::ImposerUneFois(tete), Duration::from_secs(1), &mut rng);
+    assert_eq!(ch.tenue, None);
+
+    let mut joue = false;
+    jouer_images(&mut ch, &m, &entrees(true, 1.0), &mut rng, Duration::from_secs(1), 600, |ch| {
+        joue |= ch.intention.map(|i| i.kind) == Some(tete);
+    });
+    assert!(joue, "il n'a jamais fait son petit truc");
+    // Joué UNE fois : il ne le rejoue pas en boucle, il reprend sa vie.
+    assert_eq!(ch.a_jouer, None);
+}
+
+// ── Toute action du clic droit se fait, quel que soit l'état de départ ────
+//
+// Demande de l'auteur (2026-09-24) : « dès qu'on fait une action via le clic
+// droit sur un perso, je veux que l'action se fasse — dans toutes les
+// conditions initiales ». La matrice ci-dessous croise chaque état de départ
+// avec chaque entrée que le menu lui PROPOSE vraiment (`menu_perso::lignes`,
+// le même appel que `main.rs`), personnelle ou « Tout le monde », décodée
+// par le même chemin (`commande_de`, `commande_de_tous` puis
+// `resoudre_pour_tous`). Une nouvelle entrée de menu y entre donc d'office.
+
+/// Les états de départ : au sol, au mur, au plafond, en l'air — avec ou
+/// sans action tenue.
+fn etats_de_depart(m: &World) -> Vec<(&'static str, Character)> {
+    use crate::menu_perso::Commande;
+    use tenue::Tenue;
+    let mut rng = XorShift32::seeded(61);
+    let t0 = Duration::from_secs(1);
+    let mut etats = Vec::new();
+
+    // Au sol, sans tenue, dans chacune de ses activités.
+    for (nom, i) in [
+        ("flâne", intention::Intention::Flaner),
+        ("se repose", intention::Intention::SeReposer),
+        ("fait son petit truc", intention::Intention::Jouer(intention::Jeu::TeteQuiTourne)),
+        ("part grimper de lui-même", intention::Intention::Grimper),
+    ] {
+        let mut ch = perso(m);
+        ch.intention = Some(intention::ActiveIntention::nouvelle(i, t0));
+        jouer_images(&mut ch, m, &entrees(true, 1.0), &mut rng, t0, 30, |_| {});
+        etats.push((nom, ch));
+    }
+
+    // Au sol, une tenue de sol.
+    for (nom, t) in [
+        ("assis (tenu)", Tenue::Asseoir),
+        ("flâne (tenu)", Tenue::Flaner),
+        ("balance les jambes (tenu)", Tenue::BalancerLesJambes),
+    ] {
+        let mut ch = perso(m);
+        commander(&mut ch, m, Commande::Basculer(t), t0, &mut rng);
+        jouer_images(&mut ch, m, &entrees(true, 1.0), &mut rng, t0, 120, |_| {});
+        etats.push((nom, ch));
+    }
+
+    // Endormi : l'utilisateur est parti, il s'est assoupi.
+    let mut ch = perso(m);
+    commander(&mut ch, m, Commande::Basculer(Tenue::Asseoir), t0, &mut rng);
+    jouer_images(&mut ch, m, &entrees(false, 20.0), &mut rng, t0, 3600, |_| {});
+    etats.push(("endormi", ch));
+
+    // Court vers le mur sur ordre.
+    let mut ch = perso(m);
+    commander(&mut ch, m, Commande::Basculer(Tenue::Grimper), t0, &mut rng);
+    jouer_images(&mut ch, m, &entrees(true, 1.0), &mut rng, t0, 30, |_| {});
+    etats.push(("court vers le mur (tenu)", ch));
+
+    // Au mur.
+    etats.push(("grimpe (tenu)", perso_au_mur(m, Tenue::Grimper)));
+    etats.push(("accroché (tenu)", perso_au_mur(m, Tenue::ResterAccroche)));
+    let mut ch = perso_au_mur(m, Tenue::Grimper);
+    ch.tenue = None;
+    etats.push(("grimpe de lui-même", ch));
+
+    // Au plafond, en pleine escalade tenue (il y reprend là où il est).
+    let plafond = m.platforms().iter().find(|p| p.has_face(Face::Bottom)).expect("plafond");
+    let mut ch = perso_au_mur(m, Tenue::Grimper);
+    ch.attachment = Attachment::On { platform: plafond.id, face: Face::Bottom, offset: 600.0 };
+    jouer_images(&mut ch, m, &entrees(true, 1.0), &mut rng, t0, 30, |_| {});
+    assert!(matches!(ch.attachment, Attachment::On { face: Face::Bottom, .. }), "{:?}", ch.attachment);
+    etats.push(("au plafond (tenu)", ch));
+
+    // En l'air.
+    for (nom, t) in [("tombe", None), ("tombe, assis tenu", Some(Tenue::Asseoir))] {
+        let mut ch = perso(m);
+        ch.tenue = t;
+        ch.attachment = Attachment::Falling {
+            pos: Point::new(ch.pos_connue.x, ch.pos_connue.y - 300.0),
+            vel: crate::geom::Vec2::zero(),
+        };
+        etats.push((nom, ch));
+    }
+    etats
+}
+
+/// A-t-il fait ce que la commande demandait ? `None` si oui, sinon ce qui
+/// cloche. Joue jusqu'à 90 s — le temps de courir jusqu'au mur et d'y
+/// monter, le plus long de tous.
+fn verifier_effet(
+    m: &World,
+    mut ch: Character,
+    c: crate::menu_perso::Commande,
+    rng: &mut XorShift32,
+) -> Option<String> {
+    use crate::menu_perso::Commande;
+    use tenue::Tenue;
+    let t0 = Duration::from_secs(100);
+    // Ce que `pas` en fera : `Basculer` se résout sur la tenue du moment.
+    let c = match c {
+        Commande::Basculer(t) if ch.tenue == Some(t) => Commande::Relacher(t),
+        Commande::Basculer(t) => Commande::Tenir(t),
+        autre => autre,
+    };
+    commander(&mut ch, m, c, t0, rng);
+
+    // Effets immédiats.
+    match c {
+        Commande::Relacher(t) => {
+            return (ch.tenue == Some(t)).then(|| "toujours tenue".to_string());
+        }
+        Commande::Tenir(Tenue::ResterAccroche) | Commande::Imposer(Tenue::ResterAccroche) => {
+            // Au sol, il part d'abord au mur (jusqu'à 90 s) ; puis il ne
+            // bouge plus pendant 10 s.
+            let accroche = |ch: &Character| {
+                matches!(ch.attachment, Attachment::On { face, .. } if face != Face::Top)
+                    && matches!(ch.intention, Some(intention::ActiveIntention { etat: intention::EtatIntention::Grimpe { phase: intention::PhaseGrimpe::Accroche, .. }, .. }))
+            };
+            let mut t = t0;
+            let mut n = 0;
+            while !accroche(&ch) && n < 5400 {
+                t = jouer_images(&mut ch, m, &entrees(true, 1.0), rng, t, 1, |_| {});
+                n += 1;
+            }
+            if !accroche(&ch) {
+                return Some(format!("jamais accroché en 90 s : {:?}", ch.attachment));
+            }
+            let depart = ch.attachment;
+            let mut bouge = false;
+            jouer_images(&mut ch, m, &entrees(true, 1.0), rng, t, 600, |ch| {
+                bouge |= ch.attachment != depart;
+            });
+            return (bouge || ch.tenue != Some(Tenue::ResterAccroche))
+                .then(|| format!("n'est pas resté accroché : {:?}", ch.attachment));
+        }
+        _ => {}
+    }
+
+    // Effets qui demandent du temps : on joue image par image, jusqu'à
+    // ce que ce soit vrai.
+    let atteint = |ch: &Character| -> bool {
+        let au_sol = matches!(ch.attachment, Attachment::On { face: Face::Top, .. });
+        let sur_paroi = matches!(ch.attachment, Attachment::On { face, .. } if face != Face::Top);
+        let fait = |i| ch.intention.map(|a| a.kind) == Some(i);
+        match c {
+            Commande::Tenir(Tenue::Grimper) | Commande::Imposer(Tenue::Grimper) => {
+                sur_paroi && ch.tenue == Some(Tenue::Grimper)
+            }
+            Commande::Tenir(Tenue::Asseoir) | Commande::Imposer(Tenue::Asseoir) => {
+                au_sol && ch.tenue == Some(Tenue::Asseoir) && ch.pose == POSE_SIT
+            }
+            Commande::Tenir(t) | Commande::Imposer(t) => au_sol && ch.tenue == Some(t) && fait(t.intention()),
+            Commande::Intention(i) | Commande::ImposerUneFois(i) => au_sol && fait(i),
+            Commande::Redescendre | Commande::SeLacher => au_sol && ch.tenue.is_none(),
+            _ => true,
+        }
+    };
+    let mut t = t0;
+    for _ in 0..5400 {
+        if atteint(&ch) {
+            return None;
+        }
+        t = jouer_images(&mut ch, m, &entrees(true, 1.0), rng, t, 1, |_| {});
+    }
+    Some(format!(
+        "jamais fait en 90 s — tenue {:?}, attache {:?}, intention {:?}, pose {}",
+        ch.tenue,
+        ch.attachment,
+        ch.intention.map(|a| a.kind),
+        ch.pose
+    ))
+}
+
+#[test]
+fn toute_action_du_menu_se_fait_quel_que_soit_l_etat_de_depart() {
+    use crate::menu_perso::{self, Ligne, Present};
+    let m = monde();
+    let table = desire::TableEnvies::defaut();
+    let mut rng = XorShift32::seeded(67);
+    let mut echecs = Vec::new();
+    let mut essais = 0;
+
+    for (etat, ch) in etats_de_depart(&m) {
+        let presents = [Present {
+            tenue: ch.tenue,
+            peut_tenir: tenue::Tenue::TOUTES.to_vec(),
+        }];
+        let ou = menu_perso::ou_de(&ch.attachment);
+        for ligne in menu_perso::lignes(&ch.manifest, &table, ou, ch.tenue, &presents, None) {
+            let Ligne::Entree { id, .. } = ligne else { continue };
+            // Le même décodage que `actions::executer`.
+            let commande = match (menu_perso::commande_de(id), menu_perso::commande_de_tous(id)) {
+                (Some(c), _) => c,
+                (None, Some(c)) => menu_perso::resoudre_pour_tous(c, &presents, None),
+                // Cacher, catalogue, quitter : pas des actions du personnage.
+                (None, None) => continue,
+            };
+            essais += 1;
+            if let Some(pb) = verifier_effet(&m, ch.clone(), commande, &mut rng) {
+                echecs.push(format!("[{etat}] {id} ({commande:?}) : {pb}"));
+            }
+        }
+    }
+
+    for e in &echecs {
+        println!("{e}");
+    }
+    assert!(essais > 50, "la matrice est trop petite : {essais} essais");
+    assert!(echecs.is_empty(), "{} échecs sur {essais}", echecs.len());
+}
+
+// ── À plusieurs : ne pas se superposer (spec 2026-09-24) ───────────────────
+//
+// Un harnais qui fait avancer N personnages ensemble, COMME la boucle de
+// `main.rs` : chacun reçoit les occupants de l'image précédente.
+
+fn jouer_foule(
+    persos: &mut [Character],
+    m: &World,
+    e: &Entrees,
+    rng: &mut XorShift32,
+    debut: Duration,
+    n: u32,
+    mut chaque: impl FnMut(&[Character]),
+) -> Duration {
+    let table = desire::TableEnvies::defaut();
+    let reglages = reglages_defaut();
+    let mut t = debut;
+    for _ in 0..n {
+        t += Duration::from_secs_f32(DT);
+        let occupants: Vec<place::Occupant> = persos
+            .iter()
+            .enumerate()
+            .filter_map(|(i, ch)| place::occupant_de(i as u32, ch, e.echelle_affichage))
+            .collect();
+        for (i, ch) in persos.iter_mut().enumerate() {
+            let v = place::Voisinage { moi: i as u32, autres: &occupants };
+            pas_parmi(ch, m, e, &table, &reglages, t, DT, rng, &v);
+        }
+        chaque(persos);
+    }
+    t
+}
+
+/// La même commande pour tous, à la même image — « Tout le monde › … ».
+fn commander_foule(persos: &mut [Character], m: &World, c: crate::menu_perso::Commande, t: Duration, rng: &mut XorShift32) {
+    for ch in persos.iter_mut() {
+        commander(ch, m, c, t, rng);
+    }
+}
+
+/// Deux personnages à l'arrêt, sur le même sol, qui se chevauchent.
+fn chevauchement_a_l_arret(persos: &[Character]) -> Option<(usize, usize)> {
+    let e = entrees(true, 1.0);
+    for i in 0..persos.len() {
+        for j in (i + 1)..persos.len() {
+            let (a, b) = (&persos[i], &persos[j]);
+            let (Attachment::On { platform: pa, face: Face::Top, offset: oa }, Attachment::On { platform: pb, face: Face::Top, offset: ob }) = (a.attachment, b.attachment) else {
+                continue;
+            };
+            if pa != pb || !place::a_l_arret(a) || !place::a_l_arret(b) {
+                continue;
+            }
+            let (da, _) = place::corps(a, e.echelle_affichage);
+            let (db, _) = place::corps(b, e.echelle_affichage);
+            if (oa - ob).abs() < da + db - 1.0 {
+                return Some((i, j));
+            }
+        }
+    }
+    None
+}
+
+fn foule_au_meme_endroit(m: &World, n: usize, offset: f32) -> Vec<Character> {
+    let sol = &m.platforms()[0];
+    (0..n)
+        .map(|_| {
+            let mut ch = perso(m);
+            ch.attachment = Attachment::On { platform: sol.id, face: Face::Top, offset };
+            ch
+        })
+        .collect()
+}
+
+#[test]
+fn tout_le_monde_s_assoit_en_rangee() {
+    use crate::menu_perso::Commande;
+    let m = monde();
+    let mut persos = foule_au_meme_endroit(&m, 5, 800.0);
+    let mut rng = XorShift32::seeded(71);
+    let t0 = Duration::from_secs(1);
+    commander_foule(&mut persos, &m, Commande::Imposer(tenue::Tenue::Asseoir), t0, &mut rng);
+
+    // 20 s pour se ranger : un corps (~90 px) à 40 px/s, pour les plus
+    // éloignés deux corps — large.
+    let t = jouer_foule(&mut persos, &m, &entrees(true, 1.0), &mut rng, t0, 1200, |_| {});
+    // Puis 10 s de contrôle : tous à l'arrêt, assis tenu, aucun
+    // chevauchement. (Pas `pose == sit` à chaque image : entre deux repos,
+    // la tenue relance `SeReposer`, qui peut passer par une autre pose.)
+    jouer_foule(&mut persos, &m, &entrees(true, 1.0), &mut rng, t, 600, |p| {
+        assert_eq!(chevauchement_a_l_arret(p), None);
+        for ch in p {
+            assert!(place::a_l_arret(ch), "{:?}", ch.intention);
+            assert_eq!(ch.tenue, Some(tenue::Tenue::Asseoir));
+        }
+    });
+}
+
+#[test]
+fn lache_sur_un_assis_il_se_decale() {
+    use crate::menu_perso::Commande;
+    let m = monde();
+    let mut persos = foule_au_meme_endroit(&m, 2, 800.0);
+    let mut rng = XorShift32::seeded(73);
+    let t0 = Duration::from_secs(1);
+    commander(&mut persos[0], &m, Commande::Basculer(tenue::Tenue::Asseoir), t0, &mut rng);
+    // Le second tombe pile au-dessus — assis tenu lui aussi : sans cela il
+    // ne reste étalé qu'1 à 2 s (`DUREE_AU_SOL`), puis part souvent flâner,
+    // et le test passerait sans que personne ne se décale.
+    persos[1].tenue = Some(tenue::Tenue::Asseoir);
+    // Depuis la plateforme, pas `pos_connue` : `foule_au_meme_endroit` ne
+    // change que l'attache, et `pos_connue` est restée celle de `perso()`.
+    let pos = m.platforms()[0].rect.point_on(Face::Top, 800.0);
+    persos[1].attachment = Attachment::Falling { pos: Point::new(pos.x, pos.y - 300.0), vel: crate::geom::Vec2::zero() };
+
+    // Il tombe, atterrit, s'étale (à l'arrêt, plus récent) : il doit
+    // s'écarter. Jamais plus de 3 s de suite l'un sur l'autre à l'arrêt.
+    let mut a_la_suite = 0u32;
+    jouer_foule(&mut persos, &m, &entrees(true, 1.0), &mut rng, t0, 1800, |p| {
+        if chevauchement_a_l_arret(p).is_some() {
+            a_la_suite += 1;
+            assert!(a_la_suite < 180, "superposés à l'arrêt depuis 3 s");
+        } else {
+            a_la_suite = 0;
+        }
+    });
+}
+
+#[test]
+fn deux_marcheurs_se_traversent_sans_devier() {
+    let m = monde();
+    let mut persos = foule_au_meme_endroit(&m, 2, 0.0);
+    let t0 = Duration::from_secs(1);
+    let marche = |ch: &mut Character, offset: f32, facing| {
+        let sol = &m.platforms()[0];
+        ch.attachment = Attachment::On { platform: sol.id, face: Face::Top, offset };
+        ch.facing = facing;
+        ch.intention = Some(intention::ActiveIntention {
+            kind: intention::Intention::Flaner,
+            depuis: t0,
+            etat: intention::EtatIntention::Flanerie { allure: intention::Allure::Marche, jusqu_a: t0 + Duration::from_secs(30) },
+        });
+    };
+    marche(&mut persos[0], 600.0, crate::character::Facing::Right);
+    marche(&mut persos[1], 800.0, crate::character::Facing::Left);
+    let offset = |ch: &Character| match ch.attachment {
+        Attachment::On { offset, .. } => offset,
+        _ => panic!("il a quitté le sol"),
+    };
+    let (mut a, mut b) = (offset(&persos[0]), offset(&persos[1]));
+    let mut rng = XorShift32::seeded(79);
+    // 8 s : ils se croisent vers 700, et continuent.
+    jouer_foule(&mut persos, &m, &entrees(true, 1.0), &mut rng, t0, 480, |p| {
+        let (na, nb) = (offset(&p[0]), offset(&p[1]));
+        assert!(na > a && nb < b, "l'un a dévié ou s'est arrêté : {a}→{na}, {b}→{nb}");
+        a = na;
+        b = nb;
+    });
+    assert!(a > b, "ils ne se sont pas croisés");
+}
+
+#[test]
+fn ecran_plein_il_reste_ou_il_est() {
+    // Un seul sol, plus de corps que de largeur : pas d'oscillation, ils
+    // restent où ils sont. On le lit sur `place::place_libre` → `None`, et
+    // sur un personnage qui ne bouge pas d'un pixel pendant 5 s.
+    use crate::menu_perso::Commande;
+    let m = monde();
+    let sol = &m.platforms()[0];
+    let longueur = sol.rect.face_length(Face::Top);
+    let (demi, _) = place::corps(&perso(&m), 1.0);
+    let n = (longueur / (2.0 * demi)) as usize + 3;
+    let mut persos: Vec<Character> = (0..n)
+        .map(|i| {
+            let mut ch = perso(&m);
+            ch.attachment = Attachment::On { platform: sol.id, face: Face::Top, offset: (i as f32 * 2.0 * demi + demi).min(longueur - demi) };
+            ch
+        })
+        .collect();
+    let mut rng = XorShift32::seeded(83);
+    let t0 = Duration::from_secs(1);
+    commander_foule(&mut persos, &m, Commande::Imposer(tenue::Tenue::Asseoir), t0, &mut rng);
+    let t = jouer_foule(&mut persos, &m, &entrees(true, 1.0), &mut rng, t0, 600, |_| {});
+    let avant: Vec<_> = persos.iter().map(|c| c.attachment).collect();
+    jouer_foule(&mut persos, &m, &entrees(true, 1.0), &mut rng, t, 300, |p| {
+        let maintenant: Vec<_> = p.iter().map(|c| c.attachment).collect();
+        assert_eq!(maintenant, avant, "quelqu'un bouge encore sur un écran plein");
+    });
+}
+
+/// Le bas du mur gauche du monde de test : longueur de sa face.
+fn longueur_mur_gauche(m: &World) -> f32 {
+    let mur = mur_gauche(m);
+    mur.rect.face_length(Face::Right)
+}
+
+#[test]
+fn tout_le_monde_grimpe_un_par_un() {
+    use crate::menu_perso::Commande;
+    let m = monde();
+    let mur = mur_gauche(&m).id;
+    let longueur = longueur_mur_gauche(&m);
+    let (_, hauteur) = place::corps(&perso(&m), 1.0);
+    let mut persos = foule_au_meme_endroit(&m, 5, 300.0);
+    let mut rng = XorShift32::seeded(89);
+    let t0 = Duration::from_secs(1);
+    commander_foule(&mut persos, &m, Commande::Imposer(tenue::Tenue::Grimper), t0, &mut rng);
+
+    let mut monte = [false; 5];
+    let mut file_vue = 0usize;
+    jouer_foule(&mut persos, &m, &entrees(true, 1.0), &mut rng, t0, 60 * 180, |p| {
+        // Jamais deux dans la zone de départ du mur.
+        let au_depart = p
+            .iter()
+            .filter(|c| matches!(c.attachment, Attachment::On { platform, offset, .. } if platform == mur && offset > longueur - hauteur))
+            .count();
+        assert!(au_depart <= 1, "{au_depart} au départ du mur en même temps");
+        file_vue = file_vue.max(p.iter().filter(|c| place::attend_le_mur(c).is_some()).count());
+        for (i, c) in p.iter().enumerate() {
+            if matches!(c.attachment, Attachment::On { face, .. } if face != Face::Top) {
+                monte[i] = true;
+            }
+        }
+    });
+    assert!(monte.iter().all(|&m| m), "tous ne sont pas montés : {monte:?}");
+    assert!(file_vue >= 2, "aucune file ne s'est formée ({file_vue})");
+}
+
+#[test]
+fn une_file_bloquee_abandonne_apres_deux_minutes() {
+    // Un personnage figé au bas du mur (« Rester accroché ») bloque la
+    // zone de départ. Le second, qui veut grimper SANS tenue, attend… puis
+    // renonce après 120 s d'attente — pas avant.
+    let m = monde();
+    let longueur = longueur_mur_gauche(&m);
+    let mut bloqueur = perso_au_mur(&m, tenue::Tenue::ResterAccroche);
+    if let Attachment::On { platform, face, .. } = bloqueur.attachment {
+        bloqueur.attachment = Attachment::On { platform, face, offset: longueur };
+    }
+    let mut grimpeur = perso(&m);
+    let t0 = Duration::from_secs(1);
+    grimpeur.intention = Some(intention::ActiveIntention::grimper_sur_ordre(t0));
+    let mut persos = vec![bloqueur, grimpeur];
+    let mut rng = XorShift32::seeded(97);
+
+    let t = jouer_foule(&mut persos, &m, &entrees(true, 1.0), &mut rng, t0, 60 * 100, |_| {});
+    assert!(place::attend_le_mur(&persos[1]).is_some(), "il devrait encore attendre à 100 s");
+    // Entre 100 et 140 s, il RENONCE à un moment. On ne teste pas qu'il
+    // n'attend plus à 140 s : après avoir renoncé, le tirage peut lui
+    // redonner l'envie de grimper, et le remettre dans la file.
+    let mut a_renonce = false;
+    jouer_foule(&mut persos, &m, &entrees(true, 1.0), &mut rng, t, 60 * 40, |p| {
+        a_renonce |= place::attend_le_mur(&p[1]).is_none();
+    });
+    assert!(a_renonce, "il n'a jamais renoncé en 140 s");
+}
+
+#[test]
+fn la_file_ne_joue_que_sur_le_sol_du_mur() {
+    // Monde à trois écrans : depuis l'écran du milieu, il marche vers le
+    // mur d'un voisin. En route, il ne fait la file nulle part, même si ce
+    // mur est pris.
+    let m = trois_ecrans();
+    let mut ch = perso(&m);
+    let milieu = m.platforms().iter().find(|p| p.has_face(Face::Top) && p.rect.x == 1920.0).expect("le sol du milieu");
+    ch.attachment = Attachment::On { platform: milieu.id, face: Face::Top, offset: 900.0 };
+    let t0 = Duration::from_secs(1);
+    ch.intention = Some(intention::ActiveIntention::grimper_sur_ordre(t0));
+    // Tous les murs « pris » : un occupant fictif dans la zone de départ de
+    // chacun.
+    let autres: Vec<place::Occupant> = m
+        .platforms()
+        .iter()
+        .filter(|p| p.has_face(Face::Left) || p.has_face(Face::Right))
+        .enumerate()
+        .map(|(i, p)| {
+            let face = p.faces[0];
+            place::Occupant { acteur: 100 + i as u32, platform: p.id, face, offset: p.rect.face_length(face), demi_largeur: 45.0, arrete_depuis: None, attend_le_mur: None, vise_le_mur: None }
+        })
+        .collect();
+    let v = place::Voisinage { moi: 0, autres: &autres };
+    let (table, reglages) = (desire::TableEnvies::defaut(), reglages_defaut());
+    let mut rng = XorShift32::seeded(101);
+    let mut t = t0;
+    // 3 s : il est encore sur le sol du milieu, loin de tout mur.
+    for _ in 0..180 {
+        t += Duration::from_secs_f32(DT);
+        pas_parmi(&mut ch, &m, &entrees(true, 1.0), &table, &reglages, t, DT, &mut rng, &v);
+        if matches!(ch.attachment, Attachment::On { platform, .. } if platform == milieu.id) {
+            assert!(place::attend_le_mur(&ch).is_none(), "il fait la file loin du mur");
+        }
+    }
+}
+
+#[test]
+fn tout_le_monde_reste_accroche_depuis_le_sol() {
+    use crate::menu_perso::Commande;
+    let m = monde();
+    let mut persos = foule_au_meme_endroit(&m, 3, 400.0);
+    let mut rng = XorShift32::seeded(103);
+    let t0 = Duration::from_secs(1);
+    commander_foule(&mut persos, &m, Commande::Imposer(tenue::Tenue::ResterAccroche), t0, &mut rng);
+    // 150 s pour monter tous, un par un.
+    let t = jouer_foule(&mut persos, &m, &entrees(true, 1.0), &mut rng, t0, 60 * 150, |_| {});
+    let figes: Vec<_> = persos.iter().map(|c| c.attachment).collect();
+    for c in &persos {
+        assert!(matches!(c.attachment, Attachment::On { face, .. } if face != Face::Top), "{:?}", c.attachment);
+        assert_eq!(c.tenue, Some(tenue::Tenue::ResterAccroche));
+    }
+    // Puis 10 s : plus personne ne bouge.
+    jouer_foule(&mut persos, &m, &entrees(true, 1.0), &mut rng, t, 600, |p| {
+        let maintenant: Vec<_> = p.iter().map(|c| c.attachment).collect();
+        assert_eq!(maintenant, figes);
+    });
+}
+
+/// Relecture finale : partis du même point avec un mur pris, les suivants
+/// s'empilaient à la même place de la file et tremblotaient sans fin
+/// (chacun voyait l'autre arrêté, visait la place d'à côté, puis revenait).
+/// La file doit se ranger — pas de chevauchement entre ceux qui attendent —
+/// et rester immobile.
+#[test]
+fn la_file_se_range_meme_partis_du_meme_point() {
+    let m = monde();
+    let longueur = longueur_mur_gauche(&m);
+    let mut bloqueur = perso_au_mur(&m, tenue::Tenue::ResterAccroche);
+    if let Attachment::On { platform, face, .. } = bloqueur.attachment {
+        bloqueur.attachment = Attachment::On { platform, face, offset: longueur };
+    }
+    let t0 = Duration::from_secs(1);
+    let mut persos = vec![bloqueur];
+    for _ in 0..3 {
+        let mut ch = foule_au_meme_endroit(&m, 1, 300.0).remove(0);
+        ch.intention = Some(intention::ActiveIntention::grimper_sur_ordre(t0));
+        persos.push(ch);
+    }
+    let mut rng = XorShift32::seeded(107);
+    // 30 s pour arriver et se ranger.
+    let t = jouer_foule(&mut persos, &m, &entrees(true, 1.0), &mut rng, t0, 60 * 30, |_| {});
+    let (demi, _) = place::corps(&persos[1], 1.0);
+    let offset = |c: &Character| match c.attachment {
+        Attachment::On { offset, .. } => offset,
+        _ => f32::NAN,
+    };
+    for i in 1..4 {
+        for j in (i + 1)..4 {
+            let d = (offset(&persos[i]) - offset(&persos[j])).abs();
+            assert!(d >= 2.0 * demi - 1.0, "{i} et {j} empilés dans la file : écart {d}");
+        }
+    }
+    // Puis 5 s : plus personne ne bouge dans la file.
+    let avant: Vec<_> = persos.iter().map(|c| (c.attachment, c.facing)).collect();
+    jouer_foule(&mut persos, &m, &entrees(true, 1.0), &mut rng, t, 300, |p| {
+        let maintenant: Vec<_> = p.iter().map(|c| (c.attachment, c.facing)).collect();
+        assert_eq!(maintenant, avant, "la file tremblote");
+    });
+}

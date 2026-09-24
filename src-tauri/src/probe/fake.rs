@@ -61,6 +61,7 @@ impl FakeProbe {
         Self::new(vec![ScreenInfo {
             id: 1,
             work_area: Rect::new(0.0, 0.0, 1920.0, 1032.0),
+            bounds: Rect::new(0.0, 0.0, 1920.0, 1032.0),
             scale: 1.0,
         }])
     }
@@ -72,11 +73,13 @@ impl FakeProbe {
             ScreenInfo {
                 id: 1,
                 work_area: Rect::new(0.0, 0.0, 1920.0, 1032.0),
+                bounds: Rect::new(0.0, 0.0, 1920.0, 1032.0),
                 scale: 1.0,
             },
             ScreenInfo {
                 id: 2,
                 work_area: Rect::new(1920.0, 0.0, 1920.0, 1032.0),
+                bounds: Rect::new(1920.0, 0.0, 1920.0, 1032.0),
                 scale: 1.0,
             },
         ])
@@ -95,11 +98,13 @@ impl FakeProbe {
             ScreenInfo {
                 id: 1,
                 work_area: Rect::new(0.0, 0.0, 1920.0, 1032.0),
+                bounds: Rect::new(0.0, 0.0, 1920.0, 1032.0),
                 scale: 1.0,
             },
             ScreenInfo {
                 id: 2,
                 work_area: Rect::new(-2560.0, 0.0, 2560.0, 1392.0),
+                bounds: Rect::new(-2560.0, 0.0, 2560.0, 1392.0),
                 scale: 2.0,
             },
         ])

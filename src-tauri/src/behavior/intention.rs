@@ -20,7 +20,7 @@
 use crate::character::attach::Attachment;
 use crate::character::manifest::{
     POSE_CLIMB_CEILING, POSE_CLIMB_WALL, POSE_GRAB_CEILING, POSE_GRAB_WALL, POSE_RUN, POSE_SIT,
-    POSE_SIT_DANGLE, POSE_SLEEP, POSE_SPIN_HEAD, POSE_STAND, POSE_WAKE, POSE_WALK,
+    POSE_SIT_DANGLE, POSE_SLEEP, POSE_SPIN_HEAD, POSE_SPRAWL, POSE_STAND, POSE_WAKE, POSE_WALK,
 };
 use crate::config::Reglages;
 use crate::character::Character;
@@ -28,7 +28,15 @@ use crate::character::Facing;
 use crate::geom::{Face, Point};
 use crate::rng::Rng;
 use crate::world::{PlatformId, World};
+use super::tenue::Tenue;
 use std::time::Duration;
+
+/// L'attente maximale dans la file d'un mur (spec « ne pas se superposer »
+/// §4). L'attente ne compte pas dans le délai d'abandon — sinon le dixième de
+/// la file renoncerait avant son tour —, mais une file bloquée pour de bon
+/// (un personnage qui ne monte plus) doit finir par renoncer : la navigation
+/// a le droit d'échouer (décision n° 4).
+const ATTENTE_MAX_FILE: Duration = Duration::from_secs(120);
 
 /// Le délai au bout duquel **toute** intention échoue (spec §7.3).
 ///
@@ -229,6 +237,23 @@ pub enum PhaseRepos {
     /// sens du signal — si le réveil était une phase `Endormi`, il serait
     /// coupé à la première image et l'on ne verrait rien.
     Selevant,
+
+    /// Étalé par terre après une chute, puis il se relève (2026-09-23).
+    ///
+    /// **La jumelle exacte de `Selevant`**, à la pose près : `sprawl` au lieu
+    /// de `sleep`, puis la même animation `wake`. Posée de l'extérieur, par
+    /// le réflexe d'atterrissage (`reflex.rs`), via `ActiveIntention::etale`
+    /// — jamais tirée.
+    ///
+    /// **Une phase de repos et non un réflexe qui s'allonge** : la durée est
+    /// tirée au sort dans `dureeAuSol`, et seule la couche 2 a l'aléatoire et
+    /// les réglages sous la main. Le réflexe se contente de la poser, comme
+    /// il pose déjà `accroche` après un lancer contre un mur.
+    ///
+    /// Ininterruptible par l'utilisateur qui revient, pour la même raison que
+    /// `Selevant` : l'interruption ne vise que `Endormi`. Attrapable en
+    /// revanche, puisque le réflexe « porté » passe avant toute intention.
+    Etale,
 }
 
 /// Où en est une escalade.
@@ -247,12 +272,23 @@ pub enum PhaseGrimpe {
     /// `ActiveIntention::nouvelle` reste **sans `World` ni `Rng`** — c'est
     /// déjà le parti pris des autres intentions, dont l'état initial est
     /// délibérément périmé pour que la première image décide.
-    Choisir,
+    ///
+    /// `presse` : vrai quand l'escalade a été ORDONNÉE (menu du personnage ou
+    /// « Tout le monde grimpe au mur ») — il court alors jusqu'au mur au lieu d'y
+    /// marcher. Porté par la phase et non par l'intention, parce que seule
+    /// `Rejoindre` s'en sert : le mettre sur `EtatIntention::Grimpe` le
+    /// ferait recopier par chacune des autres phases.
+    Choisir { presse: bool },
 
     /// Marcher vers le mur retenu. On mémorise **son identité**, jamais sa
     /// position : le monde est reconstruit à 8 Hz, et une position serait
     /// périmée (décision n° 1).
-    Rejoindre { mur: PlatformId },
+    ///
+    /// `attend_depuis` : `Some(t)` quand il fait la file au pied du mur (le
+    /// bas du mur est pris, spec « ne pas se superposer » §4), depuis
+    /// l'instant `t`. C'est ce qui le compte comme « à l'arrêt » — il occupe
+    /// sa place dans la file —, et ce qui borne l'attente à 120 s.
+    Rejoindre { mur: PlatformId, presse: bool, attend_depuis: Option<Duration> },
 
     /// Se déplacer le long de la paroi vers `cible`.
     ///
@@ -347,8 +383,11 @@ impl ActiveIntention {
             // état volontairement « pas encore décidé », que la première
             // image de `grimper` tranchera — c'est ce qui dispense cette
             // fonction d'un `World` et d'un `Rng`.
+            //
+            // `presse: false` : une escalade tirée au sort est une envie, pas
+            // un ordre — il marche jusqu'au mur. Voir `grimper_sur_ordre`.
             Intention::Grimper => EtatIntention::Grimpe {
-                phase: PhaseGrimpe::Choisir,
+                phase: PhaseGrimpe::Choisir { presse: false },
                 jusqu_a: Duration::ZERO,
             },
         };
@@ -406,6 +445,42 @@ impl ActiveIntention {
         }
     }
 
+    /// L'escalade ORDONNÉE : la même que `nouvelle(Grimper)`, sauf qu'il
+    /// court jusqu'au mur.
+    ///
+    /// Posée par `behavior::pas` pour toute commande `Grimper` — elle vient
+    /// toujours d'un clic, sur ce personnage ou sur « Tout le monde grimpe au mur ».
+    /// La différence est purement visuelle, mais c'est elle qui donne
+    /// l'impression qu'il a entendu (demande de l'auteur, 2026-09-23). Le
+    /// tirage aléatoire, lui, garde `nouvelle` : une envie ne presse pas.
+    pub fn grimper_sur_ordre(maintenant: Duration) -> Self {
+        ActiveIntention {
+            kind: Intention::Grimper,
+            depuis: maintenant,
+            etat: EtatIntention::Grimpe {
+                phase: PhaseGrimpe::Choisir { presse: true },
+                jusqu_a: Duration::ZERO,
+            },
+        }
+    }
+
+    /// L'intention « étalé au sol », posée par le réflexe d'atterrissage à la
+    /// fin de la pose `land` (2026-09-23).
+    ///
+    /// Même motif que `reveil` : `jusqu_a` à zéro, donc la première image de
+    /// `se_reposer` tirera la durée dans `dureeAuSol`. C'est ce qui permet à
+    /// `reflex.rs` de la construire sans générateur ni réglages.
+    pub fn etale(maintenant: Duration) -> Self {
+        ActiveIntention {
+            kind: Intention::SeReposer,
+            depuis: maintenant,
+            etat: EtatIntention::Repos {
+                phase: PhaseRepos::Etale,
+                jusqu_a: Duration::ZERO,
+            },
+        }
+    }
+
     /// L'intention posée par « Redescendre » au menu du personnage.
     ///
     /// Même motif que `accroche` : l'état est posé de l'EXTÉRIEUR (depuis
@@ -448,6 +523,10 @@ pub enum Issue {
 /// descend jusqu'ici, et non directement dans `se_reposer` depuis
 /// `behavior::pas`, pour que les trois intentions gardent la même signature :
 /// c'est `poursuivre` qui aiguille, pas l'appelant.
+/// `poursuivre_parmi` pour un personnage seul au monde. Ne sert plus qu'aux
+/// tests (`pas` appelle `pas_parmi`, qui appelle `poursuivre_parmi`) — d'où
+/// le `allow` hors test.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn poursuivre(
     ch: &mut Character,
     world: &World,
@@ -456,6 +535,23 @@ pub fn poursuivre(
     maintenant: Duration,
     dt: f32,
     rng: &mut dyn Rng,
+) -> Issue {
+    poursuivre_parmi(ch, world, e, reglages, maintenant, dt, rng, &super::place::Voisinage::seul())
+}
+
+/// Fait avancer l'intention en cours, avec les places des autres
+/// (`voisins`, spec « ne pas se superposer » — seule l'escalade s'en sert,
+/// pour la file au pied du mur).
+#[allow(clippy::too_many_arguments)]
+pub fn poursuivre_parmi(
+    ch: &mut Character,
+    world: &World,
+    e: &super::Entrees,
+    reglages: &Reglages,
+    maintenant: Duration,
+    dt: f32,
+    rng: &mut dyn Rng,
+    voisins: &super::place::Voisinage,
 ) -> Issue {
     // `let Some(...) else` : pas d'intention, rien à poursuivre.
     let Some(mut ai) = ch.intention else {
@@ -473,7 +569,13 @@ pub fn poursuivre(
     // cette vague de relecture corrige — la même règle vivant à deux
     // endroits, avec un risque qu'un futur point de sortie (une cinquième
     // intention, une nouvelle phase) n'en voie qu'un des deux.
-    let issue = if maintenant.saturating_sub(ai.depuis) > delai_abandon(ai.kind, reglages) {
+    // Une tenue AU MUR n'a pas de délai d'abandon : c'est un ordre de
+    // l'utilisateur, que rien n'interrompt (spec §2.3). Au sol, le délai
+    // reste — c'est lui qui relance la flânerie toutes les 20 s.
+    let exempte = super::tenue::sert_une_tenue_au_mur(ch);
+    let issue = if !exempte
+        && maintenant.saturating_sub(ai.depuis) > delai_abandon(ai.kind, reglages)
+    {
         ch.intention = None;
         Issue::Echouee
     } else {
@@ -510,7 +612,7 @@ pub fn poursuivre(
             }
 
             Intention::Grimper => {
-                let issue = grimper(ch, world, reglages, &mut ai, maintenant, dt, rng);
+                let issue = grimper(ch, world, e, reglages, &mut ai, maintenant, dt, rng, voisins);
                 if ch.intention.is_some() {
                     ch.intention = Some(ai);
                 }
@@ -645,14 +747,17 @@ fn flaner(
 /// exécute qu'une, et écrit la suivante dans `ai.etat`. C'est ce qui rend la
 /// fonction lisible sans boucle interne, au prix d'une image de transition
 /// que personne ne voit à 60 Hz.
+#[allow(clippy::too_many_arguments)]
 fn grimper(
     ch: &mut Character,
     world: &World,
+    e: &super::Entrees,
     reglages: &Reglages,
     ai: &mut ActiveIntention,
     maintenant: Duration,
     dt: f32,
     rng: &mut dyn Rng,
+    voisins: &super::place::Voisinage,
 ) -> Issue {
     // Même motif que `flaner` : on n'extrait l'état que sous la bonne
     // variante, et une incohérence de construction se solde par un échec
@@ -668,7 +773,7 @@ fn grimper(
 
     match phase {
         // ── Choisir le mur — ou reprendre l'escalade en cours ───────────
-        PhaseGrimpe::Choisir => {
+        PhaseGrimpe::Choisir { presse } => {
             // `let … else` : s'il n'est pas posé quelque part, il n'y a pas
             // d'écran de référence. Les réflexes s'occupent de lui.
             let Attachment::On { platform, face, .. } = ch.attachment else {
@@ -714,7 +819,7 @@ fn grimper(
                         return Issue::Echouee;
                     };
 
-                    phase = PhaseGrimpe::Rejoindre { mur };
+                    phase = PhaseGrimpe::Rejoindre { mur, presse, attend_depuis: None };
                 }
 
                 Face::Left | Face::Right => {
@@ -776,7 +881,7 @@ fn grimper(
         }
 
         // ── Marcher jusqu'au pied du mur ────────────────────────────────
-        PhaseGrimpe::Rejoindre { mur } => {
+        PhaseGrimpe::Rejoindre { mur, presse, attend_depuis } => {
             let Some(plat_mur) = world.get(mur) else {
                 // Écran débranché en cours de route.
                 ch.intention = None;
@@ -798,15 +903,83 @@ fn grimper(
                 return Issue::Echouee;
             };
 
-            // Il regarde le mur, et il marche vers lui.
-            ch.facing = if x_mur < pos.x {
-                Facing::Left
-            } else {
-                Facing::Right
-            };
-            ch.set_pose(POSE_WALK, maintenant);
+            // ── La file au pied du mur (spec « ne pas se superposer » §4) ─
+            //
+            // Seulement sur le sol de CE mur : en route depuis un autre
+            // écran, il marche sans regarder la file.
+            if let (Some((sol, pied)), Attachment::On { platform, face: Face::Top, offset }) =
+                (sol_au_pied_du_mur(world, mur), ch.attachment)
+            {
+                if platform == sol {
+                    let (demi, hauteur) = super::place::corps(ch, e.echelle_affichage);
+                    let longueur_mur = plat_mur.rect.face_length(face_mur);
+                    let ecart = (offset - pied).abs();
+                    let a_mon_tour = super::place::bas_du_mur_libre(voisins, mur, longueur_mur, hauteur)
+                        && super::place::premier_de_la_file(voisins, mur, pied, ecart);
 
-            let pas = reglages.vitesse_marche * dt;
+                    if !a_mon_tour {
+                        // Sa place dans la file : la place libre la plus
+                        // proche du pied du mur, derrière ceux qui sont
+                        // devant lui (`place_dans_la_file`). Visée à chaque
+                        // image, c'est ce qui fait AVANCER la file quand le
+                        // premier part.
+                        let longueur_sol = world.get(sol).map(|p| p.rect.face_length(Face::Top)).unwrap_or(0.0);
+                        let place = super::place::place_dans_la_file(voisins, mur, sol, pied, demi, longueur_sol, ecart).unwrap_or(offset);
+                        let arrive = marcher_vers(ch, place, reglages, maintenant, dt);
+                        let attend_depuis = if arrive {
+                            // Arrivé à sa place : il attend, face au mur.
+                            if let Some(f) = Facing::face_a_la_paroi(face_mur) {
+                                ch.facing = f;
+                            }
+                            ch.set_pose(POSE_STAND, maintenant);
+                            let depuis = attend_depuis.unwrap_or(maintenant);
+                            if maintenant.saturating_sub(depuis) > ATTENTE_MAX_FILE {
+                                // File bloquée pour de bon : il renonce
+                                // (décision n° 4, la navigation peut échouer).
+                                ch.intention = None;
+                                return Issue::Echouee;
+                            }
+                            // L'attente ne compte pas dans le délai
+                            // d'abandon : on recule son début d'autant.
+                            ai.depuis += Duration::from_secs_f32(dt);
+                            Some(depuis)
+                        } else {
+                            None
+                        };
+                        ai.etat = EtatIntention::Grimpe {
+                            phase: PhaseGrimpe::Rejoindre { mur, presse, attend_depuis },
+                            jusqu_a,
+                        };
+                        return Issue::EnCours;
+                    }
+                }
+            }
+
+            // Il regarde le mur, et il marche vers lui.
+            //
+            // Déduit de la FACE du mur, pas des positions : `x_mur < pos.x`
+            // était faux à égalité — arrivé au bord exact de l'écran en
+            // flânant, il se tournait dos au mur (voir `face_a_la_paroi`).
+            // Le mur est toujours du côté où il le regarde, puisqu'il est à
+            // l'intérieur de l'écran : marcher « devant soi » y mène.
+            if let Some(f) = Facing::face_a_la_paroi(face_mur) {
+                ch.facing = f;
+            }
+            // Sur ordre, il court — mais seulement s'il en a la pose : courir
+            // en pose de marche aurait l'air d'un glissement, et la couverture
+            // partielle (spec §8.6) veut qu'une pose absente retire l'option,
+            // pas qu'elle la déguise. Sans `run`, l'ordre est obéi à pied.
+            //
+            // Le délai d'abandon ne bouge pas : courir ne fait qu'arriver
+            // plus tôt, jamais plus tard.
+            let (pose, vitesse) = if presse && ch.manifest.has_pose(POSE_RUN) {
+                (POSE_RUN, reglages.vitesse_course)
+            } else {
+                (POSE_WALK, reglages.vitesse_marche)
+            };
+            ch.set_pose(pose, maintenant);
+
+            let pas = vitesse * dt;
 
             if (x_mur - pos.x).abs() <= pas {
                 // Arrivé : on s'accroche au BAS du mur. L'offset d'une face
@@ -869,7 +1042,9 @@ fn grimper(
                 // Cible atteinte. Si c'était le bas du mur, l'escalade est
                 // finie et il repasse sur le sol.
                 let longueur = plat.rect.face_length(face);
-                if cible >= longueur - 1.0 {
+                // `Grimper au mur` tenu ne repasse JAMAIS au sol de lui-même
+                // (spec §2.4) : arrivé en bas, il s'accroche comme ailleurs.
+                if cible >= longueur - 1.0 && ch.tenue != Some(Tenue::Grimper) {
                     match sol_au_pied_du_mur(world, platform) {
                         Some((sol, offset_sol)) => {
                             ch.attachment = Attachment::On {
@@ -1029,7 +1204,9 @@ fn grimper(
                 return Issue::EnCours;
             }
 
-            if maintenant < jusqu_a {
+            // « Rester accroché » tenu : la pause ne finit jamais. Il reste
+            // là jusqu'à ce qu'on le décoche, l'attrape, ou le fasse lâcher.
+            if maintenant < jusqu_a || ch.tenue == Some(Tenue::ResterAccroche) {
                 ai.etat = EtatIntention::Grimpe { phase, jusqu_a };
                 return Issue::EnCours;
             }
@@ -1051,12 +1228,19 @@ fn grimper(
             // Décision n° 5 : les deux poids viennent de `config.json`, on
             // règle s'il est casse-cou ou prudent sans recompiler.
             let e = &reglages.escalade;
-            let lache = match rng.weighted(&[e.poids_lacher, e.poids_redescendre]) {
-                Some(0) => true,
-                // `Some(1)` redescend, et `None` aussi — il n'arrive que si
-                // les deux poids sont nuls, auquel cas redescendre est le
-                // repli le moins surprenant.
-                _ => false,
+            // « Grimper au mur » tenu ne se lâche jamais de lui-même : seul
+            // « Se lâcher » au menu le fait tomber. `if` AVANT le tirage :
+            // on ne consomme pas l'aléatoire pour une issue interdite.
+            let lache = if ch.tenue == Some(Tenue::Grimper) {
+                false
+            } else {
+                match rng.weighted(&[e.poids_lacher, e.poids_redescendre]) {
+                    Some(0) => true,
+                    // `Some(1)` redescend, et `None` aussi — il n'arrive que si
+                    // les deux poids sont nuls, auquel cas redescendre est le
+                    // repli le moins surprenant.
+                    _ => false,
+                }
             };
 
             if lache {
@@ -1125,8 +1309,15 @@ fn grimper(
                     cible: rng.range(0.0, plat.rect.face_length(face)),
                 }
             } else {
+                // Tenu : un point au hasard de la paroi, en haut comme en
+                // bas — c'est ce qui le fait « vivre » sur le mur. Sinon,
+                // le bas, d'où il repasse au sol.
                 PhaseGrimpe::Paroi {
-                    cible: plat.rect.face_length(face),
+                    cible: if ch.tenue == Some(Tenue::Grimper) {
+                        rng.range(0.0, plat.rect.face_length(face))
+                    } else {
+                        plat.rect.face_length(face)
+                    },
                 }
             };
         }
@@ -1136,25 +1327,48 @@ fn grimper(
     Issue::EnCours
 }
 
-/// Le mur de l'écran du personnage le plus proche de lui.
+/// Le mur le plus proche du personnage : sur SON écran d'abord, sinon sur
+/// n'importe quel écran.
 ///
-/// « De son écran » : c'est à cela que sert `PlatformId::meme_ecran`. Sans ce
-/// filtre, un personnage sur l'écran de gauche pourrait viser le mur droit de
-/// l'écran de droite, à 3 000 px — une marche de 60 s pour rien.
+/// « De son écran » d'abord : c'est à cela que sert `PlatformId::meme_ecran`.
+/// Sans ce filtre, un personnage sur l'écran de gauche pourrait viser le mur
+/// droit de l'écran de droite, à 3 000 px — une marche de 60 s pour rien.
 ///
-/// Rend `None` quand cet écran-là n'a aucun mur : c'est le cas de l'écran du
-/// milieu d'une rangée de trois, dont les deux bords sont recouverts par ses
-/// voisins (design §2.3).
+/// « Sinon n'importe lequel » (2026-09-24, spec « menu sur mesure » §6,
+/// défaut n° 3) : l'écran du milieu d'une rangée de trois n'a AUCUN mur, ses
+/// deux bords étant recouverts par ses voisins (design §2.3). Il y échouait
+/// toujours à grimper. Il vise maintenant le mur d'un voisin, et y marche
+/// d'un écran à l'autre par les sols voisins (`avancer`). Si le chemin est
+/// coupé (écrans décalés en hauteur), il échouera au délai d'abandon —
+/// la navigation est autorisée à échouer (décision n° 4).
+///
+/// Rend `None` seulement quand il n'existe aucun mur nulle part.
 fn mur_le_plus_proche(world: &World, depuis: PlatformId, ch: &Character) -> Option<PlatformId> {
     // `?` : pas de position connue (plateforme disparue), pas de mur à viser.
     let pos = position_actuelle(ch, world)?;
 
+    // `or_else` : la seconde recherche n'est faite que si la première n'a
+    // rien trouvé — l'équivalent d'un `match` dont la branche `None`
+    // relancerait la recherche sans le filtre d'écran.
+    mur_le_plus_proche_parmi(world, pos, |id| id.meme_ecran(depuis))
+        .or_else(|| mur_le_plus_proche_parmi(world, pos, |_| true))
+}
+
+/// Le mur le plus proche de `pos` parmi les plateformes que `garder` accepte.
+///
+/// `impl Fn(PlatformId) -> bool` : n'importe quelle fonction ou fermeture qui
+/// prend un identifiant et rend un booléen — ici « même écran » ou « tout ».
+fn mur_le_plus_proche_parmi(
+    world: &World,
+    pos: Point,
+    garder: impl Fn(PlatformId) -> bool,
+) -> Option<PlatformId> {
     // (identité, distance) — la distance ne sert qu'à comparer, et on la
     // laisse tomber à la fin. Même motif que `World::nearest_floor`.
     let mut meilleur: Option<(PlatformId, f32)> = None;
 
     for plat in world.platforms() {
-        if !plat.id.meme_ecran(depuis) {
+        if !garder(plat.id) {
             continue;
         }
         // Un mur, c'est-à-dire une plateforme dont l'unique face est
@@ -1311,6 +1525,36 @@ fn avancer(ch: &mut Character, world: &World, pas: f32) {
     };
 }
 
+/// Un pas de marche vers `cible`, sur la face où il se tient, sans en
+/// sortir. Rend `true` s'il y est.
+///
+/// Pour se décaler d'une place (`behavior::pas_parmi`) ou avancer dans la
+/// file d'un mur (`grimper`, phase `Rejoindre`) : de courtes distances sur
+/// le même sol, donc ni bord, ni face voisine à traiter — contrairement à
+/// `avancer`, qui sert à parcourir le monde.
+pub(crate) fn marcher_vers(
+    ch: &mut Character,
+    cible: f32,
+    reglages: &Reglages,
+    maintenant: Duration,
+    dt: f32,
+) -> bool {
+    let Attachment::On { platform, face, offset } = ch.attachment else {
+        return false;
+    };
+    let ecart = cible - offset;
+    let pas = reglages.vitesse_marche * dt;
+    if ecart.abs() <= pas {
+        ch.attachment = Attachment::On { platform, face, offset: cible };
+        return true;
+    }
+    // `signum` : +1 vers la droite, −1 vers la gauche. Il regarde où il va.
+    ch.facing = if ecart > 0.0 { Facing::Right } else { Facing::Left };
+    ch.set_pose(POSE_WALK, maintenant);
+    ch.attachment = Attachment::On { platform, face, offset: offset + pas * ecart.signum() };
+    false
+}
+
 /// Cherche une plateforme adjacente à celle de `depuis`, exposant la MÊME
 /// face, du côté demandé et à peu près à la même hauteur.
 ///
@@ -1442,7 +1686,11 @@ fn se_reposer(
     // position assise. Un pack sans `sit` ne doit pas être empêché de se
     // réveiller au déverrouillage — il n'a simplement pas le droit de
     // *choisir* de se reposer, ce qui est une autre question.
-    if phase != PhaseRepos::Selevant && !ch.manifest.has_pose(POSE_SIT) {
+    //
+    // Et sauf en phase `Etale`, pour la même raison : tomber n'est pas
+    // choisir de se reposer.
+    let exige_sit = phase != PhaseRepos::Selevant && phase != PhaseRepos::Etale;
+    if exige_sit && !ch.manifest.has_pose(POSE_SIT) {
         ch.intention = None;
         return Issue::Echouee;
     }
@@ -1552,6 +1800,15 @@ fn se_reposer(
                 let anim = duree_reveil(ch).as_secs_f32();
                 (2.5 + anim, 4.0 + anim)
             }
+
+            // Etale : `dureeAuSol` (déjà bornée par `Reglages::depuis`),
+            // plus l'animation pour se relever — même construction que
+            // `Selevant`, pour que `wake` se joue en entier.
+            PhaseRepos::Etale => {
+                let anim = duree_reveil(ch).as_secs_f32();
+                let [min, max] = reglages.duree_au_sol;
+                (min + anim, max + anim)
+            }
         };
         jusqu_a = maintenant + Duration::from_secs_f32(rng.range(min, max));
         ai.etat = EtatIntention::Repos { phase, jusqu_a };
@@ -1593,6 +1850,17 @@ fn se_reposer(
                 // Absente du pack : `set_pose` ne fait rien et il reste
                 // affalé jusqu'au bout. C'est la couverture partielle, et
                 // c'est pourquoi il n'y a pas de `has_pose` ici.
+                POSE_WAKE
+            }
+        }
+
+        // Même départage que `Selevant`, étalé au lieu d'endormi. Un pack
+        // sans `sprawl` n'arrive jamais ici : le réflexe ne pose cette phase
+        // que si la pose existe.
+        PhaseRepos::Etale => {
+            if jusqu_a.saturating_sub(maintenant) > duree_reveil(ch) {
+                POSE_SPRAWL
+            } else {
                 POSE_WAKE
             }
         }

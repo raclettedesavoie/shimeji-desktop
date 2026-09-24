@@ -372,6 +372,11 @@ pub struct Config {
     /// l'échelle du moniteur.
     pub echelle: f32,
 
+    /// La case « Petite taille » du tray : les personnages à ×0,8 partout
+    /// (`attach::facteur_de_taille`). Clé du fichier : `petiteTaille`.
+    /// Fausse par défaut — la taille normale est celle par défaut.
+    pub petite_taille: bool,
+
     /// Multiplie les vitesses de marche et de course.
     ///
     /// À 1, on est exactement aux valeurs de Shimeji-ee.
@@ -413,11 +418,26 @@ pub struct Config {
     /// Clé du fichier : `derniereVersionSignalee`.
     pub derniere_version_signalee: String,
 
+    /// La version de l'application au dernier lancement. Si elle diffère de
+    /// la version courante, c'est qu'une mise à jour vient de s'installer :
+    /// un toast le dit, une fois (demande de l'auteur, 2026-09-24).
+    ///
+    /// Tenue par le build RELEASE seulement : `cargo run` partage ce même
+    /// fichier, et sa version (celle de la branche) diffère de celle
+    /// installée — il ferait croire à une mise à jour à chaque alternance.
+    ///
+    /// Clé du fichier : `derniereVersionLancee`.
+    pub derniere_version_lancee: String,
+
     pub envies: Envies,
     pub allures: Allures,
 
     /// Les réglages de l'escalade (étape 4a).
     pub escalade: Escalade,
+
+    /// Bornes `[min, max]` du temps passé étalé au sol après une chute, en
+    /// secondes. Clé du fichier : `dureeAuSol`.
+    pub duree_au_sol: [f32; 2],
 
     pub signaux: SignauxReglages,
 
@@ -440,14 +460,18 @@ impl Default for Config {
             // `blob` est le personnage de test, et le seul livré.
             personnages: vec!["blob".to_string()],
             echelle: 1.0,
+            petite_taille: false,
             vitesse: 1.0,
             premiere_configuration_faite: false,
             ecran_au_demarrage: EcranDemarrage::Personnages,
             // Vide : aucune version n'a encore été signalée.
             derniere_version_signalee: String::new(),
+            // Vide : jamais lancée, ou lancée avant que la clé existe.
+            derniere_version_lancee: String::new(),
             envies: Envies::default(),
             allures: Allures::default(),
             escalade: Escalade::default(),
+            duree_au_sol: crate::character::physics::DUREE_AU_SOL,
             signaux: SignauxReglages::default(),
             // Vide par défaut : aucun modificateur d'application n'est
             // imposé. Le fichier d'exemple en montre deux, commentés par
@@ -481,6 +505,10 @@ pub struct Reglages {
     pub allures: Allures,
     pub escalade: Escalade,
 
+    /// Le temps passé étalé au sol après une chute, déjà borné — voir
+    /// `borner_duree_au_sol`.
+    pub duree_au_sol: [f32; 2],
+
     /// À partir de quel biais de repos il s'affale au lieu de rester assis
     /// (Tâche 4, `behavior::intention::se_reposer`).
     pub seuil_sommeil: f32,
@@ -509,8 +537,32 @@ impl Reglages {
             vitesse_escalade: VITESSE_ESCALADE * facteur,
             allures: config.allures,
             escalade: config.escalade,
+            duree_au_sol: borner_duree_au_sol(config.duree_au_sol),
             seuil_sommeil: config.signaux.seuil_sommeil,
         }
+    }
+}
+
+/// Plafond du temps passé au sol, en secondes.
+///
+/// Sous le délai d'abandon commun (20 s, décision n° 4), avec la marge de
+/// l'animation de réveil : au-delà, l'intention expirerait au lieu de finir,
+/// et il se relèverait sans jouer `wake`.
+const DUREE_AU_SOL_MAX: f32 = 15.0;
+
+/// Ramène `dureeAuSol` dans une plage sûre.
+///
+/// Même raison que `SignauxReglages::borner` : la valeur vient d'un fichier
+/// édité à la main, et `Duration::from_secs_f32` **panique** sur un négatif.
+/// Des bornes inversées (`[5, 2]`) sont remises dans l'ordre plutôt que
+/// refusées — l'intention est claire, et c'est le repli le moins surprenant.
+fn borner_duree_au_sol(d: [f32; 2]) -> [f32; 2] {
+    let a = d[0].clamp(0.0, DUREE_AU_SOL_MAX);
+    let b = d[1].clamp(0.0, DUREE_AU_SOL_MAX);
+    if a <= b {
+        [a, b]
+    } else {
+        [b, a]
     }
 }
 
@@ -792,10 +844,6 @@ pub fn definir_personnages(noms: &[String]) -> Result<(), String> {
     ecrire_personnages(&chemin_d_ecriture()?, noms)
 }
 
-/// Enregistre le résultat de l'assistant de première configuration.
-///
-/// Les deux clés d'un seul coup : elles sont écrites au même instant, et un
-/// seul appel veut dire une seule relecture-réécriture du fichier.
 /// Retient qu'on a déjà signalé cette version par un toast.
 ///
 /// Écrite tout de suite après l'affichage, et non avant : si l'écriture
@@ -808,6 +856,28 @@ pub fn definir_version_signalee(version: &str) -> Result<(), String> {
     )
 }
 
+/// Retient la case « Petite taille » du tray, pour le prochain lancement.
+pub fn definir_petite_taille(petite: bool) -> Result<(), String> {
+    ecrire_cles(
+        &chemin_d_ecriture()?,
+        &[("petiteTaille", serde_json::json!(petite))],
+    )
+}
+
+/// Retient la version de ce lancement (voir `derniere_version_lancee`).
+/// Appelée en release seulement — d'où le `allow` en debug.
+#[cfg_attr(debug_assertions, allow(dead_code))]
+pub fn definir_version_lancee(version: &str) -> Result<(), String> {
+    ecrire_cles(
+        &chemin_d_ecriture()?,
+        &[("derniereVersionLancee", serde_json::json!(version))],
+    )
+}
+
+/// Enregistre le résultat de l'assistant de première configuration.
+///
+/// Les deux clés d'un seul coup : elles sont écrites au même instant, et un
+/// seul appel veut dire une seule relecture-réécriture du fichier.
 pub fn definir_onboarding(fait: bool, ecran: EcranDemarrage) -> Result<(), String> {
     ecrire_cles(
         &chemin_d_ecriture()?,

@@ -33,7 +33,7 @@ use tauri::{AppHandle, Manager};
 // Les identifiants vivent dans `actions.rs` avec ceux du menu du personnage :
 // c'est là qu'ils sont lus, et les tenir à deux endroits inviterait à en
 // ajouter un sans son cas de traitement.
-use crate::actions::{ID_AFFICHER, ID_CATALOGUE, ID_DEMARRAGE, ID_QUITTER};
+use crate::actions::{ID_AFFICHER, ID_CATALOGUE, ID_DEMARRAGE, ID_PETITE_TAILLE, ID_QUITTER};
 
 /// Partagé entre le tray et les boucles : les personnages sont-ils visibles ?
 ///
@@ -127,6 +127,21 @@ pub fn installer(
     )
     .map_err(|e| format!("entrée « démarrage » : {e}"))?;
 
+    // « Petite taille » : la taille qu'ils ont sur l'écran du portable à
+    // 125 %. Décochée, c'est la taille normale — celle par défaut. L'état
+    // initial vient de `config.json`, rangé dans `Actions` par `main`.
+    let petite_taille = CheckMenuItem::with_id(
+        app,
+        ID_PETITE_TAILLE,
+        "Petite taille",
+        true,
+        actions
+            .petite_taille
+            .load(std::sync::atomic::Ordering::Relaxed),
+        None::<&str>,
+    )
+    .map_err(|e| format!("entrée « petite taille » : {e}"))?;
+
     let catalogue = MenuItem::with_id(
         app,
         ID_CATALOGUE,
@@ -151,7 +166,7 @@ pub fn installer(
     let maj = MenuItem::with_id(
         app,
         crate::actions::ID_MAJ,
-        "Vérifier les mises à jour…",
+        crate::maj::libelle(&crate::maj::EtatMaj::Repos),
         true,
         None::<&str>,
     )
@@ -163,21 +178,34 @@ pub fn installer(
     let quitter = MenuItem::with_id(app, ID_QUITTER, "Quitter", true, None::<&str>)
         .map_err(|e| format!("entrée « quitter » : {e}"))?;
 
-    // `&[&dyn IsMenuItem<R>]` : les entrées n'ont pas le même type concret
+    // `&dyn IsMenuItem<Wry>` : les entrées n'ont pas le même type concret
     // (`MenuItem`, `CheckMenuItem`, `PredefinedMenuItem`), donc on passe par
-    // des références de trait. C'est la raison du `&` devant chacune.
-    let menu = Menu::with_items(
+    // des références de trait. Un `Vec` plutôt qu'un tableau fixe : l'entrée
+    // de test ne s'y ajoute qu'en debug.
+    // `allow(unused_mut)` : en release, rien n'est ajouté entre les deux —
+    // le `mut` n'y sert qu'aux `push` de fin.
+    #[allow(unused_mut)]
+    let mut entrees: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> =
+        vec![&afficher, &petite_taille, &demarrage, &catalogue, &maj];
+
+    // « Tester une notification », en build debug SEULEMENT : `cargo run`
+    // l'a, l'installateur non (demande de l'auteur, 2026-09-24).
+    #[cfg(debug_assertions)]
+    let test_toast = MenuItem::with_id(
         app,
-        &[
-            &afficher,
-            &demarrage,
-            &catalogue,
-            &maj,
-            &separateur,
-            &quitter,
-        ],
+        crate::actions::ID_TEST_TOAST,
+        "Tester une notification (debug)",
+        true,
+        None::<&str>,
     )
-    .map_err(|e| format!("menu : {e}"))?;
+    .map_err(|e| format!("entrée « test toast » : {e}"))?;
+    #[cfg(debug_assertions)]
+    entrees.push(&test_toast);
+
+    entrees.push(&separateur);
+    entrees.push(&quitter);
+
+    let menu = Menu::with_items(app, &entrees).map_err(|e| format!("menu : {e}"))?;
 
     // ── Le gestionnaire d'événements — le SEUL du programme ─────────────
     //
@@ -190,6 +218,7 @@ pub fn installer(
     let cases = crate::actions::CasesTray {
         afficher: afficher.clone(),
         demarrage: demarrage.clone(),
+        petite_taille: petite_taille.clone(),
         maj: maj.clone(),
     };
 

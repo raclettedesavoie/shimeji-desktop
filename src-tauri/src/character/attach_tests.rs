@@ -86,12 +86,14 @@ fn deplacer_la_plateforme_deplace_le_personnage_sans_code() {
     let avant = World::from_screens(&[ScreenInfo {
         id: 42,
         work_area: Rect::new(0.0, 0.0, 1920.0, 1032.0),
+        bounds: Rect::new(0.0, 0.0, 1920.0, 1032.0),
         scale: 1.0,
     }]);
     let apres = World::from_screens(&[ScreenInfo {
         id: 42,
         // L'écran a « bougé » de 500 px vers la droite et 100 vers le bas.
         work_area: Rect::new(500.0, 100.0, 1920.0, 1032.0),
+        bounds: Rect::new(500.0, 100.0, 1920.0, 1032.0),
         scale: 1.0,
     }]);
 
@@ -119,11 +121,13 @@ fn redimensionner_la_plateforme_conserve_la_distance_au_bord() {
     let etroit = World::from_screens(&[ScreenInfo {
         id: 42,
         work_area: Rect::new(0.0, 0.0, 800.0, 1032.0),
+        bounds: Rect::new(0.0, 0.0, 800.0, 1032.0),
         scale: 1.0,
     }]);
     let large = World::from_screens(&[ScreenInfo {
         id: 42,
         work_area: Rect::new(0.0, 0.0, 1920.0, 1032.0),
+        bounds: Rect::new(0.0, 0.0, 1920.0, 1032.0),
         scale: 1.0,
     }]);
 
@@ -455,4 +459,13 @@ fn l_echelle_entiere_ne_touche_pas_au_reglage_de_l_auteur() {
     }"#;
     let m: Manifest = serde_json::from_str(json).unwrap();
     assert_eq!(window_size(&m, 1, 1.0), (64, 64));
+}
+
+/// « Petite taille » (tray, demande de l'auteur 2026-09-24) : la taille
+/// qu'a un personnage sur l'écran du portable à 125 %, où 128 px réels
+/// paraissent 1,25 fois plus petits — d'où ×0,8, soit 1 / 1,25.
+#[test]
+fn la_petite_taille_est_celle_de_l_ecran_a_125() {
+    assert_eq!(facteur_de_taille(false), 1.0);
+    assert!((facteur_de_taille(true) * 1.25 - 1.0).abs() < 1e-6);
 }

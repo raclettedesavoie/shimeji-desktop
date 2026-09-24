@@ -62,57 +62,22 @@ pub fn appliquer_styles_etendus(win: &WebviewWindow) -> Result<(), String> {
     Ok(())
 }
 
-/// Retire ou remet `WS_EX_NOACTIVATE`, le temps d'afficher un menu.
+/// Pose `WS_EX_TOOLWINDOW` seul : hors d'Alt+Tab, mais activable.
 ///
-/// # Pourquoi ce va-et-vient est nécessaire
-///
-/// `muda` affiche un menu contextuel en appelant `SetForegroundWindow(hwnd)`
-/// **puis** `TrackPopupMenu` (`muda-0.19.3`,
-/// `src/platform_impl/windows/mod.rs:1038`). Or `SetForegroundWindow` échoue
-/// sur une fenêtre `WS_EX_NOACTIVATE` — silencieusement, en rendant `FALSE`
-/// que muda n'examine pas.
-///
-/// Le menu s'affiche quand même, mais son propriétaire n'est pas au premier
-/// plan : c'est le piège Win32 classique du **menu qui ne se referme pas**
-/// quand on clique ailleurs. `TrackPopupMenu` ne reçoit jamais le message de
-/// perte d'activation qui le termine, et l'utilisateur se retrouve avec un
-/// menu collé à l'écran.
-///
-/// D'où : on autorise l'activation juste avant le menu, on la réinterdit
-/// juste après. La fenêtre reste non activable **tout le reste du temps** —
-/// c'est-à-dire pendant les glissers, qui sont la raison d'être du style
-/// (voir `appliquer_styles_etendus`). Attraper le personnage ne vole donc
-/// toujours pas le focus ; seul un menu que l'utilisateur a explicitement
-/// ouvert le prend, ce que fait n'importe quelle application.
-///
-/// ⚠️ **Toujours remettre le style**, y compris si l'affichage du menu
-/// échoue. L'appelant s'en charge ; l'oublier laisserait le personnage
-/// voleur de focus pour le reste de la session, et le diagnostic partirait
-/// chercher très loin de ce fichier.
-pub fn autoriser_activation(win: &WebviewWindow, autoriser: bool) -> Result<(), String> {
+/// Pour la fenêtre du menu, qui DOIT prendre le focus — c'est ce qui lui
+/// permet de se fermer au clic ailleurs. `appliquer_styles_etendus`, qui
+/// pose aussi `WS_EX_NOACTIVATE`, l'en empêcherait.
+pub fn appliquer_style_outil(win: &WebviewWindow) -> Result<(), String> {
     use windows::Win32::UI::WindowsAndMessaging::{
-        GetWindowLongPtrW, SetWindowLongPtrW, GWL_EXSTYLE, WS_EX_NOACTIVATE,
+        GetWindowLongPtrW, SetWindowLongPtrW, GWL_EXSTYLE, WS_EX_TOOLWINDOW,
     };
-
     let hwnd = win.hwnd().map_err(|e| format!("hwnd indisponible : {e}"))?;
-    let bit = WS_EX_NOACTIVATE.0 as isize;
-
+    // `|` : on AJOUTE le bit sans écraser ceux que Tauri a posés — même
+    // raisonnement que dans `appliquer_styles_etendus`.
     unsafe {
         let actuels = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-
-        // `& !bit` retire le bit, `| bit` le remet — et on ne touche qu'à
-        // celui-là : les autres styles (LAYERED, TOPMOST, TRANSPARENT,
-        // TOOLWINDOW) doivent survivre intacts, comme dans
-        // `appliquer_styles_etendus`.
-        let nouveaux = if autoriser {
-            actuels & !bit
-        } else {
-            actuels | bit
-        };
-
-        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, nouveaux);
+        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, actuels | WS_EX_TOOLWINDOW.0 as isize);
     }
-
     Ok(())
 }
 
@@ -121,8 +86,8 @@ pub fn autoriser_activation(win: &WebviewWindow, autoriser: bool) -> Result<(), 
 ///
 /// # Pourquoi c'est indispensable, et pas une politesse
 ///
-/// `autoriser_activation(true)` rend `SetForegroundWindow` **efficace** sur
-/// notre fenêtre — c'est tout son but. Conséquence immédiate : ouvrir le menu
+/// `prendre_le_premier_plan` met la fenêtre du menu au premier plan — c'est
+/// tout son but. Conséquence immédiate : ouvrir le menu
 /// prend le focus à l'éditeur, et Windows ne le rend à personne quand le menu
 /// se ferme. L'utilisateur se retrouve à taper dans le vide, sur un webview
 /// qui n'attend rien.
@@ -153,24 +118,20 @@ pub fn fenetre_au_premier_plan() -> Option<windows::Win32::Foundation::HWND> {
     }
 }
 
-/// Met **notre** fenêtre au premier plan, avant d'ouvrir le menu. Rend `true`
-/// si Windows a accepté.
+/// Met la fenêtre du menu au premier plan, une fois montrée. Rend `true` si
+/// Windows a accepté.
 ///
-/// # Pourquoi la refaire alors que `muda` l'appelle déjà
+/// # Pourquoi vérifier le résultat
 ///
-/// `muda` appelle bien `SetForegroundWindow(hwnd)` juste avant
-/// `TrackPopupMenu` (`muda-0.19.3`, `src/platform_impl/windows/mod.rs:1038`)
-/// — **mais il ne regarde pas son résultat**. Or cet appel est régulièrement
-/// refusé : Windows ne le concède qu'au processus qui a reçu le dernier
-/// événement d'entrée, et notre fenêtre — en couche, `WS_EX_TOOLWINDOW`,
-/// jamais activée de la session — n'est pas dans la position la plus
-/// favorable pour le demander.
+/// `SetForegroundWindow` est régulièrement refusé : Windows ne le concède
+/// qu'au processus qui a reçu le dernier événement d'entrée, et le nôtre ne
+/// voit le clic droit que par `GetCursorPos` — il ne reçoit aucun message.
 ///
-/// Et un refus ne se voit pas : le menu s'affiche quand même. C'est
-/// **exactement** le piège Win32 du menu qui ne se referme pas quand on
-/// clique ailleurs, décrit dans `autoriser_activation` — `TrackPopupMenu`
-/// termine sa boucle modale sur la perte d'activation de son propriétaire, et
-/// un propriétaire qui n'a jamais été activé n'en perd jamais.
+/// Et un refus ne se voit pas : le menu s'affiche quand même. C'est le piège
+/// du **menu qui ne se referme pas** quand on clique ailleurs — la fenêtre
+/// du menu se ferme sur `blur`, et une fenêtre qui n'a jamais eu le focus ne
+/// le perd jamais. Le filet de la boucle (`menu_fenetre::hors_du_menu`)
+/// couvre ce cas.
 ///
 /// # Le repli par `AttachThreadInput`
 ///
@@ -180,16 +141,16 @@ pub fn fenetre_au_premier_plan() -> Option<windows::Win32::Foundation::HWND> {
 /// partagent la notion de « qui a le focus », et `SetForegroundWindow`
 /// redevient autorisé.
 ///
-/// ⚠️ **C'est le thread PROPRIÉTAIRE de la fenêtre qu'on attache**, pas le
-/// nôtre : notre boucle 60 Hz n'a pas de fenêtre, donc pas de file d'entrée
-/// qui intéresse Windows. D'où `GetWindowThreadProcessId(hwnd)` plutôt que
+/// ⚠️ **C'est le thread PROPRIÉTAIRE de la fenêtre qu'on attache.** Pour la
+/// fenêtre du menu (`menu_fenetre`), c'est le thread principal de Tauri —
+/// mais le demander à la fenêtre reste juste quel que soit l'appelant. D'où `GetWindowThreadProcessId(hwnd)` plutôt que
 /// `GetCurrentThreadId()` — c'est l'erreur silencieuse classique de cette
 /// recette, et elle rendrait le repli inopérant sans le moindre message.
 ///
 /// L'attachement est **toujours défait**, y compris si `SetForegroundWindow`
 /// échoue encore : le laisser en place lierait durablement notre file
 /// d'entrée à celle d'une autre application.
-pub fn prendre_le_premier_plan(win: &WebviewWindow) -> Result<bool, String> {
+pub fn prendre_le_premier_plan(hwnd: windows::Win32::Foundation::HWND) -> bool {
     // `AttachThreadInput` vit dans `System::Threading` et non dans
     // `WindowsAndMessaging` comme les trois autres — c'est une fonction de
     // *thread*, pas de fenêtre. D'où la feature `Win32_System_Threading`
@@ -199,13 +160,11 @@ pub fn prendre_le_premier_plan(win: &WebviewWindow) -> Result<bool, String> {
         GetForegroundWindow, GetWindowThreadProcessId, SetForegroundWindow,
     };
 
-    let hwnd = win.hwnd().map_err(|e| format!("hwnd indisponible : {e}"))?;
-
     unsafe {
         // Le cas normal : Windows accepte, il n'y a rien de plus à faire.
         // `.as_bool()` : le binding rend un `BOOL`, pas un `bool` de Rust.
         if SetForegroundWindow(hwnd).as_bool() {
-            return Ok(true);
+            return true;
         }
 
         // ── Le repli ────────────────────────────────────────────────────
@@ -214,7 +173,7 @@ pub fn prendre_le_premier_plan(win: &WebviewWindow) -> Result<bool, String> {
             // Aucun premier plan à qui s'attacher (bureau sécurisé,
             // transition) : il n'y a pas de repli possible, et ce n'est pas
             // une anomalie.
-            return Ok(false);
+            return false;
         }
 
         // `None` pour le second paramètre : on ne veut que l'identifiant du
@@ -226,39 +185,14 @@ pub fn prendre_le_premier_plan(win: &WebviewWindow) -> Result<bool, String> {
         // Deux threads déjà identiques : rien à attacher, et l'appel
         // échouerait. Ce serait le cas si le premier plan était… nous.
         if thread_devant == 0 || thread_nous == 0 || thread_devant == thread_nous {
-            return Ok(false);
+            return false;
         }
 
         let _ = AttachThreadInput(thread_nous, thread_devant, true);
         let ok = SetForegroundWindow(hwnd).as_bool();
         let _ = AttachThreadInput(thread_nous, thread_devant, false);
 
-        Ok(ok)
-    }
-}
-
-/// Poste un message vide dans la file de la fenêtre, **après** la fermeture
-/// du menu.
-///
-/// La seconde moitié de la recette de KB135788, et celle qu'on oublie
-/// toujours parce qu'elle n'a aucun effet visible le premier coup :
-/// `TrackPopupMenu` laisse sa fenêtre propriétaire dans un état où le menu
-/// **suivant** peut refuser de s'afficher ou de se refermer, tant qu'un
-/// message quelconque n'est pas passé dans sa file. `WM_NULL` est le message
-/// qui ne fait rien, choisi exactement pour cet usage.
-///
-/// L'échec est ignoré : si la fenêtre vient de disparaître, il n'y a plus de
-/// file, et plus de menu à débloquer non plus.
-pub fn reveiller_la_file(win: &WebviewWindow) {
-    use windows::Win32::Foundation::{LPARAM, WPARAM};
-    use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_NULL};
-
-    let Ok(hwnd) = win.hwnd() else {
-        return;
-    };
-
-    unsafe {
-        let _ = PostMessageW(Some(hwnd), WM_NULL, WPARAM(0), LPARAM(0));
+        ok
     }
 }
 
@@ -308,7 +242,7 @@ pub fn label_ecran(id: u64) -> String {
     format!("ecran-{id}")
 }
 
-/// Crée la fenêtre d'un écran : à la taille de sa zone de travail,
+/// Crée la fenêtre d'un écran : à la taille de l'écran COMPLET,
 /// transparente, au premier plan, traversante — et qui **ne bougera jamais**.
 ///
 /// C'est tout l'objet de l'architecture : cette fenêtre ne reçoit aucun
@@ -339,15 +273,22 @@ pub fn creer_fenetre_ecran(app: &AppHandle, ecran: &ScreenInfo) -> Result<(), St
     // fenêtre couvrirait 80 % de l'écran et les personnages seraient coupés.
     // C'est le piège n° 4 des « coordonnées » de CLAUDE.md, et il serait ici
     // beaucoup plus visible qu'avec une fenêtre de 128 px.
+    //
+    // ⚠️ **`bounds` et non `work_area`** (2026-09-23) : la zone de travail
+    // exclut la barre des tâches, et la fenêtre qui s'y limitait coupait net
+    // tout personnage porté ou en chute par-dessus — il disparaissait. Le
+    // SOL, lui, reste la zone de travail : c'est `World` qui le décide, pas
+    // la taille de cette fenêtre. Les clics traversent, donc couvrir la
+    // barre des tâches ne la rend pas moins cliquable.
     win.set_position(PhysicalPosition::new(
-        ecran.work_area.x as i32,
-        ecran.work_area.y as i32,
+        ecran.bounds.x as i32,
+        ecran.bounds.y as i32,
     ))
     .map_err(|e| format!("set_position sur « {label} » : {e}"))?;
 
     win.set_size(PhysicalSize::new(
-        ecran.work_area.w as u32,
-        ecran.work_area.h as u32,
+        ecran.bounds.w as u32,
+        ecran.bounds.h as u32,
     ))
     .map_err(|e| format!("set_size sur « {label} » : {e}"))?;
 
@@ -370,7 +311,7 @@ pub fn creer_fenetre_ecran(app: &AppHandle, ecran: &ScreenInfo) -> Result<(), St
 
     println!(
         "fenêtre {label} : {}×{} @ ({}, {})",
-        ecran.work_area.w, ecran.work_area.h, ecran.work_area.x, ecran.work_area.y
+        ecran.bounds.w, ecran.bounds.h, ecran.bounds.x, ecran.bounds.y
     );
     Ok(())
 }

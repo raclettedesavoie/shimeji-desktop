@@ -1,0 +1,71 @@
+/* Le style du menu de l'extension Shimeji pour navigateur : fond pêche,
+   coins arrondis, ombre douce, lignes aérées, séparateurs fins.
+   --marge DOIT valoir MARGE_CSS de menu_fenetre.rs : c'est la place
+   laissée à l'ombre autour du menu. */
+:root { --marge: 12px; }
+
+html, body {
+  margin: 0;
+  background: transparent;
+  overflow: hidden;
+}
+
+#menu {
+  position: absolute;
+  left: var(--marge);
+  top: var(--marge);
+  /* `max-content` : la largeur suit le texte, pas la fenêtre — qui est
+     minuscule tant qu'on ne l'a pas encore mesurée. */
+  width: max-content;
+  min-width: 190px;
+  max-width: 320px;
+  overflow-y: auto;
+  padding: 6px 0;
+  background: linear-gradient(160deg, #fff4ee 0%, #fde9df 100%);
+  border-radius: 8px;
+  box-shadow: 0 3px 10px rgba(60, 30, 20, 0.28);
+  font-family: "Segoe UI Variable Text", "Segoe UI", sans-serif;
+  font-size: 14px;
+  color: #1e1a18;
+  user-select: none;
+}
+
+.entree {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 9px 22px 9px 34px;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  position: relative;
+}
+.entree:hover { background: rgba(120, 70, 50, 0.09); }
+.entree.coche::before {
+  content: "✓";
+  position: absolute;
+  left: 13px;
+  font-weight: 600;
+}
+
+.titre {
+  padding: 10px 22px 4px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #8a6c5e;
+}
+
+hr {
+  border: 0;
+  height: 1px;
+  margin: 6px 12px;
+  background: linear-gradient(90deg, transparent, #6f5e57, transparent);
+}
+
+#menu::-webkit-scrollbar { width: 6px; }
+#menu::-webkit-scrollbar-thumb { background: #7e706a; border-radius: 3px; }

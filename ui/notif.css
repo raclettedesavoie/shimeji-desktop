@@ -1,0 +1,54 @@
+/* La notification maison, au style du menu (ui/menu.css) : fond pêche,
+   coins arrondis, ombre douce.
+   La fenêtre fait 384×120 px CSS : 360×96 de notification, et 12 px de
+   marge tout autour pour l'ombre. Ces nombres DOIVENT suivre LARGEUR_CSS et
+   HAUTEUR_CSS de notif_maison.rs. */
+:root { --marge: 12px; }
+
+html, body {
+  margin: 0;
+  background: transparent;
+  overflow: hidden;
+}
+
+#notif {
+  position: absolute;
+  left: var(--marge);
+  top: var(--marge);
+  width: 360px;
+  height: 96px;
+  box-sizing: border-box;
+  padding: 14px 18px;
+  background: linear-gradient(160deg, #fff4ee 0%, #fde9df 100%);
+  border-radius: 8px;
+  box-shadow: 0 3px 10px rgba(60, 30, 20, 0.28);
+  font-family: "Segoe UI Variable Text", "Segoe UI", sans-serif;
+  color: #1e1a18;
+  user-select: none;
+  /* Elle glisse doucement en entrant, comme une bannière de Windows. */
+  animation: entree 180ms ease-out;
+}
+
+@keyframes entree {
+  from { transform: translateX(24px); opacity: 0; }
+  to   { transform: none; opacity: 1; }
+}
+
+#titre {
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#corps {
+  font-size: 13px;
+  color: #4a3d37;
+  /* Trois lignes au plus : la fenêtre a une hauteur fixe. */
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}

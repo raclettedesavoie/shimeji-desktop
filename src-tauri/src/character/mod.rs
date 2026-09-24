@@ -37,6 +37,24 @@ impl Facing {
         matches!(self, Facing::Right)
     }
 
+    /// L'orientation qui fait FACE à une paroi verticale : la face `Right`
+    /// est celle d'un mur GAUCHE d'écran (il se tient à sa droite), donc il
+    /// regarde à gauche ; et symétriquement pour `Left`. `None` pour le sol
+    /// et le plafond, où l'orientation suit le déplacement.
+    ///
+    /// **La seule règle de ce genre du programme** : l'arrivée au pied d'un
+    /// mur et le lancer contre une paroi l'appellent tous les deux. Avant, la
+    /// première comparait `x_mur < pos.x` — faux à égalité, quand il avait
+    /// flâné jusqu'au bord exact de l'écran : il s'accrochait dos au mur,
+    /// dessiné presque entièrement hors de l'écran (2026-09-24).
+    pub fn face_a_la_paroi(face: crate::geom::Face) -> Option<Facing> {
+        match face {
+            crate::geom::Face::Right => Some(Facing::Left),
+            crate::geom::Face::Left => Some(Facing::Right),
+            crate::geom::Face::Top | crate::geom::Face::Bottom => None,
+        }
+    }
+
     /// L'autre sens. Sert au demi-tour en bout de plateforme.
     pub fn inverse(&self) -> Facing {
         match self {
@@ -61,6 +79,10 @@ use crate::geom::Point;
 use std::time::Duration;
 
 /// L'état complet d'un personnage (spec §6.1).
+///
+/// `Clone` : la matrice des actions du menu (`behavior/tests.rs`) rejoue
+/// chaque commande depuis une COPIE du même état de départ.
+#[derive(Clone)]
 pub struct Character {
     pub manifest: Manifest,
     pub attachment: Attachment,
@@ -93,6 +115,26 @@ pub struct Character {
 
     /// L'intention en cours. `None` = il faut en tirer une (couche 3).
     pub intention: Option<crate::behavior::intention::ActiveIntention>,
+
+    /// L'action tenue, choisie au menu et gardée tant qu'on ne l'arrête pas
+    /// (spec « menu sur mesure et actions tenues » §2). `None` : sa vie
+    /// normale, tirée au sort. **Pour la session seulement** : jamais écrite
+    /// dans `config.json`.
+    pub tenue: Option<crate::behavior::tenue::Tenue>,
+
+    /// Une action ponctuelle imposée par « Tout le monde » alors qu'il était
+    /// au mur ou en l'air, gardée le temps qu'il touche le sol : l'atterrissage
+    /// efface l'intention (`reflex.rs`), elle serait donc perdue. Jouée UNE
+    /// fois par `behavior::pas`, puis oubliée. Effacée par toute autre
+    /// commande, et quand on l'attrape.
+    pub a_jouer: Option<crate::behavior::intention::Intention>,
+
+    /// Depuis quand il est à l'arrêt AU SOL (assis, endormi, en pause, en
+    /// file au pied d'un mur…), `None` s'il marche, tombe ou est porté.
+    /// C'est ce qui départage deux personnages qui voudraient la même place :
+    /// le dernier arrivé cède (spec « ne pas se superposer » §3). Tenu par
+    /// `behavior::pas_parmi`. Pour la session seulement.
+    pub arrete_depuis: Option<Duration>,
 
     /// L'état du portage. **Significatif seulement quand `attachment` vaut
     /// `Dragged`**, et réinitialisé à chaque saisie.
@@ -170,6 +212,9 @@ impl Character {
             pose_depuis: Duration::ZERO,
             pos_connue,
             intention: None,
+            tenue: None,
+            a_jouer: None,
+            arrete_depuis: None,
             // Sans objet tant qu'il n'est pas porté ; `reflex` le
             // réinitialise à l'instant de l'attrapage.
             portage: Portage::neuf(pos_connue),

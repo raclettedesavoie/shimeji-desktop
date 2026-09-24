@@ -45,6 +45,8 @@ use tauri::{AppHandle, Wry};
 /// Entrées du menu du **tray**.
 pub const ID_AFFICHER: &str = "afficher";
 pub const ID_DEMARRAGE: &str = "demarrage";
+/// La case « Petite taille » (demande de l'auteur, 2026-09-24).
+pub const ID_PETITE_TAILLE: &str = "petite_taille";
 pub const ID_QUITTER: &str = "quitter";
 
 /// L'entrée de mise à jour du tray. **Une seule entrée pour deux états** :
@@ -52,6 +54,11 @@ pub const ID_QUITTER: &str = "quitter";
 /// propose de l'installer. Deux entrées diraient deux fois la même chose, et
 /// l'une des deux serait toujours inutile.
 pub const ID_MAJ: &str = "maj";
+
+/// « Tester une notification » : en build debug seulement, pour vérifier que
+/// les toasts Windows s'affichent (demande de l'auteur, 2026-09-24).
+#[cfg(debug_assertions)]
+pub const ID_TEST_TOAST: &str = "test_toast";
 
 /// Proposée par les DEUX menus, comme `quitter` : elle fait exactement la
 /// même chose depuis l'un ou l'autre, donc un seul identifiant — et donc un
@@ -68,6 +75,17 @@ pub const ID_CATALOGUE: &str = "catalogue";
 /// on lit l'état, côté personnage c'est un « Cacher » sec — voir son
 /// commentaire dans `executer`.
 pub const ID_P_CACHER: &str = "perso.cacher";
+
+/// « Cacher ce personnage » — le SEUL personnage qui a ouvert le menu
+/// (2026-09-23).
+///
+/// Il n'est pas rendu invisible sur place : il **s'en va** par l'animation de
+/// départ, et un exemplaire de son nom est retiré de `config.personnages`.
+/// C'est exactement le « − » de la bibliothèque, qui est donc aussi l'endroit
+/// d'où on le rappelle. Un drapeau « caché » propre à chaque acteur aurait
+/// été une seconde vérité à tenir d'accord avec le roster — la même erreur
+/// que l'interrupteur de la bibliothèque s'interdit (CLAUDE.md).
+pub const ID_P_CACHER_CE: &str = "perso.cacher_ce";
 
 /// La boîte aux lettres qui porte une commande choisie au menu jusqu'à la
 /// boucle 60 Hz.
@@ -110,6 +128,7 @@ pub fn nouvelle_commande() -> BoiteCommande {
 pub struct CasesTray {
     pub afficher: CheckMenuItem<Wry>,
     pub demarrage: CheckMenuItem<Wry>,
+    pub petite_taille: CheckMenuItem<Wry>,
 
     /// L'entrée de mise à jour. Gardée pour la MÊME raison que `afficher` :
     /// son libellé change quand une version est trouvée, et le menu du tray
@@ -126,6 +145,37 @@ pub struct Actions {
     pub visibilite: Visibilite,
     pub demande: Demande,
     pub commande: BoiteCommande,
+
+    /// La boîte des commandes adressées à TOUS les personnages — celles de
+    /// la section « Tout le monde » du menu (`tous.*`, spec « menu sur
+    /// mesure » §3). La boucle les résout une fois pour tous
+    /// (`menu_perso::resoudre_pour_tous`) avant de les servir.
+    ///
+    /// ⚠️ **Distincte de `commande`, et c'est tout son intérêt.** `commande`
+    /// n'est servie qu'au demandeur du menu (`menu_perso::commande_pour`) :
+    /// y déposer un ordre collectif depuis le tray, où il n'y a aucun
+    /// demandeur, le ferait consommer par personne. Et le donner à tous
+    /// depuis cette même boîte referait le bug qu'elle corrige — N
+    /// personnages exécutant l'envie d'un seul.
+    ///
+    /// Même type, même discipline : la boucle la vide une fois par image
+    /// (`take()`), avant de servir les acteurs.
+    pub pour_tous: BoiteCommande,
+
+    /// « Cacher ce personnage » a été choisi, et attend que la boucle le
+    /// donne au **demandeur du menu** — qu'elle seule connaît.
+    ///
+    /// Un booléen et non une `Commande` : ce n'est pas une affaire de
+    /// comportement (`behavior::pas` n'a rien à en faire), c'est le roster
+    /// qui change. `AtomicBool` : la boucle le lit par `swap(false)`, qui le
+    /// consomme en une seule opération, sans verrou.
+    pub cacher_le_demandeur: std::sync::atomic::AtomicBool,
+
+    /// La case « Petite taille » du tray, cochée ou non. Écrite par
+    /// `executer`, lue par la boucle à chaque image : elle recalcule
+    /// l'échelle d'affichage quand la valeur change. `AtomicBool` : deux
+    /// threads, un booléen, aucun verrou nécessaire.
+    pub petite_taille: std::sync::atomic::AtomicBool,
 
     /// Le roster **voulu** : la liste des personnages qui doivent vivre,
     /// avec ses doublons (design §4).
@@ -162,6 +212,13 @@ impl Actions {
             visibilite,
             demande,
             commande,
+            // Créée ici et non passée en paramètre : seule la boucle la lit,
+            // et elle la trouve dans `Actions`, qu'elle reçoit déjà.
+            pour_tous: nouvelle_commande(),
+            cacher_le_demandeur: std::sync::atomic::AtomicBool::new(false),
+            // Décochée ici ; `main` y range la valeur de `config.json` juste
+            // après la construction.
+            petite_taille: std::sync::atomic::AtomicBool::new(false),
             // Les présents sont vides au départ : la boucle les publiera à
             // sa première image. Rien ne les lit avant.
             presents: Mutex::new(Vec::new()),
@@ -243,6 +300,47 @@ impl Actions {
             .unwrap_or(0)
     }
 
+    /// Exécute le choix fait dans le menu du personnage (`menu_fenetre.rs`,
+    /// via la commande `choisir_entree_menu`), par le même `executer` que le
+    /// tray.
+    ///
+    /// Ce n'est **pas** un second `on_menu_event` : ce menu n'est pas un
+    /// menu Tauri, aucun événement n'est émis, et c'est donc à nous de
+    /// porter l'identifiant choisi jusqu'au gestionnaire unique.
+    ///
+    /// `run_on_main_thread` : `executer` a été écrit pour le thread
+    /// principal, d'où le tray l'appelle — il ouvre des fenêtres, coche des
+    /// cases, quitte l'application. L'appeler depuis le thread d'une commande
+    /// marcherait peut-être ; le renvoyer là où il a toujours tourné évite
+    /// d'avoir à le vérifier cas par cas.
+    ///
+    /// `self: Arc<Self>` : la fermeture part vers un autre thread et doit
+    /// posséder ce qu'elle emporte — une référence `&self` n'y survivrait pas.
+    pub fn executer_choix_du_menu(self: Arc<Self>, app: AppHandle, id: &'static str) {
+        let app_pour_executer = app.clone();
+        let envoi = app.run_on_main_thread(move || {
+            // Les cases CLONÉES puis le verrou relâché, AVANT `executer` :
+            // « Cacher tous les personnages » finit par
+            // `resynchroniser_affichage`, qui reprend ce même verrou — le
+            // tenir encore serait un interblocage (un `Mutex` de la
+            // bibliothèque standard n'est pas réentrant).
+            let cases = match self.cases.lock() {
+                Ok(c) => c.clone(),
+                Err(_) => None,
+            };
+            match cases {
+                Some(cases) => executer(&self, &app_pour_executer, id, &cases),
+                // Sans tray, `executer` n'a pas de quoi être appelé. C'était
+                // déjà le cas avant le menu natif : ses clics arrivaient par
+                // le gestionnaire… du tray.
+                None => eprintln!("menu du personnage : tray absent, « {id} » ignoré"),
+            }
+        });
+        if let Err(e) = envoi {
+            eprintln!("menu du personnage : « {id} » non transmis : {e}");
+        }
+    }
+
     pub fn enregistrer_cases(&self, cases: CasesTray) {
         // `if let Ok` : un verrou empoisonné ne doit pas faire paniquer
         // l'installation du tray. On perdrait seulement la synchronisation
@@ -285,13 +383,14 @@ impl Actions {
         let _ = cases.demarrage.set_checked(actif);
     }
 
-    /// Annonce, dans le menu du tray, qu'une version est disponible.
+    /// Affiche, dans le menu du tray, l'état de la mise à jour : version
+    /// disponible, à jour, ou vérification impossible (`maj::EtatMaj`).
     ///
     /// **Le libellé EST l'état.** On ne stocke la version nulle part
     /// ailleurs : la garder en double dans `Actions` créerait une seconde
     /// vérité à tenir d'accord avec ce que l'utilisateur lit — exactement ce
     /// que l'interrupteur de la bibliothèque s'interdit déjà.
-    pub fn signaler_maj(&self, version: &str) {
+    pub fn afficher_etat_maj(&self, etat: &crate::maj::EtatMaj) {
         let Ok(cases) = self.cases.lock() else {
             return;
         };
@@ -300,7 +399,7 @@ impl Actions {
             return;
         };
 
-        let _ = cases.maj.set_text(format!("Mettre à jour vers la v{version}"));
+        let _ = cases.maj.set_text(crate::maj::libelle(etat));
     }
 }
 
@@ -336,6 +435,21 @@ pub fn executer(actions: &Actions, app: &AppHandle, id: &str, cases_du_tray: &Ca
             }
         }
 
+        ID_PETITE_TAILLE => {
+            let petite = cases_du_tray.petite_taille.is_checked().unwrap_or(false);
+            // La boucle voit le changement à l'image suivante, et
+            // redimensionne tout le monde d'un coup.
+            actions
+                .petite_taille
+                .store(petite, std::sync::atomic::Ordering::Relaxed);
+            // Retenue pour le prochain lancement. Un échec d'écriture n'annule
+            // pas le changement à l'écran : il ne survivra simplement pas au
+            // redémarrage.
+            if let Err(e) = crate::config::definir_petite_taille(petite) {
+                eprintln!("petite taille non enregistrée : {e}");
+            }
+        }
+
         // ── Les entrées du menu du personnage ───────────────────────────
         ID_P_CACHER => {
             // Toujours « cacher », jamais « afficher » : on ne peut pas
@@ -345,17 +459,32 @@ pub fn executer(actions: &Actions, app: &AppHandle, id: &str, cases_du_tray: &Ca
             appliquer_visibilite(actions, app, false);
         }
 
+        ID_P_CACHER_CE => {
+            // Rien à faire ici que lever le drapeau : QUI cacher, seule la
+            // boucle le sait (`demandeur_du_menu`, dans `main.rs`).
+            actions
+                .cacher_le_demandeur
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+
         // ── Les entrées communes aux deux menus ─────────────────────────
         ID_CATALOGUE => {
             ouvrir_catalogue(app);
         }
 
         ID_MAJ => {
-            // `installer` revérifie d'abord : que l'entrée dise « Vérifier »
+            // Revérifie d'abord : que l'entrée dise « Vérifier », « À jour »
             // ou « Mettre à jour », le geste est le même, et c'est pour ça
             // qu'il n'y a qu'un identifiant. La seule différence entre les
-            // deux états est ce que l'utilisateur en attend.
-            crate::maj::installer(app.clone());
+            // états est ce que l'utilisateur en attend.
+            crate::maj::verifier_puis_installer(app.clone());
+        }
+
+        // `#[cfg]` sur un bras de `match` : en release, ce bras n'existe pas,
+        // et l'identifiant non plus — un clic ne peut donc pas y arriver.
+        #[cfg(debug_assertions)]
+        ID_TEST_TOAST => {
+            crate::toast::test(app);
         }
 
         ID_QUITTER => {
@@ -366,10 +495,19 @@ pub fn executer(actions: &Actions, app: &AppHandle, id: &str, cases_du_tray: &Ca
         }
 
         // ── Une envie ou une action demandée par le menu du personnage ───
-        autre => match crate::menu_perso::commande_de(autre) {
-            Some(commande) => deposer_commande(actions, commande),
-            None => eprintln!("entrée de menu non gérée : {autre}"),
-        },
+        //
+        // Deux tables, deux boîtes : `perso.*` va au seul demandeur,
+        // `tous.*` à tous les présents (spec §3). C'est l'identifiant qui
+        // décide, jamais le menu d'où vient le clic.
+        autre => {
+            if let Some(commande) = crate::menu_perso::commande_de(autre) {
+                deposer_commande(actions, commande);
+            } else if let Some(commande) = crate::menu_perso::commande_de_tous(autre) {
+                deposer_dans(&actions.pour_tous, commande);
+            } else {
+                eprintln!("entrée de menu non gérée : {autre}");
+            }
+        }
     }
 }
 
@@ -413,7 +551,14 @@ pub(crate) fn appliquer_demarrage(voulu: bool) -> bool {
 /// rapprochés doivent donner le **dernier** voulu, pas une file d'attente
 /// qui les jouerait tous les deux.
 fn deposer_commande(actions: &Actions, commande: crate::menu_perso::Commande) {
-    match actions.commande.lock() {
+    deposer_dans(&actions.commande, commande);
+}
+
+/// Dépose une commande dans l'une des deux boîtes — celle du demandeur ou
+/// celle de tous. Une seule fonction pour les deux, pour que le traitement
+/// d'un verrou empoisonné ne diverge pas de l'une à l'autre.
+fn deposer_dans(boite: &BoiteCommande, commande: crate::menu_perso::Commande) {
+    match boite.lock() {
         Ok(mut boite) => {
             *boite = Some(commande);
             println!("commande du menu : {commande:?}");

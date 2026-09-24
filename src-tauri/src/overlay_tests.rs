@@ -15,11 +15,13 @@ fn deux_ecrans() -> Vec<ScreenInfo> {
         ScreenInfo {
             id: 1,
             work_area: Rect::new(0.0, 0.0, 1920.0, 1080.0),
+            bounds: Rect::new(0.0, 0.0, 1920.0, 1080.0),
             scale: 1.0,
         },
         ScreenInfo {
             id: 2,
             work_area: Rect::new(1920.0, 0.0, 1920.0, 1080.0),
+            bounds: Rect::new(1920.0, 0.0, 1920.0, 1080.0),
             scale: 1.0,
         },
     ]
@@ -181,6 +183,7 @@ fn ecran_125() -> Vec<ScreenInfo> {
     vec![ScreenInfo {
         id: 9,
         work_area: Rect::new(3840.0, 0.0, 1920.0, 1020.0),
+        bounds: Rect::new(3840.0, 0.0, 1920.0, 1020.0),
         scale: 1.25,
     }]
 }
@@ -221,6 +224,7 @@ fn une_echelle_nulle_ne_fait_pas_disparaitre_le_sprite() {
     let ecrans = vec![ScreenInfo {
         id: 1,
         work_area: Rect::new(0.0, 0.0, 1920.0, 1080.0),
+        bounds: Rect::new(0.0, 0.0, 1920.0, 1080.0),
         scale: 0.0,
     }];
     let charges = repartir(&[sprite(1, 10, 10)], &ecrans);

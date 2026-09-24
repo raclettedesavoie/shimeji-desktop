@@ -122,8 +122,26 @@ pub const VITESSE_ESCALADE: f32 = 16.1;
 /// Bornes `[min, max]` de la durée d'accroche à une paroi, en secondes.
 ///
 /// `HoldOntoWall` de `conf/actions.xml` : `Duration="${500+Math.random()*1000}"`,
-/// en millisecondes — donc de 0,5 s à 1,5 s.
-pub const DUREE_ACCROCHE: [f32; 2] = [0.5, 1.5];
+/// en **ticks** de 40 ms, comme toutes les durées de Shimeji-ee — donc de
+/// 20 s à 60 s, exactement comme le sommeil (`LieDown`, même formule).
+///
+/// ⚠️ Cette valeur a longtemps été lue en millisecondes (0,5 à 1,5 s) : il
+/// ne marquait jamais de pause au mur, et les pauses de « Grimper au mur »
+/// tenu étaient invisibles (corrigé le 2026-09-24, spec « menu sur mesure »
+/// §6). Une durée de Shimeji-ee se convertit TOUJOURS par × 40 ms.
+pub const DUREE_ACCROCHE: [f32; 2] = [20.0, 60.0];
+
+/// Bornes `[min, max]` du temps passé étalé au sol après une chute, en
+/// secondes.
+///
+/// ⚠️ **Ne vient PAS de Shimeji-ee**, contrairement aux constantes voisines :
+/// chez lui, `Bouncing` enchaîne sur la marche en ~0,3 s. C'est une demande
+/// de l'auteur (2026-09-23) — « qu'il reste au sol un peu plus longtemps » —
+/// et donc un réglage de caractère, d'où sa place dans `config.json`
+/// (`dureeAuSol`, décision n° 5).
+/// Ramenée de 2–5 s à 1–2 s par l'auteur après essai à l'écran : au-delà,
+/// l'attente se remarquait plus que la chute.
+pub const DUREE_AU_SOL: [f32; 2] = [1.0, 2.0];
 
 // ── Le balancier du personnage porté ──────────────────────────────────
 //

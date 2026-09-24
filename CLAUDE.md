@@ -58,10 +58,18 @@ réagissent l'un à l'autre. Ajouter un personnage est une **opération de conte
 - ❌ **Pas un Tamagotchi** — aucune stat à surveiller, aucune obligation, il ne meurt pas
 - ❌ **Aucune capture de frappe** — on sait seulement si l'utilisateur est actif, jamais quelle touche
 - ❌ **Pas un assistant** — il ne notifie rien, ne rappelle rien, n'a aucune utilité productive.
-  **Deux exceptions, et deux seulement** : le toast de fin de première configuration, et
-  celui d'une mise à jour disponible. Toutes deux relèvent de la maintenance de
-  l'application, pas du comportement du personnage — et la seconde est émise **une fois
-  par version**, jamais à chaque lancement (`derniereVersionSignalee`)
+  **Seules exceptions, toutes de maintenance** (`toast.rs`) : la fin de première
+  configuration ; une mise à jour disponible, **une fois par version**
+  (`derniereVersionSignalee`) ; et, depuis le 2026-09-24 à la demande de l'auteur,
+  « à jour » **sur un clic** de « Vérifier les mises à jour », « mise à jour en
+  cours » avant le téléchargement, « impossible de vérifier » sur un clic qui échoue,
+  « mis à jour en vX » au lancement suivant
+  (`derniereVersionLancee`, tenue par la release seule). Rien du personnage.
+  ⚠️ Le plugin rend `Ok` sans savoir si le toast s'affiche (`toast::emettre`) : un
+  toast invisible, c'est d'abord le mode « Ne pas déranger ». Ce mode, détecté par
+  l'état WNF `WNF_SHEL_QUIETHOURS_ACTIVE_PROFILE_CHANGED` (`ne_pas_deranger.rs` — la
+  seule API documentée, `SHQueryUserNotificationState`, ne le voit PAS), fait passer
+  chaque notification par une fenêtre maison en bas à droite (`notif_maison.rs`)
 - ❌ **Pas un jeu** — pas de score, pas de progression
 - ❌ **Pas de charge CPU comme signal** — écarté explicitement
 - ❌ **Pas de bulles de dialogue**
@@ -158,7 +166,7 @@ cargo tauri build                      # l'INSTALLATEUR NSIS, voir l'avertisseme
 > `%APPDATA%\shimeji-desktop\characters\`, puis le `characters/` du dépôt —
 > qui ne contient plus que `blob`. Voir « Les packs livrés » plus bas.
 
-**Quatorze variables d'environnement de diagnostic.** Les trois premières ont chacune
+**Dix-sept variables d'environnement de diagnostic.** Les trois premières ont chacune
 servi à démentir une hypothèse fausse — voir « Mesurer le CPU » plus bas ; les autres
 remplacent un clic dans le tray ou dans une fenêtre, ou rendent observable un calcul qui,
 sinon, ne se verrait qu'à l'œil et sur plusieurs minutes :
@@ -172,13 +180,16 @@ sinon, ne se verrait qu'à l'œil et sur plusieurs minutes :
 | `SHIMEJI_QUITTER_APRES=<s>` | appelle `exit(0)` — la ligne de « Quitter » — après *s* secondes |
 | `SHIMEJI_SIGNAUX=1` | imprime, deux fois par seconde, les **six** signaux et le biais qu'ils produisent — le sixième est la **latence** du thread principal (régulation de charge) |
 | `SHIMEJI_ESCALADE=1` | force l'intention `Grimper` dès la première image, et trace (phase, face, offset, pose) à chaque changement — étape 4a, voir plus bas « mesurer l'ancre » |
-| `SHIMEJI_MENU=1` | signale quand Windows **refuse le premier plan** à l'ouverture du menu contextuel — la cause du menu qui reste collé à l'écran, voir `render::prendre_le_premier_plan` |
+| `SHIMEJI_MENU=1` | signale quand Windows **refuse le premier plan** à la fenêtre du menu contextuel (le filet `hors_du_menu` la ferme alors au clic ailleurs), et trace sa taille et sa position à chaque ouverture |
 | `SHIMEJI_CATALOGUE=1` | ouvre la **fenêtre du catalogue** au démarrage — l'équivalent scriptable de l'entrée de menu, et ce qui a prouvé que l'IPC de Tauri répondait |
 | `SHIMEJI_PERSONNAGES=<a>,<b>,…` | le **roster de départ**, doublons compris (`blob,blob` = deux blob) — l'équivalent scriptable des clics dans « Ma bibliothèque » |
 | `SHIMEJI_ROSTER=<s>:<a>,<b>` | un **changement de roster** après *s* secondes. C'est le seul moyen d'observer un **départ** sans qu'un humain clique |
 | `SHIMEJI_ONBOARDING=1` | force **l'assistant de première configuration**, sans toucher au `config.json` — évite d'avoir à le supprimer entre deux essais |
-| `SHIMEJI_TOAST=1` | trace le résultat des **toasts**, succès comme échec |
+| `SHIMEJI_TOAST=1` | trace la **remise** des toasts au plugin — pas leur affichage, qu'il ne rapporte pas. En debug, le tray a aussi « Tester une notification » |
 | `SHIMEJI_MAJ=1` | trace la **vérification de mise à jour** : version trouvée, déjà à jour, ou pourquoi elle a échoué. Sans elle, une vérification ratée est parfaitement muette — ce qui est voulu pour l'utilisateur, et ingérable pour qui met au point |
+| `SHIMEJI_MENU_OUVERT=1` | ouvre le **menu du clic droit** du premier personnage dès qu'il est posé ; avec `SHIMEJI_MENU=1`, imprime `menu placé : W×H @ (x, y)` — la preuve que les lignes arrivent au webview, qu'il se mesure et que l'IPC répond |
+| `SHIMEJI_NE_PAS_DERANGER=1` | fait croire que Windows est en **Ne pas déranger** : chaque notification passe par la fenêtre maison (`notif_maison.rs`) au lieu du toast |
+| `SHIMEJI_TEST_NOTIF=1` | (debug) émet la notification de test 3 s après le démarrage — l'équivalent de « Tester une notification » du tray |
 
 **Et un fichier témoin** : créer `characters/recharger.txt` déclenche un rechargement à
 chaud, puis le fichier est supprimé.
@@ -393,6 +404,14 @@ personnage — dans la même tâche, pas « plus tard ».** C'est une ligne dans
 par `commande_de`, la disponibilité est déduite du manifeste (couverture partielle,
 spec §8.6), et `actions::executer` n'a aucun cas à ajouter.
 
+La ligne dit aussi si l'action **dure** : `Commande::Basculer(Tenue)` pour une action
+**tenue** (elle a une coche, et dure jusqu'à ce qu'on la décoche, qu'on attrape le
+personnage ou qu'on choisisse autre chose — `behavior/tenue.rs`), `Commande::Intention`
+pour une action **ponctuelle**. Si elle a sa place au sol, elle va aussi dans la table
+`TOUS` (identifiants `tous.*`), la section « Tout le monde » du menu, servie par la
+boîte `Actions::pour_tous` et résolue une fois pour tous par `resoudre_pour_tous`.
+→ `docs/specs/2026-09-23-menu-sur-mesure-et-actions-tenues-design.md`
+
 L'oubli ne casse **aucun test** et ne produit **aucun message** : l'intention existe
 pour le tirage aléatoire, mais reste à jamais hors de portée de l'utilisateur. C'est
 précisément pourquoi la règle est écrite ici plutôt que laissée au bon sens.
@@ -408,44 +427,49 @@ courant, appelé juste avant `ouvrir` dans `main.rs`.
 
 | Où il est | Le menu propose |
 |---|---|
-| au sol (face `Top`), en chute, ou porté | Flâner · S'asseoir · Faire tourner la tête · Balancer les jambes · Grimper au mur — inchangé |
-| sur un mur (face `Left`/`Right`) | Monter plus haut · Rester accroché · Redescendre · Se lâcher |
-| au plafond (face `Bottom`) | Rester accroché · Se lâcher |
+| au sol (face `Top`), en chute, ou porté | Flâner ✓ · S'asseoir ✓ · Faire son petit truc · Balancer les jambes ✓ · Grimper au mur ✓ |
+| sur un mur (face `Left`/`Right`) | Grimper au mur ✓ · Rester accroché ✓ · Redescendre · Se lâcher |
+| au plafond (face `Bottom`) | Grimper au mur ✓ · Rester accroché ✓ · Se lâcher |
+
+✓ = action tenue. Puis, partout, la section « Tout le monde » (les actions du sol, plus
+« Rester accroché » ✓ : ceux qui sont au sol montent puis se figent), les deux
+« Cacher », le catalogue et Quitter.
 
 Pas de « Redescendre » au plafond, et c'est délibéré : il faudrait traverser jusqu'au
 bord, basculer sur un mur, puis descendre — de la navigation calculée, que la décision
 n° 4 exclut (YAGNI). Shimeji ne le propose pas non plus.
 
-« Grimper au mur » (au sol) et « Monter plus haut » (sur un mur) partagent la même
-commande (`Grimper`) sous deux identifiants et deux libellés : c'est la même action,
-seul son nom change selon qu'on la déclenche ou qu'on la reprend.
-
-Trois des quatre nouvelles entrées ne sont **pas** des intentions tirables — la table
-`ENVIES` porte donc un `menu_perso::Commande` (`Intention(…)`, `ResterAccroche`,
-`Redescendre`, `SeLacher`) plutôt qu'une `Intention` nue, et `Entrees::commande` /
-`behavior::pas` ont été mis à jour en conséquence :
-
-- **Monter plus haut** est `Commande::Intention(Grimper)`, sans code spécifique : la
-  phase `Choisir` de `grimper()` (`intention.rs`) a été corrigée pour **reprendre**
-  l'escalade en cours (phase `Paroi` ou `Plafond`, cible tirée au sort) au lieu
-  d'échouer sur une face non-`Top` — c'était précisément le bug rapporté à l'écran
-  (choisir une entrée de menu pendant qu'on est accroché le faisait tomber).
-- **Rester accroché** pose `ActiveIntention::accroche` — l'intention qu'un lancer
-  contre une paroi installe déjà (`HoldOntoWall`/`HoldOntoCeiling` de Shimeji-ee).
-- **Redescendre** pose `ActiveIntention::redescendre`, qui vise le bas de la face via
-  une nouvelle phase `PhaseGrimpe::ChoisirDescente` — décidée à la première image,
-  comme `Choisir`, parce que la longueur de la face demande `World`. La descente
-  elle-même reste celle de la phase `Paroi` existante : rien n'est réécrit.
-- **Se lâcher** efface simplement l'intention (`ch.intention = None`) sans y ajouter la
-  moindre ligne de physique : la règle de sécurité du monde vertical, déjà là pour un
-  tout autre usage, fait tomber le personnage dans la **même image** — c'est
-  `FallFromWall`/`FallFromCeiling` de Shimeji-ee obtenu par pure réutilisation.
+« Monter plus haut » a disparu (2026-09-24) : « Grimper au mur » tenu ne repasse
+**jamais** au sol de lui-même, il vit sur les murs et le plafond. **Rester accroché**
+tenu ne quitte plus sa pause. **Redescendre** et **Se lâcher** effacent la tenue ; se
+lâcher reste un simple `ch.intention = None`, que la règle de sécurité du monde vertical
+transforme en chute dans la même image (`FallFromWall` de Shimeji-ee).
 
 `behavior::pas` refuse en plus toute commande devenue impossible entre le clic et
 l'image suivante (rechargement à chaud, ou simplement le temps qu'a mis l'utilisateur à
 choisir) — une commande de sol reçue pendant qu'il est accroché est **ignorée**, jamais
 appliquée : l'appliquer le ferait tomber par le même mécanisme que ci-dessus, pour de
 mauvaises raisons cette fois.
+
+**Toute action du clic droit se fait, quel que soit l'état de départ** (demande de
+l'auteur, 2026-09-24). Reçue pendant qu'il **tombe**, elle est retenue pour
+l'atterrissage (`en_l_air` dans `behavior::pas` : la tenue, ou l'action ponctuelle
+dans `ch.a_jouer`) — les réflexes rendaient la main avant, et elle était perdue. Une
+action **ponctuelle** de « Tout le monde » devient `Commande::ImposerUneFois` : au mur,
+il se lâche et la joue en atterrissant. Le test
+`toute_action_du_menu_se_fait_quel_que_soit_l_etat_de_depart` croise chaque entrée
+**proposée** par `menu_perso::lignes` avec quinze états de départ : une nouvelle entrée
+y entre d'office.
+
+**Ils se traversent, mais ne s'arrêtent jamais l'un sur l'autre** (2026-09-24,
+`behavior/place.rs`). Au sol, un personnage à l'arrêt sur la place d'un plus ancien
+se décale côte à côte (`pas_parmi`) ; au pied d'un mur, ils font la file et
+s'accrochent un par un (`grimper`, phase `Rejoindre`, priorité au plus proche du pied
+parmi tous ceux qui **visent** le mur). Sur les murs et au plafond, personne n'occupe
+rien. `pas` et `poursuivre` restent pour la simulation et les tests (« seul au
+monde ») ; seule la boucle appelle `pas_parmi`, avec les occupants de l'image
+précédente. Coût mesuré : nul (travail par image inchangé à 15 personnages).
+→ `docs/specs/2026-09-24-ne-pas-se-superposer-design.md`
 
 > **Et une seconde règle, non négociable : un seul `on_menu_event` dans tout le
 > programme.** Tauri livre *tout* événement de menu à *tous* les gestionnaires, quel que
@@ -455,14 +479,28 @@ mauvaises raisons cette fois.
 > délègue à `actions.rs` ; `menu_perso.rs` ne fait que **proposer**, il ne déclenche
 > rien.
 
+> ⚠️ **Le menu du clic droit n'est pas un menu Tauri**, mais une **fenêtre webview**
+> (`menu_fenetre.rs` + `ui/menu.*`, 2026-09-24), créée **une fois** au démarrage et
+> montrée au curseur. Le menu Tauri s'exécute dans un callback de `tao`, qui met en
+> file tout événement reçu pendant ce temps — dont les `eval` des positions : **tous**
+> les personnages se figeaient. Une fenêtre n'a pas de boucle modale, et se stylise en
+> CSS (le style de l'extension Shimeji). Elle se ferme sur un choix, `blur`, Échap, ou
+> le filet de la boucle (`hors_du_menu`) si Windows lui a refusé le premier plan. Le
+> choix passe par la commande `choisir_entree_menu` (qui n'accepte que `id_connu`),
+> puis `Actions::executer_choix_du_menu` et le **même** `executer` — ce n'est pas un
+> second `on_menu_event`. Le menu Win32 intermédiaire (`menu_natif.rs`) a été retiré.
+> « Cacher ce personnage » le fait partir (animation de départ) et retire UN
+> exemplaire de `config.personnages` : on le rappelle depuis la bibliothèque.
+
 ---
 
 ## Architecture
 
 ### Une fenêtre par ÉCRAN — depuis le 2026-09-23
 
-Chaque **écran occupé** porte une fenêtre transparente à la taille de sa zone de
-travail, sans bordure, hors taskbar, toujours au premier plan — et qui **ne bouge
+Chaque **écran occupé** porte une fenêtre transparente à la taille de l'**écran
+complet** (`ScreenInfo::bounds`, barre des tâches comprise — sinon un personnage
+porté par-dessus y disparaissait ; le **sol**, lui, reste la zone de travail), sans bordure, hors taskbar, toujours au premier plan — et qui **ne bouge
 jamais**. Les personnages y sont des `<img>` déplacés en CSS.
 
 La fenêtre d'un écran reste ouverte **même quand personne n'y est**, tant que les
@@ -808,6 +846,12 @@ sur Windows, appliquer une mise à jour relance l'installateur NSIS, donc
 ferme l'application — le faire d'autorité ferait disparaître les personnages
 au milieu d'une session.
 
+> ⚠️⚠️ **L'updater lit `latest.json` SANS authentification** : il faut un
+> dépôt **public**. Le 2026-09-24, une 404 (« Could not fetch a valid release
+> JSON ») a fait croire à un défaut ; le dépôt avait été public entre-temps, et
+> tout est rentré dans l'ordre. La vérification du démarrage échoue en
+> silence, par conception : c'est un clic sur « Vérifier » qui le révèle.
+
 > ⚠️ **La clé privée de signature ne vit QUE dans les secrets GitHub**
 > (`TAURI_SIGNING_PRIVATE_KEY` et `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`). La
 > perdre veut dire qu'aucune installation existante n'acceptera plus jamais
@@ -853,7 +897,7 @@ ramassant, sautant, puis tombant hors de l'écran. Une poubelle supprime un pack
 du disque. Le reste est inchangé — marche, escalade, attrape-souris, tray,
 `config.json`.
 
-**335 tests.** Et le CPU, mesuré sur le programme réel (release, 60 s, 3 écrans) :
+**437 tests.** Et le CPU, mesuré sur le programme réel (release, 60 s, 3 écrans) :
 
 | Roster | Caché | En marche | dont `shimeji-desktop` | Latence de la file |
 |---|---|---|---|---|
@@ -920,6 +964,10 @@ clic dans `%APPDATA%`. Le dépôt ne versionne plus que `blob`.
 | `docs/specs/2026-09-23-fenetre-par-ecran-design.md` | **la conception d'« une fenêtre par écran »** : ce qu'on achète (l'interactivité, PAS le CPU), les deux décisions rouvertes, les trois cadences découplées |
 | `docs/plans/2026-09-23-fenetre-par-ecran.md` | son plan, **soldé** — 8 tâches |
 | `docs/specs/2026-09-23-fenetre-par-ecran-mesure.md` | **la mesure** : 8–14 s ramenées à 13 ms, le péage par écran, et les deux défauts trouvés à l'exécution |
+| `docs/specs/2026-09-23-menu-sur-mesure-et-actions-tenues-design.md` | **le menu sur mesure et les actions tenues** : la tenue, la section « Tout le monde », la fenêtre webview du menu — et trois défauts constatés, à traiter à part (§6) |
+| `docs/plans/2026-09-23-menu-sur-mesure-et-actions-tenues.md` | son plan, **exécuté** — 6 tâches |
+| `docs/specs/2026-09-24-ne-pas-se-superposer-design.md` | **ne pas se superposer** : on se traverse, on ne s'arrête jamais l'un sur l'autre ; la file au pied du mur ; « Tout le monde › Rester accroché » |
+| `docs/plans/2026-09-24-ne-pas-se-superposer.md` | son plan, **exécuté** — 5 tâches |
 | `docs/conception/2026-09-14-cout-des-sessions.md` | **ce que coûte une session d'assistance** : le relevé, et l'hypothèse évidente qui était fausse |
 | `docs/conception/2026-09-14-journal-des-etapes.md` | **le récit de chaque étape** (0, 1a, 1b, 2, 4a) et les réglages « à l'œil » qui se sont révélés faux — extrait de ce fichier le 2026-09-14 |
 | `docs/specs/2026-09-09-mesure-cpu.md` | **le dossier CPU complet** : les quatre hypothèses démenties par la mesure — à lire avant de toucher au chemin 60 Hz |
@@ -983,6 +1031,13 @@ verticale, il ne reste que le recensement des fenêtres et leur filtrage :
 > logicielle de WebView2). C'est la seule piste connue pour descendre sous ce
 > plancher, et elle n'est pas engagée.
 
+**Idée à creuser APRÈS 4b : « il jette une fenêtre »** (2026-09-23). Les onglets
+sont hors d'atteinte : aucune API Windows générique, ce sont des éléments internes
+au navigateur. Une fenêtre entière, elle, se déplace par `SetWindowPos` (c'est
+`ThrowIE` de Shimeji-ee), sauf si elle a été lancée en administrateur. Mais
+**cela contredit « il ne gêne jamais »** : c'est à l'auteur de trancher avant
+toute ligne de code.
+
 **L'étape 3b (qu'ils se remarquent) reste de côté**, à la demande de l'auteur —
 mais elle est devenue facile : tous les personnages vivent dans un seul `Vec`,
 donc une rencontre est une vérification côté coordinateur.
@@ -992,3 +1047,10 @@ donc une rencontre est une vérification côté coordinateur.
 > personnage accroché à un mur. Marche à suivre : `cargo build` puis `cargo run` avec
 > `SHIMEJI_ESCALADE=1`. Si le rendu ne convient pas, l'ancre se corrige dans
 > `characters/blob/mascot.json`, **jamais** dans `attach.rs` (décision n° 1).
+>
+> Avant de juger l'ancre, noter que le « dessiné presque hors de l'écran » avait
+> une autre cause, corrigée le 2026-09-24 : arrivé au bord exact de l'écran, il
+> s'accrochait **dos au mur** (`Facing::face_a_la_paroi`). Le test
+> `il_fait_toujours_face_a_sa_paroi` le verrouille. Même jour : la pause au mur
+> dure enfin 20 à 60 s (`DUREE_ACCROCHE`, en ticks de 40 ms comme **toutes** les
+> durées de Shimeji-ee), et l'écran du milieu vise le mur d'un voisin.

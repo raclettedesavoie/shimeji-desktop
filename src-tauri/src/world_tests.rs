@@ -156,11 +156,13 @@ fn l_identite_survit_a_un_changement_de_resolution() {
     let avant = vec![ScreenInfo {
         id: 77,
         work_area: Rect::new(0.0, 0.0, 1920.0, 1032.0),
+        bounds: Rect::new(0.0, 0.0, 1920.0, 1032.0),
         scale: 1.0,
     }];
     let apres = vec![ScreenInfo {
         id: 77,
         work_area: Rect::new(0.0, 0.0, 1280.0, 672.0),
+        bounds: Rect::new(0.0, 0.0, 1280.0, 672.0),
         scale: 1.0,
     }];
 

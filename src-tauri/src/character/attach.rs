@@ -267,6 +267,28 @@ pub fn echelle_ecran_entiere(scale_moniteur: f32) -> f32 {
     }
 }
 
+/// Le facteur de la case « Petite taille » du tray (demande de l'auteur,
+/// 2026-09-24) : ×1 décochée, ×0,8 cochée.
+///
+/// 0,8 = 1 / 1,25 : c'est la taille qu'a un personnage sur l'écran du
+/// portable à 125 %, où ses 128 pixels réels paraissent plus petits que sur
+/// un écran à 100 %. L'auteur la voulait en option, la taille normale restant
+/// celle par défaut.
+///
+/// ⚠️ Réduire du pixel-art jette des pixels (voir « Le minimum de 1 »
+/// ci-dessus) : c'est un choix de l'utilisateur, comme l'`echelle` de
+/// `config.json`, et il n'est donc pas arrondi.
+pub const FACTEUR_PETITE_TAILLE: f32 = 0.8;
+
+/// Le facteur de taille voulu par l'utilisateur dans le tray.
+pub fn facteur_de_taille(petite: bool) -> f32 {
+    if petite {
+        FACTEUR_PETITE_TAILLE
+    } else {
+        1.0
+    }
+}
+
 /// La taille en pixels physiques de la fenêtre d'un personnage.
 ///
 /// ⚠️ **Elle suit l'image AFFICHÉE, pas le pack.** `manifest.frame_size`

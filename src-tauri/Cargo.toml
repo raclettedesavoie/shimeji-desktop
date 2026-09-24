@@ -67,6 +67,7 @@ features = [
     "Win32_UI_HiDpi",                   # GetDpiForMonitor, MDT_EFFECTIVE_DPI
     "Win32_System_Registry",            # Reg{Open,Set,Query,Delete}Value* — démarrage auto
     "Win32_System_Threading",           # OpenProcess, QueryFullProcessImageNameW, AttachThreadInput
+    "Win32_System_LibraryLoader",       # GetModuleHandleW — la fenêtre du menu natif
     "Win32_System_SystemInformation",   # GetLocalTime, GetTickCount
     "Win32_System_Power",               # GetSystemPowerStatus
     "Win32_System_RemoteDesktop",       # WTSQuerySessionInformationW — verrouillage
