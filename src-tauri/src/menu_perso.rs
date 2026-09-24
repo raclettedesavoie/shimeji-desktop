@@ -340,18 +340,38 @@ pub fn tous_la_tiennent(t: Tenue, presents: &[Present]) -> bool {
     capables.peek().is_some() && capables.all(|p| p.tenue == Some(t))
 }
 
+/// La ligne `t` de la section « Tout le monde » est-elle cochée ?
+///
+/// Deux façons de l'être :
+///
+/// 1. **tous** ceux qui peuvent la tenir la tiennent (chacun l'a choisie, ou
+///    l'ordre collectif vient d'être donné) ;
+/// 2. **l'ordre collectif** `ordre` porte sur elle, et **au moins un**
+///    présent la tient encore (demande de l'auteur, 2026-09-24) : déplacer
+///    un personnage le fait sortir de l'ordre, mais la ligne reste cochée
+///    pour les autres — et la décocher les relève tous d'un coup, au lieu de
+///    les décocher un par un.
+///
+/// `ordre` n'est PAS une seconde vérité sur les tenues : il dit seulement
+/// qu'un ordre a été donné. Ce que chacun tient reste lu dans `presents`, et
+/// la coche disparaît d'elle-même quand plus personne ne la tient.
+pub fn coche_pour_tous(t: Tenue, presents: &[Present], ordre: Option<Tenue>) -> bool {
+    let quelqu_un = presents.iter().any(|p| p.tenue == Some(t));
+    tous_la_tiennent(t, presents) || (ordre == Some(t) && quelqu_un)
+}
+
 /// Ce que devient une commande de la section « Tout le monde » pour les
-/// personnages présents (spec §3) : coché si tous ceux qui PEUVENT la tenir
-/// la tiennent, donc un clic relâche chez tous ; sinon, un clic l'IMPOSE à
-/// tous, par-dessus leur propre action (seul un pack sans les poses refuse).
+/// personnages présents (spec §3) : cochée (`coche_pour_tous`), un clic la
+/// relâche chez tous ; sinon, un clic l'IMPOSE à tous, par-dessus leur
+/// propre action (seul un pack sans les poses refuse).
 ///
 /// Résolue UNE fois par la boucle, avant de servir les acteurs : chaque
 /// acteur résolvant son propre `Basculer`, un personnage déjà assis se
 /// relèverait pendant que les autres s'assoient.
-pub fn resoudre_pour_tous(c: Commande, presents: &[Present]) -> Commande {
+pub fn resoudre_pour_tous(c: Commande, presents: &[Present], ordre: Option<Tenue>) -> Commande {
     match c {
         Commande::Basculer(t) => {
-            if tous_la_tiennent(t, presents) {
+            if coche_pour_tous(t, presents, ordre) {
                 Commande::Relacher(t)
             } else {
                 Commande::Imposer(t)
@@ -407,13 +427,15 @@ pub enum Ligne {
 /// choix atterrit dans `actions::executer`.
 ///
 /// `tenue` est celle du personnage cliqué, `presents` décrit tous les
-/// présents — lui compris. Ce sont les seules sources des coches.
+/// présents — lui compris —, et `ordre_pour_tous` le dernier ordre collectif
+/// donné (voir `coche_pour_tous`). Ce sont les seules sources des coches.
 pub fn lignes(
     manifeste: &Manifest,
     table: &TableEnvies,
     ou: Ou,
     tenue: Option<Tenue>,
     presents: &[Present],
+    ordre_pour_tous: Option<Tenue>,
 ) -> Vec<Ligne> {
     let mut lignes: Vec<Ligne> = Vec::new();
 
@@ -459,7 +481,7 @@ pub fn lignes(
     lignes.push(Ligne::Titre { texte: "Tout le monde" });
     for (id, libelle, commande) in TOUS {
         let coche = match commande {
-            Commande::Basculer(t) => tous_la_tiennent(*t, presents),
+            Commande::Basculer(t) => coche_pour_tous(*t, presents, ordre_pour_tous),
             _ => false,
         };
         lignes.push(Ligne::Entree { id, libelle, coche });

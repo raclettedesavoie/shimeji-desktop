@@ -1360,6 +1360,12 @@ fn boucle(
     // qui demanderait un clic reçoit un équivalent scriptable »).
     let mut menu_de_demonstration = std::env::var_os("SHIMEJI_MENU_OUVERT").is_some();
 
+    // Le dernier ordre donné par la section « Tout le monde » du menu, s'il
+    // tient encore. Il garde la ligne cochée tant qu'un seul personnage lui
+    // obéit — voir `menu_perso::coche_pour_tous`. Pour la session seulement,
+    // comme les tenues.
+    let mut ordre_pour_tous: Option<behavior::tenue::Tenue> = None;
+
     // Le label de l'acteur **qui a ouvert le dernier menu contextuel**.
     //
     // ⚠️ **C'est lui, et pas l'acteur sous le curseur, qui reçoit la
@@ -1980,8 +1986,19 @@ fn boucle(
 
         // Résolue UNE fois, pour tous — voir `menu_perso::resoudre_pour_tous`.
         // `map` : ne s'applique que s'il y a une commande.
-        let commande_pour_tous =
-            commande_pour_tous.map(|c| menu_perso::resoudre_pour_tous(c, &presents));
+        let commande_pour_tous = commande_pour_tous
+            .map(|c| menu_perso::resoudre_pour_tous(c, &presents, ordre_pour_tous));
+
+        // Le dernier ordre collectif, retenu pour la coche (voir
+        // `menu_perso::coche_pour_tous`) : imposé, il devient l'ordre en
+        // cours ; relâché, il n'y en a plus.
+        match commande_pour_tous {
+            Some(menu_perso::Commande::Imposer(t)) => ordre_pour_tous = Some(t),
+            Some(menu_perso::Commande::Relacher(t)) if ordre_pour_tous == Some(t) => {
+                ordre_pour_tous = None;
+            }
+            _ => {}
+        }
 
         // Caché par l'utilisateur, OU session verrouillée : on calcule tout,
         // on ne dessine rien. Lu une fois, il vaut pour tous les acteurs.
@@ -2150,6 +2167,7 @@ fn boucle(
                     ou,
                     acteur.ch.tenue,
                     &presents,
+                    ordre_pour_tous,
                 );
 
                 // ── Le menu, dans sa fenêtre ────────────────────────────
