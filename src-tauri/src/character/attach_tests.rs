@@ -460,3 +460,12 @@ fn l_echelle_entiere_ne_touche_pas_au_reglage_de_l_auteur() {
     let m: Manifest = serde_json::from_str(json).unwrap();
     assert_eq!(window_size(&m, 1, 1.0), (64, 64));
 }
+
+/// « Petite taille » (tray, demande de l'auteur 2026-09-24) : la taille
+/// qu'a un personnage sur l'écran du portable à 125 %, où 128 px réels
+/// paraissent 1,25 fois plus petits — d'où ×0,8, soit 1 / 1,25.
+#[test]
+fn la_petite_taille_est_celle_de_l_ecran_a_125() {
+    assert_eq!(facteur_de_taille(false), 1.0);
+    assert!((facteur_de_taille(true) * 1.25 - 1.0).abs() < 1e-6);
+}

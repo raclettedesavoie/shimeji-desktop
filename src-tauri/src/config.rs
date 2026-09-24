@@ -372,6 +372,11 @@ pub struct Config {
     /// l'échelle du moniteur.
     pub echelle: f32,
 
+    /// La case « Petite taille » du tray : les personnages à ×0,8 partout
+    /// (`attach::facteur_de_taille`). Clé du fichier : `petiteTaille`.
+    /// Fausse par défaut — la taille normale est celle par défaut.
+    pub petite_taille: bool,
+
     /// Multiplie les vitesses de marche et de course.
     ///
     /// À 1, on est exactement aux valeurs de Shimeji-ee.
@@ -444,6 +449,7 @@ impl Default for Config {
             // `blob` est le personnage de test, et le seul livré.
             personnages: vec!["blob".to_string()],
             echelle: 1.0,
+            petite_taille: false,
             vitesse: 1.0,
             premiere_configuration_faite: false,
             ecran_au_demarrage: EcranDemarrage::Personnages,
@@ -838,6 +844,14 @@ pub fn definir_version_signalee(version: &str) -> Result<(), String> {
     ecrire_cles(
         &chemin_d_ecriture()?,
         &[("derniereVersionSignalee", serde_json::json!(version))],
+    )
+}
+
+/// Retient la case « Petite taille » du tray, pour le prochain lancement.
+pub fn definir_petite_taille(petite: bool) -> Result<(), String> {
+    ecrire_cles(
+        &chemin_d_ecriture()?,
+        &[("petiteTaille", serde_json::json!(petite))],
     )
 }
 

@@ -423,8 +423,12 @@ fn lancer_application() {
             // du pixel-art agrandi d'un facteur fractionnaire est crénelé.
             // Le réglage de l'utilisateur, lui, n'est PAS arrondi — voir le
             // pourquoi sur cette fonction.
-            let echelle_affichage =
-                character::attach::echelle_ecran_entiere(ecrans[0].scale) * configuration.echelle;
+            //
+            // Et la case « Petite taille » du tray, ×0,8 si elle est cochée
+            // (`attach::facteur_de_taille`).
+            let echelle_affichage = character::attach::echelle_ecran_entiere(ecrans[0].scale)
+                * configuration.echelle
+                * character::attach::facteur_de_taille(configuration.petite_taille);
 
             // ── Un acteur, et une fenêtre, par personnage du roster ──────
             //
@@ -504,6 +508,12 @@ fn lancer_application() {
                 demande.clone(),
                 roster.clone(),
                 commande.clone(),
+            );
+            // La case « Petite taille » telle que `config.json` l'a laissée :
+            // le tray s'en sert pour cocher sa case, la boucle pour la taille.
+            actions.petite_taille.store(
+                configuration.petite_taille,
+                std::sync::atomic::Ordering::Relaxed,
             );
 
             // `manage` met la valeur à disposition des commandes, qui la
@@ -1253,8 +1263,15 @@ fn boucle(
 
     // L'échelle du moniteur, séparée du réglage de la config : le
     // rechargement à chaud change le second sans redemander le premier.
+    //
+    // La case « Petite taille » est la troisième composante de
+    // `echelle_affichage` : on la retire aussi pour retrouver celle du
+    // moniteur. `petite_appliquee` retient la valeur prise en compte, pour
+    // voir quand l'utilisateur la change dans le tray.
+    let mut petite_appliquee = actions.petite_taille.load(std::sync::atomic::Ordering::Relaxed);
+    let facteur_initial = character::attach::facteur_de_taille(petite_appliquee);
     let mut ecrans_echelle = if echelle_config != 0.0 {
-        echelle_affichage / echelle_config
+        echelle_affichage / (echelle_config * facteur_initial)
     } else {
         1.0
     };
@@ -1380,6 +1397,19 @@ fn boucle(
         // rester pilotable par une horloge factice (spec §10.2).
         let debut = Instant::now();
         let maintenant = horloge.elapsed();
+
+        // ── La case « Petite taille » a-t-elle changé ? ─────────────────
+        //
+        // Lue à chaque image (un `load` atomique : gratuit), appliquée
+        // seulement quand elle change. Tout le reste — taille des sprites,
+        // hitbox, ancres — se recalcule déjà à chaque image depuis
+        // `echelle_affichage` : il suffit de la mettre à jour (décision n° 1).
+        let petite = actions.petite_taille.load(std::sync::atomic::Ordering::Relaxed);
+        if petite != petite_appliquee {
+            petite_appliquee = petite;
+            echelle_affichage =
+                ecrans_echelle * echelle_config * character::attach::facteur_de_taille(petite);
+        }
 
         // Le roster a-t-il changé pendant cette image ? Si oui, la table
         // `id -> pack` est republiée dans toutes les fenêtres d'écran avant
@@ -1522,7 +1552,9 @@ fn boucle(
                 // Même arrondi qu'au démarrage : brancher un écran d'un
                 // autre DPI ne doit pas rendre le personnage crénelé.
                 ecrans_echelle = character::attach::echelle_ecran_entiere(ecrans[0].scale);
-                echelle_affichage = ecrans_echelle * echelle_config;
+                echelle_affichage = ecrans_echelle
+                    * echelle_config
+                    * character::attach::facteur_de_taille(petite_appliquee);
             }
 
             // Le fichier témoin : présent → on demande un rechargement du
@@ -1558,7 +1590,9 @@ fn boucle(
                     table = r.table;
                     echelle_config = r.echelle_config;
                     config_courante = r.config;
-                    echelle_affichage = ecrans_echelle * echelle_config;
+                    echelle_affichage = ecrans_echelle
+                        * echelle_config
+                        * character::attach::facteur_de_taille(petite_appliquee);
 
                     // ── Les manifestes des acteurs déjà là ─────────────
                     //

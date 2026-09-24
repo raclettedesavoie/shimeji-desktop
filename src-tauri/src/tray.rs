@@ -33,7 +33,7 @@ use tauri::{AppHandle, Manager};
 // Les identifiants vivent dans `actions.rs` avec ceux du menu du personnage :
 // c'est là qu'ils sont lus, et les tenir à deux endroits inviterait à en
 // ajouter un sans son cas de traitement.
-use crate::actions::{ID_AFFICHER, ID_CATALOGUE, ID_DEMARRAGE, ID_QUITTER};
+use crate::actions::{ID_AFFICHER, ID_CATALOGUE, ID_DEMARRAGE, ID_PETITE_TAILLE, ID_QUITTER};
 
 /// Partagé entre le tray et les boucles : les personnages sont-ils visibles ?
 ///
@@ -127,6 +127,21 @@ pub fn installer(
     )
     .map_err(|e| format!("entrée « démarrage » : {e}"))?;
 
+    // « Petite taille » : la taille qu'ils ont sur l'écran du portable à
+    // 125 %. Décochée, c'est la taille normale — celle par défaut. L'état
+    // initial vient de `config.json`, rangé dans `Actions` par `main`.
+    let petite_taille = CheckMenuItem::with_id(
+        app,
+        ID_PETITE_TAILLE,
+        "Petite taille",
+        true,
+        actions
+            .petite_taille
+            .load(std::sync::atomic::Ordering::Relaxed),
+        None::<&str>,
+    )
+    .map_err(|e| format!("entrée « petite taille » : {e}"))?;
+
     let catalogue = MenuItem::with_id(
         app,
         ID_CATALOGUE,
@@ -170,6 +185,7 @@ pub fn installer(
         app,
         &[
             &afficher,
+            &petite_taille,
             &demarrage,
             &catalogue,
             &maj,
@@ -190,6 +206,7 @@ pub fn installer(
     let cases = crate::actions::CasesTray {
         afficher: afficher.clone(),
         demarrage: demarrage.clone(),
+        petite_taille: petite_taille.clone(),
         maj: maj.clone(),
     };
 

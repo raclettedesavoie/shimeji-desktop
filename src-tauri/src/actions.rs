@@ -45,6 +45,8 @@ use tauri::{AppHandle, Wry};
 /// Entrées du menu du **tray**.
 pub const ID_AFFICHER: &str = "afficher";
 pub const ID_DEMARRAGE: &str = "demarrage";
+/// La case « Petite taille » (demande de l'auteur, 2026-09-24).
+pub const ID_PETITE_TAILLE: &str = "petite_taille";
 pub const ID_QUITTER: &str = "quitter";
 
 /// L'entrée de mise à jour du tray. **Une seule entrée pour deux états** :
@@ -121,6 +123,7 @@ pub fn nouvelle_commande() -> BoiteCommande {
 pub struct CasesTray {
     pub afficher: CheckMenuItem<Wry>,
     pub demarrage: CheckMenuItem<Wry>,
+    pub petite_taille: CheckMenuItem<Wry>,
 
     /// L'entrée de mise à jour. Gardée pour la MÊME raison que `afficher` :
     /// son libellé change quand une version est trouvée, et le menu du tray
@@ -163,6 +166,12 @@ pub struct Actions {
     /// consomme en une seule opération, sans verrou.
     pub cacher_le_demandeur: std::sync::atomic::AtomicBool,
 
+    /// La case « Petite taille » du tray, cochée ou non. Écrite par
+    /// `executer`, lue par la boucle à chaque image : elle recalcule
+    /// l'échelle d'affichage quand la valeur change. `AtomicBool` : deux
+    /// threads, un booléen, aucun verrou nécessaire.
+    pub petite_taille: std::sync::atomic::AtomicBool,
+
     /// Le roster **voulu** : la liste des personnages qui doivent vivre,
     /// avec ses doublons (design §4).
     ///
@@ -202,6 +211,9 @@ impl Actions {
             // et elle la trouve dans `Actions`, qu'elle reçoit déjà.
             pour_tous: nouvelle_commande(),
             cacher_le_demandeur: std::sync::atomic::AtomicBool::new(false),
+            // Décochée ici ; `main` y range la valeur de `config.json` juste
+            // après la construction.
+            petite_taille: std::sync::atomic::AtomicBool::new(false),
             // Les présents sont vides au départ : la boucle les publiera à
             // sa première image. Rien ne les lit avant.
             presents: Mutex::new(Vec::new()),
@@ -414,6 +426,21 @@ pub fn executer(actions: &Actions, app: &AppHandle, id: &str, cases_du_tray: &Ca
             // permanence.
             if reel != voulu {
                 let _ = cases_du_tray.demarrage.set_checked(reel);
+            }
+        }
+
+        ID_PETITE_TAILLE => {
+            let petite = cases_du_tray.petite_taille.is_checked().unwrap_or(false);
+            // La boucle voit le changement à l'image suivante, et
+            // redimensionne tout le monde d'un coup.
+            actions
+                .petite_taille
+                .store(petite, std::sync::atomic::Ordering::Relaxed);
+            // Retenue pour le prochain lancement. Un échec d'écriture n'annule
+            // pas le changement à l'écran : il ne survivra simplement pas au
+            // redémarrage.
+            if let Err(e) = crate::config::definir_petite_taille(petite) {
+                eprintln!("petite taille non enregistrée : {e}");
             }
         }
 
