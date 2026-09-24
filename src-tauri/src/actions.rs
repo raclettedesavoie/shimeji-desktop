@@ -55,6 +55,11 @@ pub const ID_QUITTER: &str = "quitter";
 /// l'une des deux serait toujours inutile.
 pub const ID_MAJ: &str = "maj";
 
+/// « Tester une notification » : en build debug seulement, pour vérifier que
+/// les toasts Windows s'affichent (demande de l'auteur, 2026-09-24).
+#[cfg(debug_assertions)]
+pub const ID_TEST_TOAST: &str = "test_toast";
+
 /// Proposée par les DEUX menus, comme `quitter` : elle fait exactement la
 /// même chose depuis l'un ou l'autre, donc un seul identifiant — et donc un
 /// seul cas dans `executer`.
@@ -472,6 +477,13 @@ pub fn executer(actions: &Actions, app: &AppHandle, id: &str, cases_du_tray: &Ca
             // qu'il n'y a qu'un identifiant. La seule différence entre les
             // deux états est ce que l'utilisateur en attend.
             crate::maj::installer(app.clone());
+        }
+
+        // `#[cfg]` sur un bras de `match` : en release, ce bras n'existe pas,
+        // et l'identifiant non plus — un clic ne peut donc pas y arriver.
+        #[cfg(debug_assertions)]
+        ID_TEST_TOAST => {
+            crate::toast::test(app);
         }
 
         ID_QUITTER => {

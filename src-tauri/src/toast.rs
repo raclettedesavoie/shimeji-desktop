@@ -62,6 +62,28 @@ pub fn arriere_plan(app: &AppHandle) {
     }
 }
 
+/// Un toast de TEST, émis par l'entrée « Tester une notification » du tray —
+/// présente en build debug seulement (demande de l'auteur, 2026-09-24).
+///
+/// Le résultat est imprimé **toujours**, sans attendre `SHIMEJI_TOAST` :
+/// c'est tout l'intérêt de l'entrée. `Ok` veut dire que Windows l'a
+/// ACCEPTÉ ; s'il n'apparaît pas à l'écran alors, c'est l'assistant de
+/// concentration ou les réglages de notifications de Windows qui l'avalent
+/// (voir `arriere_plan`).
+#[cfg(debug_assertions)]
+pub fn test(app: &AppHandle) {
+    let resultat = app
+        .notification()
+        .builder()
+        .title("Shimeji Desktop — notification de test")
+        .body("Si vous lisez ceci, les notifications Windows fonctionnent.")
+        .show();
+    match resultat {
+        Ok(()) => println!("[toast] test accepté par Windows"),
+        Err(e) => eprintln!("[toast] test refusé : {e}"),
+    }
+}
+
 /// Annonce qu'une nouvelle version est disponible (mise à jour automatique).
 ///
 /// ⚠️ **Ce toast s'écarte d'une décision du projet** — « il ne notifie rien,

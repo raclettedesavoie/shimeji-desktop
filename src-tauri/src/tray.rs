@@ -178,22 +178,34 @@ pub fn installer(
     let quitter = MenuItem::with_id(app, ID_QUITTER, "Quitter", true, None::<&str>)
         .map_err(|e| format!("entrée « quitter » : {e}"))?;
 
-    // `&[&dyn IsMenuItem<R>]` : les entrées n'ont pas le même type concret
+    // `&dyn IsMenuItem<Wry>` : les entrées n'ont pas le même type concret
     // (`MenuItem`, `CheckMenuItem`, `PredefinedMenuItem`), donc on passe par
-    // des références de trait. C'est la raison du `&` devant chacune.
-    let menu = Menu::with_items(
+    // des références de trait. Un `Vec` plutôt qu'un tableau fixe : l'entrée
+    // de test ne s'y ajoute qu'en debug.
+    // `allow(unused_mut)` : en release, rien n'est ajouté entre les deux —
+    // le `mut` n'y sert qu'aux `push` de fin.
+    #[allow(unused_mut)]
+    let mut entrees: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> =
+        vec![&afficher, &petite_taille, &demarrage, &catalogue, &maj];
+
+    // « Tester une notification », en build debug SEULEMENT : `cargo run`
+    // l'a, l'installateur non (demande de l'auteur, 2026-09-24).
+    #[cfg(debug_assertions)]
+    let test_toast = MenuItem::with_id(
         app,
-        &[
-            &afficher,
-            &petite_taille,
-            &demarrage,
-            &catalogue,
-            &maj,
-            &separateur,
-            &quitter,
-        ],
+        crate::actions::ID_TEST_TOAST,
+        "Tester une notification (debug)",
+        true,
+        None::<&str>,
     )
-    .map_err(|e| format!("menu : {e}"))?;
+    .map_err(|e| format!("entrée « test toast » : {e}"))?;
+    #[cfg(debug_assertions)]
+    entrees.push(&test_toast);
+
+    entrees.push(&separateur);
+    entrees.push(&quitter);
+
+    let menu = Menu::with_items(app, &entrees).map_err(|e| format!("menu : {e}"))?;
 
     // ── Le gestionnaire d'événements — le SEUL du programme ─────────────
     //
