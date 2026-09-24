@@ -276,7 +276,12 @@ pub enum PhaseGrimpe {
     /// Marcher vers le mur retenu. On mémorise **son identité**, jamais sa
     /// position : le monde est reconstruit à 8 Hz, et une position serait
     /// périmée (décision n° 1).
-    Rejoindre { mur: PlatformId, presse: bool },
+    ///
+    /// `attend_depuis` : `Some(t)` quand il fait la file au pied du mur (le
+    /// bas du mur est pris, spec « ne pas se superposer » §4), depuis
+    /// l'instant `t`. C'est ce qui le compte comme « à l'arrêt » — il occupe
+    /// sa place dans la file —, et ce qui borne l'attente à 120 s.
+    Rejoindre { mur: PlatformId, presse: bool, attend_depuis: Option<Duration> },
 
     /// Se déplacer le long de la paroi vers `cible`.
     ///
@@ -783,7 +788,7 @@ fn grimper(
                         return Issue::Echouee;
                     };
 
-                    phase = PhaseGrimpe::Rejoindre { mur, presse };
+                    phase = PhaseGrimpe::Rejoindre { mur, presse, attend_depuis: None };
                 }
 
                 Face::Left | Face::Right => {
@@ -845,7 +850,7 @@ fn grimper(
         }
 
         // ── Marcher jusqu'au pied du mur ────────────────────────────────
-        PhaseGrimpe::Rejoindre { mur, presse } => {
+        PhaseGrimpe::Rejoindre { mur, presse, .. } => {
             let Some(plat_mur) = world.get(mur) else {
                 // Écran débranché en cours de route.
                 ch.intention = None;

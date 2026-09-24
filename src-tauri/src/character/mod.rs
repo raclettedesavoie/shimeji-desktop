@@ -129,6 +129,13 @@ pub struct Character {
     /// commande, et quand on l'attrape.
     pub a_jouer: Option<crate::behavior::intention::Intention>,
 
+    /// Depuis quand il est à l'arrêt AU SOL (assis, endormi, en pause, en
+    /// file au pied d'un mur…), `None` s'il marche, tombe ou est porté.
+    /// C'est ce qui départage deux personnages qui voudraient la même place :
+    /// le dernier arrivé cède (spec « ne pas se superposer » §3). Tenu par
+    /// `behavior::pas_parmi`. Pour la session seulement.
+    pub arrete_depuis: Option<Duration>,
+
     /// L'état du portage. **Significatif seulement quand `attachment` vaut
     /// `Dragged`**, et réinitialisé à chaque saisie.
     pub portage: Portage,
@@ -207,6 +214,7 @@ impl Character {
             intention: None,
             tenue: None,
             a_jouer: None,
+            arrete_depuis: None,
             // Sans objet tant qu'il n'est pas porté ; `reflex` le
             // réinitialise à l'instant de l'attrapage.
             portage: Portage::neuf(pos_connue),
