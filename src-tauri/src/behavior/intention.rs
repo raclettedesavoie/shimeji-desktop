@@ -31,6 +31,13 @@ use crate::world::{PlatformId, World};
 use super::tenue::Tenue;
 use std::time::Duration;
 
+/// L'attente maximale dans la file d'un mur (spec « ne pas se superposer »
+/// §4). L'attente ne compte pas dans le délai d'abandon — sinon le dixième de
+/// la file renoncerait avant son tour —, mais une file bloquée pour de bon
+/// (un personnage qui ne monte plus) doit finir par renoncer : la navigation
+/// a le droit d'échouer (décision n° 4).
+const ATTENTE_MAX_FILE: Duration = Duration::from_secs(120);
+
 /// Le délai au bout duquel **toute** intention échoue (spec §7.3).
 ///
 /// Uniforme, sans exception — y compris pour `Flaner`, qui pourrait durer
@@ -516,6 +523,7 @@ pub enum Issue {
 /// descend jusqu'ici, et non directement dans `se_reposer` depuis
 /// `behavior::pas`, pour que les trois intentions gardent la même signature :
 /// c'est `poursuivre` qui aiguille, pas l'appelant.
+/// `poursuivre_parmi` pour un personnage seul au monde (simulation, tests).
 pub fn poursuivre(
     ch: &mut Character,
     world: &World,
@@ -524,6 +532,23 @@ pub fn poursuivre(
     maintenant: Duration,
     dt: f32,
     rng: &mut dyn Rng,
+) -> Issue {
+    poursuivre_parmi(ch, world, e, reglages, maintenant, dt, rng, &super::place::Voisinage::seul())
+}
+
+/// Fait avancer l'intention en cours, avec les places des autres
+/// (`voisins`, spec « ne pas se superposer » — seule l'escalade s'en sert,
+/// pour la file au pied du mur).
+#[allow(clippy::too_many_arguments)]
+pub fn poursuivre_parmi(
+    ch: &mut Character,
+    world: &World,
+    e: &super::Entrees,
+    reglages: &Reglages,
+    maintenant: Duration,
+    dt: f32,
+    rng: &mut dyn Rng,
+    voisins: &super::place::Voisinage,
 ) -> Issue {
     // `let Some(...) else` : pas d'intention, rien à poursuivre.
     let Some(mut ai) = ch.intention else {
@@ -584,7 +609,7 @@ pub fn poursuivre(
             }
 
             Intention::Grimper => {
-                let issue = grimper(ch, world, reglages, &mut ai, maintenant, dt, rng);
+                let issue = grimper(ch, world, e, reglages, &mut ai, maintenant, dt, rng, voisins);
                 if ch.intention.is_some() {
                     ch.intention = Some(ai);
                 }
@@ -719,14 +744,17 @@ fn flaner(
 /// exécute qu'une, et écrit la suivante dans `ai.etat`. C'est ce qui rend la
 /// fonction lisible sans boucle interne, au prix d'une image de transition
 /// que personne ne voit à 60 Hz.
+#[allow(clippy::too_many_arguments)]
 fn grimper(
     ch: &mut Character,
     world: &World,
+    e: &super::Entrees,
     reglages: &Reglages,
     ai: &mut ActiveIntention,
     maintenant: Duration,
     dt: f32,
     rng: &mut dyn Rng,
+    voisins: &super::place::Voisinage,
 ) -> Issue {
     // Même motif que `flaner` : on n'extrait l'état que sous la bonne
     // variante, et une incohérence de construction se solde par un échec
@@ -850,7 +878,7 @@ fn grimper(
         }
 
         // ── Marcher jusqu'au pied du mur ────────────────────────────────
-        PhaseGrimpe::Rejoindre { mur, presse, .. } => {
+        PhaseGrimpe::Rejoindre { mur, presse, attend_depuis } => {
             let Some(plat_mur) = world.get(mur) else {
                 // Écran débranché en cours de route.
                 ch.intention = None;
@@ -871,6 +899,56 @@ fn grimper(
                 ch.intention = None;
                 return Issue::Echouee;
             };
+
+            // ── La file au pied du mur (spec « ne pas se superposer » §4) ─
+            //
+            // Seulement sur le sol de CE mur : en route depuis un autre
+            // écran, il marche sans regarder la file.
+            if let (Some((sol, pied)), Attachment::On { platform, face: Face::Top, offset }) =
+                (sol_au_pied_du_mur(world, mur), ch.attachment)
+            {
+                if platform == sol {
+                    let (demi, hauteur) = super::place::corps(ch, e.echelle_affichage);
+                    let longueur_mur = plat_mur.rect.face_length(face_mur);
+                    let ecart = (offset - pied).abs();
+                    let a_mon_tour = super::place::bas_du_mur_libre(voisins, mur, longueur_mur, hauteur)
+                        && super::place::premier_de_la_file(voisins, mur, pied, ecart);
+
+                    if !a_mon_tour {
+                        // Sa place dans la file : la place libre la plus
+                        // proche du pied du mur. Visée à chaque image, c'est
+                        // ce qui fait AVANCER la file quand le premier part.
+                        let longueur_sol = world.get(sol).map(|p| p.rect.face_length(Face::Top)).unwrap_or(0.0);
+                        let place = super::place::place_libre(voisins, sol, pied, demi, longueur_sol).unwrap_or(offset);
+                        let arrive = marcher_vers(ch, place, reglages, maintenant, dt);
+                        let attend_depuis = if arrive {
+                            // Arrivé à sa place : il attend, face au mur.
+                            if let Some(f) = Facing::face_a_la_paroi(face_mur) {
+                                ch.facing = f;
+                            }
+                            ch.set_pose(POSE_STAND, maintenant);
+                            let depuis = attend_depuis.unwrap_or(maintenant);
+                            if maintenant.saturating_sub(depuis) > ATTENTE_MAX_FILE {
+                                // File bloquée pour de bon : il renonce
+                                // (décision n° 4, la navigation peut échouer).
+                                ch.intention = None;
+                                return Issue::Echouee;
+                            }
+                            // L'attente ne compte pas dans le délai
+                            // d'abandon : on recule son début d'autant.
+                            ai.depuis += Duration::from_secs_f32(dt);
+                            Some(depuis)
+                        } else {
+                            None
+                        };
+                        ai.etat = EtatIntention::Grimpe {
+                            phase: PhaseGrimpe::Rejoindre { mur, presse, attend_depuis },
+                            jusqu_a,
+                        };
+                        return Issue::EnCours;
+                    }
+                }
+            }
 
             // Il regarde le mur, et il marche vers lui.
             //

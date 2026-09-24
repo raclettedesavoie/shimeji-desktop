@@ -632,7 +632,7 @@ pub fn pas_parmi(
     }
 
     let servait_au_mur = tenue::sert_une_tenue_au_mur(ch);
-    match intention::poursuivre(ch, world, e, reglages, maintenant, dt, rng) {
+    match intention::poursuivre_parmi(ch, world, e, reglages, maintenant, dt, rng, voisins) {
         intention::Issue::EnCours => return r,
         intention::Issue::Finie => {}
         intention::Issue::Echouee => {

@@ -34,6 +34,11 @@ pub struct Occupant {
     pub arrete_depuis: Option<Duration>,
     /// `Some(mur)` s'il fait la file au pied de ce mur.
     pub attend_le_mur: Option<PlatformId>,
+    /// `Some(mur)` s'il se dirige vers ce mur pour y grimper — en marche OU
+    /// en file. C'est sur lui que se règle la priorité : sans cela, partis
+    /// ensemble d'un même point, tous arrivaient au mur libre à la même
+    /// image et s'y accrochaient d'un coup.
+    pub vise_le_mur: Option<PlatformId>,
 }
 
 /// Ce qu'un personnage sait des autres à cette image : qui il est, et la
@@ -100,6 +105,15 @@ pub fn attend_le_mur(ch: &Character) -> Option<PlatformId> {
     }
 }
 
+/// Le mur vers lequel il marche pour y grimper (phase `Rejoindre`), qu'il
+/// soit en route ou en file.
+pub fn vise_le_mur(ch: &Character) -> Option<PlatformId> {
+    match ch.intention?.etat {
+        EtatIntention::Grimpe { phase: PhaseGrimpe::Rejoindre { mur, .. }, .. } => Some(mur),
+        _ => None,
+    }
+}
+
 /// L'occupant qu'il est, s'il est posé quelque part.
 pub fn occupant_de(acteur: u32, ch: &Character, echelle: f32) -> Option<Occupant> {
     let Attachment::On { platform, face, offset } = ch.attachment else {
@@ -114,6 +128,7 @@ pub fn occupant_de(acteur: u32, ch: &Character, echelle: f32) -> Option<Occupant
         demi_largeur,
         arrete_depuis: ch.arrete_depuis,
         attend_le_mur: attend_le_mur(ch),
+        vise_le_mur: vise_le_mur(ch),
     })
 }
 
@@ -195,12 +210,14 @@ pub fn bas_du_mur_libre(v: &Voisinage, mur: PlatformId, longueur_mur: f32, haute
     !v.autres().any(|o| o.platform == mur && o.offset > longueur_mur - hauteur)
 }
 
-/// Est-il le premier de la file de ce mur ? Oui si personne n'y attend plus
-/// près du pied (`pied`, offset sur le sol) que lui (`mon_ecart`). Sans
-/// cela, quand le mur se libère, toute la file se ruerait vers lui.
+/// Est-il le premier de la file de ce mur ? Oui si personne ne VISE ce mur
+/// plus près du pied (`pied`, offset sur le sol) que lui (`mon_ecart`) —
+/// en file ou encore en marche. Sans cela, quand le mur se libère, toute la
+/// file se ruerait vers lui ; et des personnages partis ensemble s'y
+/// accrocheraient à la même image.
 pub fn premier_de_la_file(v: &Voisinage, mur: PlatformId, pied: f32, mon_ecart: f32) -> bool {
     !v.autres().any(|o| {
-        o.attend_le_mur == Some(mur) && {
+        o.vise_le_mur == Some(mur) && {
             let son_ecart = (o.offset - pied).abs();
             son_ecart < mon_ecart || (son_ecart == mon_ecart && o.acteur < v.moi)
         }

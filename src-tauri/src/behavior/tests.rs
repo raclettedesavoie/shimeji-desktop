@@ -2078,3 +2078,107 @@ fn ecran_plein_il_reste_ou_il_est() {
         assert_eq!(maintenant, avant, "quelqu'un bouge encore sur un écran plein");
     });
 }
+
+/// Le bas du mur gauche du monde de test : longueur de sa face.
+fn longueur_mur_gauche(m: &World) -> f32 {
+    let mur = mur_gauche(m);
+    mur.rect.face_length(Face::Right)
+}
+
+#[test]
+fn tout_le_monde_grimpe_un_par_un() {
+    use crate::menu_perso::Commande;
+    let m = monde();
+    let mur = mur_gauche(&m).id;
+    let longueur = longueur_mur_gauche(&m);
+    let (_, hauteur) = place::corps(&perso(&m), 1.0);
+    let mut persos = foule_au_meme_endroit(&m, 5, 300.0);
+    let mut rng = XorShift32::seeded(89);
+    let t0 = Duration::from_secs(1);
+    commander_foule(&mut persos, &m, Commande::Imposer(tenue::Tenue::Grimper), t0, &mut rng);
+
+    let mut monte = [false; 5];
+    let mut file_vue = 0usize;
+    jouer_foule(&mut persos, &m, &entrees(true, 1.0), &mut rng, t0, 60 * 180, |p| {
+        // Jamais deux dans la zone de départ du mur.
+        let au_depart = p
+            .iter()
+            .filter(|c| matches!(c.attachment, Attachment::On { platform, offset, .. } if platform == mur && offset > longueur - hauteur))
+            .count();
+        assert!(au_depart <= 1, "{au_depart} au départ du mur en même temps");
+        file_vue = file_vue.max(p.iter().filter(|c| place::attend_le_mur(c).is_some()).count());
+        for (i, c) in p.iter().enumerate() {
+            if matches!(c.attachment, Attachment::On { face, .. } if face != Face::Top) {
+                monte[i] = true;
+            }
+        }
+    });
+    assert!(monte.iter().all(|&m| m), "tous ne sont pas montés : {monte:?}");
+    assert!(file_vue >= 2, "aucune file ne s'est formée ({file_vue})");
+}
+
+#[test]
+fn une_file_bloquee_abandonne_apres_deux_minutes() {
+    // Un personnage figé au bas du mur (« Rester accroché ») bloque la
+    // zone de départ. Le second, qui veut grimper SANS tenue, attend… puis
+    // renonce après 120 s d'attente — pas avant.
+    let m = monde();
+    let longueur = longueur_mur_gauche(&m);
+    let mut bloqueur = perso_au_mur(&m, tenue::Tenue::ResterAccroche);
+    if let Attachment::On { platform, face, .. } = bloqueur.attachment {
+        bloqueur.attachment = Attachment::On { platform, face, offset: longueur };
+    }
+    let mut grimpeur = perso(&m);
+    let t0 = Duration::from_secs(1);
+    grimpeur.intention = Some(intention::ActiveIntention::grimper_sur_ordre(t0));
+    let mut persos = vec![bloqueur, grimpeur];
+    let mut rng = XorShift32::seeded(97);
+
+    let t = jouer_foule(&mut persos, &m, &entrees(true, 1.0), &mut rng, t0, 60 * 100, |_| {});
+    assert!(place::attend_le_mur(&persos[1]).is_some(), "il devrait encore attendre à 100 s");
+    // Entre 100 et 140 s, il RENONCE à un moment. On ne teste pas qu'il
+    // n'attend plus à 140 s : après avoir renoncé, le tirage peut lui
+    // redonner l'envie de grimper, et le remettre dans la file.
+    let mut a_renonce = false;
+    jouer_foule(&mut persos, &m, &entrees(true, 1.0), &mut rng, t, 60 * 40, |p| {
+        a_renonce |= place::attend_le_mur(&p[1]).is_none();
+    });
+    assert!(a_renonce, "il n'a jamais renoncé en 140 s");
+}
+
+#[test]
+fn la_file_ne_joue_que_sur_le_sol_du_mur() {
+    // Monde à trois écrans : depuis l'écran du milieu, il marche vers le
+    // mur d'un voisin. En route, il ne fait la file nulle part, même si ce
+    // mur est pris.
+    let m = trois_ecrans();
+    let mut ch = perso(&m);
+    let milieu = m.platforms().iter().find(|p| p.has_face(Face::Top) && p.rect.x == 1920.0).expect("le sol du milieu");
+    ch.attachment = Attachment::On { platform: milieu.id, face: Face::Top, offset: 900.0 };
+    let t0 = Duration::from_secs(1);
+    ch.intention = Some(intention::ActiveIntention::grimper_sur_ordre(t0));
+    // Tous les murs « pris » : un occupant fictif dans la zone de départ de
+    // chacun.
+    let autres: Vec<place::Occupant> = m
+        .platforms()
+        .iter()
+        .filter(|p| p.has_face(Face::Left) || p.has_face(Face::Right))
+        .enumerate()
+        .map(|(i, p)| {
+            let face = p.faces[0];
+            place::Occupant { acteur: 100 + i as u32, platform: p.id, face, offset: p.rect.face_length(face), demi_largeur: 45.0, arrete_depuis: None, attend_le_mur: None, vise_le_mur: None }
+        })
+        .collect();
+    let v = place::Voisinage { moi: 0, autres: &autres };
+    let (table, reglages) = (desire::TableEnvies::defaut(), reglages_defaut());
+    let mut rng = XorShift32::seeded(101);
+    let mut t = t0;
+    // 3 s : il est encore sur le sol du milieu, loin de tout mur.
+    for _ in 0..180 {
+        t += Duration::from_secs_f32(DT);
+        pas_parmi(&mut ch, &m, &entrees(true, 1.0), &table, &reglages, t, DT, &mut rng, &v);
+        if matches!(ch.attachment, Attachment::On { platform, .. } if platform == milieu.id) {
+            assert!(place::attend_le_mur(&ch).is_none(), "il fait la file loin du mur");
+        }
+    }
+}

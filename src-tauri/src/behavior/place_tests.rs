@@ -21,6 +21,7 @@ fn assis(acteur: u32, offset: f32, depuis: u64) -> Occupant {
         demi_largeur: 45.0,
         arrete_depuis: Some(Duration::from_secs(depuis)),
         attend_le_mur: None,
+        vise_le_mur: None,
     }
 }
 
@@ -125,6 +126,7 @@ fn le_bas_du_mur_est_pris_tant_que_le_grimpeur_n_a_pas_monte_d_un_corps() {
         demi_largeur: 45.0,
         arrete_depuis: None, // en mouvement : compte quand même sur le mur
         attend_le_mur: None,
+        vise_le_mur: None,
     };
     let autres = [grimpeur(950.0)];
     assert!(!bas_du_mur_libre(&Voisinage { moi: 9, autres: &autres }, mur(), 1000.0, 100.0));
@@ -136,6 +138,7 @@ fn le_bas_du_mur_est_pris_tant_que_le_grimpeur_n_a_pas_monte_d_un_corps() {
 fn seul_le_plus_proche_du_mur_part_le_premier() {
     let en_file = |acteur, offset| Occupant {
         attend_le_mur: Some(mur()),
+        vise_le_mur: Some(mur()),
         ..assis(acteur, offset, 1)
     };
     // Pied du mur à 0. Lui à 45, moi à 135 : il passe avant moi.
