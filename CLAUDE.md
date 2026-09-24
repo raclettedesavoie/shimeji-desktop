@@ -860,7 +860,7 @@ ramassant, sautant, puis tombant hors de l'écran. Une poubelle supprime un pack
 du disque. Le reste est inchangé — marche, escalade, attrape-souris, tray,
 `config.json`.
 
-**384 tests.** Et le CPU, mesuré sur le programme réel (release, 60 s, 3 écrans) :
+**388 tests.** Et le CPU, mesuré sur le programme réel (release, 60 s, 3 écrans) :
 
 | Roster | Caché | En marche | dont `shimeji-desktop` | Latence de la file |
 |---|---|---|---|---|
