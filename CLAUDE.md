@@ -39,6 +39,7 @@ Il n'est pas cantonné au bas de l'écran. Il **explore** :
 | l'application au premier plan change | change d'attitude **et se déplace vers cette fenêtre** |
 | la batterie est faible | fatigue |
 | la session est verrouillée | disparaît proprement |
+| une application passe en plein écran (un jeu) | **quitte cet écran** pour un autre, ou se cache s'il n'y en a pas d'autre (`plein_ecran.rs`) |
 
 ### Interaction
 
@@ -166,7 +167,7 @@ cargo tauri build                      # l'INSTALLATEUR NSIS, voir l'avertisseme
 > `%APPDATA%\shimeji-desktop\characters\`, puis le `characters/` du dépôt —
 > qui ne contient plus que `blob`. Voir « Les packs livrés » plus bas.
 
-**Dix-sept variables d'environnement de diagnostic.** Les trois premières ont chacune
+**Dix-huit variables d'environnement de diagnostic.** Les trois premières ont chacune
 servi à démentir une hypothèse fausse — voir « Mesurer le CPU » plus bas ; les autres
 remplacent un clic dans le tray ou dans une fenêtre, ou rendent observable un calcul qui,
 sinon, ne se verrait qu'à l'œil et sur plusieurs minutes :
@@ -190,6 +191,7 @@ sinon, ne se verrait qu'à l'œil et sur plusieurs minutes :
 | `SHIMEJI_MENU_OUVERT=1` | ouvre le **menu du clic droit** du premier personnage dès qu'il est posé ; avec `SHIMEJI_MENU=1`, imprime `menu placé : W×H @ (x, y)` — la preuve que les lignes arrivent au webview, qu'il se mesure et que l'IPC répond |
 | `SHIMEJI_NE_PAS_DERANGER=1` | fait croire que Windows est en **Ne pas déranger** : chaque notification passe par la fenêtre maison (`notif_maison.rs`) au lieu du toast |
 | `SHIMEJI_TEST_NOTIF=1` | (debug) émet la notification de test 3 s après le démarrage — l'équivalent de « Tester une notification » du tray |
+| `SHIMEJI_PLEIN_ECRAN=<n>[,<m>…]` | fait comme si ces écrans (ordre de `screens()`, à partir de 0) étaient pris par un **jeu en plein écran** : leurs personnages déménagent, leur fenêtre d'overlay se ferme ; tous pris = tout caché (`plein_ecran.rs`) |
 
 **Et un fichier témoin** : créer `characters/recharger.txt` déclenche un rechargement à
 chaud, puis le fichier est supprimé.
@@ -897,7 +899,7 @@ ramassant, sautant, puis tombant hors de l'écran. Une poubelle supprime un pack
 du disque. Le reste est inchangé — marche, escalade, attrape-souris, tray,
 `config.json`.
 
-**437 tests.** Et le CPU, mesuré sur le programme réel (release, 60 s, 3 écrans) :
+**447 tests.** Et le CPU, mesuré sur le programme réel (release, 60 s, 3 écrans) :
 
 | Roster | Caché | En marche | dont `shimeji-desktop` | Latence de la file |
 |---|---|---|---|---|

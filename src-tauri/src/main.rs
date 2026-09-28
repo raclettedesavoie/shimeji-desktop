@@ -43,6 +43,7 @@ mod ne_pas_deranger;
 mod notif_maison;
 mod menu_perso;
 mod overlay;
+mod plein_ecran;
 mod probe;
 mod rechargement;
 mod render;
@@ -1275,6 +1276,25 @@ fn boucle(
     // fenêtres que sur CHANGEMENT.
     let mut verrouille = false;
 
+    // Les écrans que des applications en plein écran (un jeu, une vidéo) ont
+    // pris pour elles — voir `plein_ecran.rs`. Mémorisés pour ne tracer que
+    // sur CHANGEMENT.
+    let mut ecrans_pris: Vec<u64> = Vec::new();
+
+    // Vrai quand le plein écran a pris TOUS les écrans : il n'y a plus nulle
+    // part où aller, et les personnages sont cachés comme par le tray.
+    let mut aucun_ecran_habitable = false;
+
+    // `SHIMEJI_PLEIN_ECRAN=<n>[,<m>…]` : fait comme si ces écrans (dans
+    // l'ordre de `screens()`, à partir de 0) étaient pris par un jeu.
+    // L'équivalent scriptable de lancer League of Legends — voir le principe
+    // « tout ce qui demanderait un clic reçoit un équivalent scriptable »
+    // (CLAUDE.md). `None` si la variable est absente : on interroge alors la
+    // sonde. Les morceaux illisibles sont ignorés (`filter_map`).
+    let plein_ecran_force: Option<Vec<usize>> = std::env::var("SHIMEJI_PLEIN_ECRAN")
+        .ok()
+        .map(|v| v.split(',').filter_map(|n| n.trim().parse().ok()).collect());
+
     // Diagnostic : `SHIMEJI_SIGNAUX=1`.
     let trace_signaux = std::env::var("SHIMEJI_SIGNAUX").is_ok();
 
@@ -1580,8 +1600,66 @@ fn boucle(
         // À l'étape 1 c'est la liste des écrans ; à l'étape 4 s'y ajouteront
         // les fenêtres, leur filtrage et l'occlusion.
         if maintenant.saturating_sub(dernier_recensement) >= PERIODE_MONDE {
-            let ecrans = sonde.screens();
+            let tous = sonde.screens();
+
+            // ── Le plein écran : des jeux ont-ils pris des écrans ? ─────
+            //
+            // Un écran pris est simplement RETIRÉ de la liste, et tout le
+            // reste en découle (voir l'en-tête de `plein_ecran.rs`) : son sol
+            // et ses murs quittent le monde, sa fenêtre d'overlay se ferme,
+            // personne n'y apparaît ni n'y entre plus.
+            let pris: Vec<u64> = match &plein_ecran_force {
+                Some(rangs) => rangs.iter().filter_map(|&n| tous.get(n)).map(|e| e.id).collect(),
+                None => sonde.ecrans_en_plein_ecran(),
+            };
+            if pris != ecrans_pris {
+                if pris.is_empty() {
+                    println!("plein écran terminé : les personnages peuvent revenir");
+                } else {
+                    println!("plein écran sur les écrans {pris:?} : les personnages s'en vont");
+                }
+                ecrans_pris = pris.clone();
+            }
+            let ecrans = plein_ecran::ecrans_habitables(&tous, &pris);
+
+            // Tous les écrans sont pris : nulle part où aller. On cache
+            // tout, exactement comme le tray (`visible`, plus bas), et on
+            // garde le monde tel quel — ils continuent de vivre sans qu'on
+            // les voie, et réapparaissent quand un écran se libère.
+            aucun_ecran_habitable = !tous.is_empty() && ecrans.is_empty();
+
             if !ecrans.is_empty() {
+                // Ceux qui sont sur un écran pris, repérés sur l'ANCIEN monde
+                // — le seul où leur plateforme existe encore. On passe par
+                // `world_position` et pas par `pos_connue` : c'est la
+                // décision n° 1, la position se dérive de l'accroche.
+                //
+                // Sauf ceux qu'on tient à la souris (on ne les arrache pas à
+                // la main de l'utilisateur) et ceux qui partent déjà.
+                let ecrans_des_jeux: Vec<&probe::ScreenInfo> =
+                    tous.iter().filter(|e| pris.contains(&e.id)).collect();
+                let a_reloger: Vec<usize> = acteurs
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, a)| a.depart.is_none())
+                    .filter(|(_, a)| {
+                        !matches!(a.ch.attachment, character::attach::Attachment::Dragged)
+                    })
+                    .filter(|(_, a)| {
+                        // Le point de la souris ne sert qu'à `Dragged`,
+                        // écarté juste au-dessus.
+                        match character::attach::world_position(
+                            &a.ch.attachment,
+                            &monde,
+                            geom::Point::new(0.0, 0.0),
+                        ) {
+                            Some(p) => ecrans_des_jeux.iter().any(|e| plein_ecran::est_sur(e, p)),
+                            None => false,
+                        }
+                    })
+                    .map(|(i, _)| i)
+                    .collect();
+
                 monde = world::World::from_screens(&ecrans);
                 // Gardée pour les 60 Hz : c'est elle que l'overlay répartit.
                 ecrans_courants = ecrans.clone();
@@ -1590,10 +1668,50 @@ fn boucle(
                 // de la config, sans redemander les écrans.
                 // Même arrondi qu'au démarrage : brancher un écran d'un
                 // autre DPI ne doit pas rendre le personnage crénelé.
-                ecrans_echelle = character::attach::echelle_ecran_entiere(ecrans[0].scale);
+                //
+                // `tous[0]` et non `ecrans[0]` : si le jeu prend le premier
+                // écran, les personnages ne doivent pas changer de taille en
+                // déménageant.
+                ecrans_echelle = character::attach::echelle_ecran_entiere(tous[0].scale);
                 echelle_affichage = ecrans_echelle
                     * echelle_config
                     * character::attach::facteur_de_taille(petite_appliquee);
+
+                // ── Le déménagement ─────────────────────────────────────
+                //
+                // Chacun retombe du haut d'un AUTRE écran, par le même
+                // chemin qu'une apparition (`point_de_chute`, sur le monde
+                // sans l'écran pris). Les réflexes à 60 Hz font le reste :
+                // chute, atterrissage — décision n° 1, rien d'autre à écrire.
+                //
+                // L'intention est oubliée : elle visait peut-être un mur de
+                // l'écran pris, qui n'existe plus. La tenue, elle, est gardée
+                // — c'est un choix de l'utilisateur, retenu pour
+                // l'atterrissage comme toute action reçue en l'air.
+                for i in a_reloger {
+                    let a = &mut acteurs[i];
+                    let largeur = character::attach::window_size(
+                        &a.ch.manifest,
+                        a.ch.frame_courante(maintenant),
+                        echelle_affichage,
+                    )
+                    .0 as f32;
+                    // `let … else` : le monde n'a plus d'écran — impossible
+                    // ici puisque `ecrans` n'est pas vide, mais on préfère
+                    // le laisser où il est à inventer une position.
+                    let Some(att) = apparition::point_de_chute(&monde, largeur, &mut rng) else {
+                        continue;
+                    };
+                    // `pos_connue` doit valoir le point de chute : c'est lui
+                    // qui amorce une chute (voir son commentaire dans
+                    // `character/mod.rs`), comme à l'apparition.
+                    if let character::attach::Attachment::Falling { pos, .. } = att {
+                        a.ch.pos_connue = pos;
+                    }
+                    a.ch.attachment = att;
+                    a.ch.intention = None;
+                    println!("« {} » quitte l'écran du jeu (id {})", a.nom, a.id);
+                }
             }
 
             // Le fichier témoin : présent → on demande un rechargement du
@@ -1806,6 +1924,33 @@ fn boucle(
         // traînerait visiblement derrière le curseur pendant un glisser.
         let m = sonde.mouse();
 
+        // Caché par l'utilisateur, session verrouillée, OU aucun écran
+        // habitable (un jeu en plein écran sur le seul écran) : on calcule
+        // tout, on ne dessine rien. Lu une fois, il vaut pour tous les acteurs.
+        //
+        // Le comportement, lui, continue de tourner : il doit avancer pour
+        // qu'on le retrouve ailleurs en le réaffichant, et c'est du calcul
+        // pur — mesuré à 100 µs par image quand il ne se passe rien.
+        //
+        // Ce qui coûte, c'est `SetWindowPos` sur une fenêtre en couche (voir
+        // « Mesurer le CPU » dans CLAUDE.md), et c'est exactement ce qu'on
+        // saute. Le verrouillage emprunte EXACTEMENT ce même chemin, déjà
+        // mesuré à 0,9 %.
+        //
+        // ⚠️ **Calculé ICI, avant l'élection, et pas plus bas.** Jusqu'au
+        // 2026-09-28 il l'était après, et l'élection l'ignorait : un
+        // personnage CACHÉ continuait de marcher avec une hitbox bien réelle.
+        // Un clic droit tombant dessus — fréquent dans un jeu où l'on clique
+        // droit partout — ouvrait le menu, qui prenait le premier plan et
+        // renvoyait le joueur sur le bureau. Un clic gauche l'attrapait à
+        // l'aveugle. Invisible veut dire intouchable.
+        //
+        // `Ordering::Relaxed` : il n'y a aucune autre donnée à synchroniser
+        // avec ce booléen, seulement sa propre valeur.
+        let visible = visibilite.load(std::sync::atomic::Ordering::Relaxed)
+            && !verrouille
+            && !aucun_ecran_habitable;
+
         // ── L'élection : UN SEUL personnage sous le curseur ─────────────
         //
         // Le hit-testing compare le curseur à la hitbox de la POSE COURANTE
@@ -1813,7 +1958,13 @@ fn boucle(
         // personnage serait un trou noir de 128 px avalant les clics dans
         // ses zones transparentes. `elire_sous_le_curseur` le fait pour
         // chaque acteur, et n'en retient qu'un.
-        let elu = elire_sous_le_curseur(&acteurs, maintenant, &monde, m.pos, echelle_affichage);
+        //
+        // Caché, personne n'est élu : ni menu, ni attrape, ni absorption.
+        let elu = if visible {
+            elire_sous_le_curseur(&acteurs, maintenant, &monde, m.pos, echelle_affichage)
+        } else {
+            None
+        };
 
         // Le front descendant du bouton droit : calculé UNE fois, avant la
         // boucle, parce qu'il n'y a qu'une souris.
@@ -2045,21 +2196,8 @@ fn boucle(
             _ => {}
         }
 
-        // Caché par l'utilisateur, OU session verrouillée : on calcule tout,
-        // on ne dessine rien. Lu une fois, il vaut pour tous les acteurs.
-        //
-        // Le comportement, lui, continue de tourner : il doit avancer pour
-        // qu'on le retrouve ailleurs en le réaffichant, et c'est du calcul
-        // pur — mesuré à 100 µs par image quand il ne se passe rien.
-        //
-        // Ce qui coûte, c'est `SetWindowPos` sur une fenêtre en couche (voir
-        // « Mesurer le CPU » dans CLAUDE.md), et c'est exactement ce qu'on
-        // saute. Le verrouillage emprunte EXACTEMENT ce même chemin, déjà
-        // mesuré à 0,9 %.
-        //
-        // `Ordering::Relaxed` : il n'y a aucune autre donnée à synchroniser
-        // avec ce booléen, seulement sa propre valeur.
-        let visible = visibilite.load(std::sync::atomic::Ordering::Relaxed) && !verrouille;
+        // `visible` a été calculé plus haut, avant l'élection sous le curseur
+        // — voir là-bas pourquoi.
 
         // Les sprites de cette image, tous acteurs confondus. Remplace les
         // trois appels Windows par personnage (`dimensionner`, `placer`,

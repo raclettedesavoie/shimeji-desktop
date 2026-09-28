@@ -68,11 +68,24 @@ pub fn activer_conscience_dpi() {
     }
 }
 
-pub struct Win32Probe;
+pub struct Win32Probe {
+    /// Les fenêtres vues en plein écran AU PREMIER PLAN, et qui couvrent
+    /// encore leur écran — chacune en entier (`HWND` converti). Voir
+    /// `ecrans_en_plein_ecran`.
+    ///
+    /// `Mutex` : le trait n'expose que `&self`, il faut donc une mutabilité
+    /// intérieure. `RefCell` ferait l'affaire aujourd'hui, mais rendrait la
+    /// sonde non partageable entre threads (`!Sync`) sans que rien ne le
+    /// signale à l'endroit où on la crée. Le verrou n'est jamais disputé :
+    /// seule la boucle interroge la sonde.
+    fenetres_plein_ecran: Mutex<Vec<isize>>,
+}
 
 impl Win32Probe {
     pub fn new() -> Self {
-        Win32Probe
+        Win32Probe {
+            fenetres_plein_ecran: Mutex::new(Vec::new()),
+        }
     }
 }
 
@@ -428,6 +441,181 @@ impl SystemProbe for Win32Probe {
             latence_file: std::time::Duration::ZERO,
         }
     }
+
+    /// Deux temps, et c'est le second qui compte à l'usage :
+    ///
+    /// 1. **La fenêtre au premier plan est en plein écran** → elle rejoint
+    ///    les fenêtres mémorisées.
+    /// 2. **Chaque fenêtre mémorisée couvre-t-elle toujours son écran ?** Si
+    ///    oui, cet écran est pris ; sinon elle est oubliée.
+    ///
+    /// Les fenêtres s'ADDITIONNENT : avec un plein écran sur chaque écran,
+    /// les deux sont pris, et les personnages se cachent. La première
+    /// version n'en retenait qu'une — le premier temps REMPLAÇAIT la
+    /// mémoire —, et chaque clic faisait passer les personnages d'un écran à
+    /// l'autre, par-dessus la vidéo qu'on venait de quitter.
+    ///
+    /// Sans le second temps, un Alt-Tab du jeu vers une fenêtre de l'AUTRE
+    /// écran — pendant un chargement, par exemple — rendrait l'écran du jeu
+    /// aux personnages, rouvrirait sa fenêtre d'overlay (un gel bref, voir
+    /// CLAUDE.md « Une fenêtre par écran »), puis la refermerait au retour
+    /// dans le jeu. L'écran ne se libère donc que quand le jeu se ferme, se
+    /// réduit (Alt-Tab d'un plein écran exclusif), ou cesse de couvrir l'écran.
+    ///
+    /// Assumé : un navigateur ouvert PAR-DESSUS le jeu, sur le même écran,
+    /// ne libère pas l'écran — le jeu le couvre toujours derrière lui.
+    fn ecrans_en_plein_ecran(&self) -> Vec<u64> {
+        // `unwrap_or_else(|e| e.into_inner())` : si un thread avait paniqué
+        // en tenant le verrou, il serait « empoisonné ». On reprend quand
+        // même la liste — au pire périmée, et le second temps la nettoie —
+        // plutôt que de faire paniquer la boucle à son tour.
+        let mut memoire = self
+            .fenetres_plein_ecran
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+
+        // ── 1. Le premier plan ──────────────────────────────────────────
+        let premier_plan = unsafe { GetForegroundWindow() };
+        let entier = premier_plan.0 as isize;
+        if ecran_couvert_par(premier_plan).is_some() && !memoire.contains(&entier) {
+            memoire.push(entier);
+        }
+
+        // ── 2. Celles qui couvrent encore leur écran ────────────────────
+        //
+        // `retain` garde les éléments pour lesquels la fermeture rend
+        // `true`, et retire les autres — sur place. La fermeture en profite
+        // pour noter l'écran de chaque fenêtre gardée.
+        //
+        // `HWND(... as *mut c_void)` : on refait un handle depuis l'entier
+        // mémorisé. Aucun risque même si la fenêtre a été détruite
+        // entre-temps : les fonctions interrogées échouent proprement sur un
+        // handle mort, et `ecran_couvert_par` rend `None`.
+        let mut ecrans: Vec<u64> = Vec::new();
+        memoire.retain(|&h| match ecran_couvert_par(HWND(h as *mut core::ffi::c_void)) {
+            Some(id) => {
+                // Deux fenêtres plein écran sur le même écran : un seul id.
+                if !ecrans.contains(&id) {
+                    ecrans.push(id);
+                }
+                true
+            }
+            None => false,
+        });
+        ecrans
+    }
+}
+
+// ── Le plein écran (demande de l'auteur, 2026-09-28) ────────────────────
+//
+// Toutes les fonctions ci-dessous sont dans `Win32_UI_WindowsAndMessaging`
+// et `Win32_Graphics_Gdi`, déjà activées dans `Cargo.toml`. `DWMWA_CLOAKED`
+// (fenêtres fantômes, piège Windows n° 2) n'est PAS testé : il demanderait la
+// feature `Win32_Graphics_Dwm`, et une fenêtre au premier plan qui couvre un
+// écran n'est pas un fantôme.
+
+use std::sync::Mutex;
+use windows::Win32::Foundation::HWND;
+use windows::Win32::Graphics::Gdi::{MonitorFromWindow, MONITOR_DEFAULTTONULL};
+use windows::Win32::System::Threading::GetCurrentProcessId;
+use windows::Win32::UI::WindowsAndMessaging::{
+    GetClassNameW, GetShellWindow, GetWindowRect, IsIconic, IsWindowVisible, IsZoomed,
+};
+
+/// L'écran que `hwnd` recouvre entièrement, s'il en recouvre un et qu'il
+/// ressemble à une application en plein écran. `None` dans tous les autres
+/// cas, y compris un handle nul ou mort.
+fn ecran_couvert_par(hwnd: HWND) -> Option<u64> {
+    if hwnd.is_invalid() {
+        return None;
+    }
+
+    // SÉCURITÉ : on ne fait qu'INTERROGER des fenêtres par leur handle.
+    // Aucun pointeur ne sort de ce bloc, et un handle périmé fait échouer
+    // les appels au lieu de corrompre quoi que ce soit.
+    unsafe {
+        // ── Les fenêtres qu'on écarte d'emblée ──────────────────────────
+        //
+        // Invisible ou réduite : elle ne couvre rien.
+        //
+        // ⚠️ Agrandie (`IsZoomed`), elle n'est PAS écartée ici : Chrome en
+        // plein écran garde cet état. C'est `est_en_plein_ecran`, plus bas,
+        // qui départage — voir là-bas le relevé qui l'a montré.
+        if !IsWindowVisible(hwnd).as_bool() || IsIconic(hwnd).as_bool() {
+            return None;
+        }
+
+        // Le bureau lui-même couvre l'écran : cliquer sur le fond d'écran le
+        // met au premier plan. Sans ce test, cliquer sur le bureau
+        // chasserait les personnages de l'écran… où ils vivent.
+        if hwnd == GetShellWindow() || est_le_bureau(hwnd) {
+            return None;
+        }
+
+        // Nos propres fenêtres : celles des écrans font la taille de leur
+        // écran. Elles ne prennent jamais le premier plan
+        // (`WS_EX_NOACTIVATE`), mais la fenêtre mémorisée n'est pas forcément
+        // celle du premier plan — on préfère ne pas dépendre de ce détail.
+        let mut pid: u32 = 0;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        if pid == GetCurrentProcessId() {
+            return None;
+        }
+
+        // ── La fenêtre couvre-t-elle son écran ? ────────────────────────
+        //
+        // `GetWindowRect` et non les bornes DWM (piège Windows n° 1) : une
+        // fenêtre plein écran n'a pas de bordure invisible, et un
+        // éventuel débordement va dans le bon sens pour `couvre`.
+        let mut r = RECT::default();
+        if GetWindowRect(hwnd, &mut r).is_err() {
+            return None;
+        }
+
+        // `MONITOR_DEFAULTTONULL` : une fenêtre hors de tout écran n'en
+        // prend aucun, plutôt que de se voir attribuer le plus proche.
+        let moniteur = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONULL);
+        if moniteur.is_invalid() {
+            return None;
+        }
+        let mut info = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        if !GetMonitorInfoW(moniteur, &mut info).as_bool() {
+            return None;
+        }
+
+        let agrandie = IsZoomed(hwnd).as_bool();
+        if !crate::plein_ecran::est_en_plein_ecran(
+            rect_depuis_win32(r),
+            rect_depuis_win32(info.rcMonitor),
+            agrandie,
+        ) {
+            return None;
+        }
+
+        // Même identité que dans `collecte_moniteur` : c'est ce qui permet
+        // de retrouver l'écran dans la liste de `screens()`.
+        Some(moniteur.0 as usize as u64)
+    }
+}
+
+/// La fenêtre est-elle le fond du bureau ? `Progman` est le bureau classique ;
+/// `WorkerW` est la fenêtre que l'explorateur glisse derrière les icônes
+/// (fonds d'écran animés, transition de fond d'écran). Les deux font la
+/// taille de l'écran, et prennent le premier plan quand on clique dessus.
+fn est_le_bureau(hwnd: HWND) -> bool {
+    let mut tampon = [0u16; 32];
+    // `GetClassNameW` rend le nombre de caractères écrits, 0 en cas d'échec
+    // — dont un handle mort. SÉCURITÉ : Windows écrit dans `tampon`, dont la
+    // tranche lui transmet la taille ; il ne peut pas déborder.
+    let n = unsafe { GetClassNameW(hwnd, &mut tampon) };
+    if n <= 0 {
+        return false;
+    }
+    let classe = String::from_utf16_lossy(&tampon[..n as usize]);
+    classe == "Progman" || classe == "WorkerW"
 }
 
 /// Imprime ce que la sonde voit. Diagnostic de développement, l'équivalent de

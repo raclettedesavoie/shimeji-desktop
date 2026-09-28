@@ -149,4 +149,18 @@ pub trait SystemProbe {
     /// ne bouge vite, et cinq appels système à 60 Hz seraient 300 appels par
     /// seconde pour des valeurs qui changent toutes les minutes.
     fn signaux(&self) -> Signaux;
+
+    /// Les écrans (leurs `ScreenInfo::id`) que des applications en plein
+    /// écran — un jeu, une vidéo — ont pris pour elles. Vide s'il n'y en a
+    /// aucun. Voir `plein_ecran.rs` pour ce qu'on en fait.
+    ///
+    /// ⚠️ **Une liste, et pas un seul écran.** La première version n'en
+    /// retenait qu'un : avec un plein écran sur CHAQUE écran, cliquer dans
+    /// l'un relâchait l'autre, et les personnages y tombaient par-dessus la
+    /// vidéo — à chaque clic, d'un écran à l'autre (2026-09-28).
+    ///
+    /// Lue au rythme du recensement (~8 Hz) : c'est là qu'on a besoin de la
+    /// liste des écrans, et une poignée d'appels système à 8 Hz ne coûte
+    /// rien à côté des déplacements (CLAUDE.md, « Mesurer le CPU »).
+    fn ecrans_en_plein_ecran(&self) -> Vec<u64>;
 }

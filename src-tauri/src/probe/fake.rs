@@ -19,6 +19,10 @@ pub struct FakeProbe {
     // de l'application active. `Cell::get` exige `Copy` ; `RefCell` prête à
     // la place, au prix d'un compteur d'emprunts vérifié à l'exécution.
     signaux: RefCell<Signaux>,
+
+    // Les écrans « pris par un jeu ». `RefCell` et non `Cell` : un `Vec`
+    // n'est pas `Copy`, même raison que pour `signaux`.
+    plein_ecran: RefCell<Vec<u64>>,
 }
 
 // `allow(dead_code)` : ces éléments SONT utilisés — par les tests. Mais un
@@ -51,6 +55,9 @@ impl FakeProbe {
                 session_verrouillee: false,
                 latence_file: std::time::Duration::ZERO,
             }),
+
+            // Aucun plein écran par défaut, pour la même raison.
+            plein_ecran: RefCell::new(Vec::new()),
         }
     }
 
@@ -140,6 +147,10 @@ impl FakeProbe {
     pub fn set_inactivite(&self, d: std::time::Duration) {
         self.signaux.borrow_mut().inactivite = d;
     }
+
+    pub fn set_plein_ecran(&self, ecrans: Vec<u64>) {
+        *self.plein_ecran.borrow_mut() = ecrans;
+    }
 }
 
 impl SystemProbe for FakeProbe {
@@ -156,6 +167,10 @@ impl SystemProbe for FakeProbe {
         // `Copy`. Deux fois par seconde, une chaîne de vingt caractères —
         // sans importance.
         self.signaux.borrow().clone()
+    }
+
+    fn ecrans_en_plein_ecran(&self) -> Vec<u64> {
+        self.plein_ecran.borrow().clone()
     }
 }
 
