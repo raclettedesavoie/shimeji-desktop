@@ -508,14 +508,22 @@ impl SystemProbe for Win32Probe {
 
 // ── Le plein écran (demande de l'auteur, 2026-09-28) ────────────────────
 //
-// Toutes les fonctions ci-dessous sont dans `Win32_UI_WindowsAndMessaging`
-// et `Win32_Graphics_Gdi`, déjà activées dans `Cargo.toml`. `DWMWA_CLOAKED`
-// (fenêtres fantômes, piège Windows n° 2) n'est PAS testé : il demanderait la
-// feature `Win32_Graphics_Dwm`, et une fenêtre au premier plan qui couvre un
-// écran n'est pas un fantôme.
+// Toutes les fonctions ci-dessous sont dans `Win32_UI_WindowsAndMessaging`,
+// `Win32_Graphics_Gdi` et `Win32_Graphics_Dwm`, activées dans `Cargo.toml`.
+//
+// ⚠️ `DWMWA_CLOAKED` (fenêtres fantômes, piège Windows n° 2) est testé, et
+// ce n'était pas le cas de la première version, qui supposait qu'« une
+// fenêtre au premier plan qui couvre un écran n'est pas un fantôme ». Faux,
+// constaté le 2026-10-29 : « Expérience d'entrée Windows » (`TextInputHost`,
+// le panneau de Win+V et Win+.) fait EXACTEMENT la taille de l'écran
+// principal, se dit visible, prend le premier plan quand on l'ouvre — puis
+// reste là, masquée par le compositeur, une fois refermée. Mémorisée au
+// passage, elle « couvrait » son écran pour toujours : l'écran de gauche
+// n'était plus jamais rendu aux personnages.
 
 use std::sync::Mutex;
 use windows::Win32::Foundation::HWND;
+use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
 use windows::Win32::Graphics::Gdi::{MonitorFromWindow, MONITOR_DEFAULTTONULL};
 use windows::Win32::System::Threading::GetCurrentProcessId;
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -542,6 +550,26 @@ fn ecran_couvert_par(hwnd: HWND) -> Option<u64> {
         // plein écran garde cet état. C'est `est_en_plein_ecran`, plus bas,
         // qui départage — voir là-bas le relevé qui l'a montré.
         if !IsWindowVisible(hwnd).as_bool() || IsIconic(hwnd).as_bool() {
+            return None;
+        }
+
+        // Masquée par le compositeur (piège Windows n° 2) : elle se dit
+        // visible, mais rien n'est dessiné. Voir le bandeau plus haut pour
+        // la fenêtre qui l'a montré.
+        //
+        // `DwmGetWindowAttribute` écrit dans un tampon dont on lui donne
+        // l'adresse et la taille : d'où le `*mut u32` converti en pointeur
+        // générique (`c_void`). 0 = affichée, toute autre valeur = masquée
+        // (par l'application, par le shell, ou par un bureau virtuel). Si
+        // l'appel échoue, on ne conclut rien et on continue.
+        let mut masquee: u32 = 0;
+        let lue = DwmGetWindowAttribute(
+            hwnd,
+            DWMWA_CLOAKED,
+            &mut masquee as *mut u32 as *mut core::ffi::c_void,
+            std::mem::size_of::<u32>() as u32,
+        );
+        if lue.is_ok() && masquee != 0 {
             return None;
         }
 
