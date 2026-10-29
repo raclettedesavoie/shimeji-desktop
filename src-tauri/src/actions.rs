@@ -314,6 +314,12 @@ impl Actions {
     /// marcherait peut-être ; le renvoyer là où il a toujours tourné évite
     /// d'avoir à le vérifier cas par cas.
     ///
+    /// ⚠️ **Ne remet à plus tard QUE si l'appelant n'est pas déjà sur le
+    /// thread principal.** Sinon `run_on_main_thread` exécute sur le champ
+    /// (`tauri-runtime-wry` 2.11.4, `lib.rs:239`). D'où la commande
+    /// `choisir_entree_menu` en `async` : synchrone, elle ouvrait le
+    /// catalogue au milieu du message du menu, et il restait vide.
+    ///
     /// `self: Arc<Self>` : la fermeture part vers un autre thread et doit
     /// posséder ce qu'elle emporte — une référence `&self` n'y survivrait pas.
     pub fn executer_choix_du_menu(self: Arc<Self>, app: AppHandle, id: &'static str) {

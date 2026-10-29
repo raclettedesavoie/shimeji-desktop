@@ -380,8 +380,13 @@ pub fn onboarding_etat() -> EtatOnboarding {
 /// `EcranDemarrage::depuis_json` est **totale** (tout inconnu vaut
 /// `Personnages`), donc il n'y a rien à valider deux fois, et une
 /// désérialisation qui échouerait côté Tauri donnerait un message illisible.
+///
+/// ⚠️ **`async`** pour la même raison que `choisir_entree_menu` : l'écran
+/// « gestionnaire » ouvre le catalogue, et une commande synchrone le
+/// créerait sur le thread principal, au milieu du message du webview de
+/// l'assistant — une fenêtre vide et figée.
 #[tauri::command]
-pub fn onboarding_terminer(
+pub async fn onboarding_terminer(
     app: AppHandle,
     actions: tauri::State<'_, std::sync::Arc<crate::actions::Actions>>,
     demarrage_auto: bool,
@@ -454,12 +459,28 @@ pub fn placer_menu(app: tauri::AppHandle, largeur: f32, hauteur: f32) {
 ///
 /// `id_connu` : on n'exécute que nos identifiants, jamais une chaîne
 /// arbitraire venue d'un webview.
+///
+/// ⚠️⚠️ **`async`, et ce n'est pas décoratif** (2026-10-29). Une commande
+/// SYNCHRONE, Tauri l'exécute sur le thread principal, au milieu du
+/// traitement du message venu du webview du menu. Et `run_on_main_thread`,
+/// appelé DEPUIS le thread principal, n'attend pas son tour : il exécute sur
+/// le champ (`tauri-runtime-wry` 2.11.4, `lib.rs:239`). « Catalogue de
+/// personnages… » créait donc une fenêtre WebView2 pendant qu'un autre
+/// webview attendait encore la réponse à son clic — le blocage que Tauri
+/// documente sous Windows : la fenêtre s'ouvrait vide, figée.
+///
+/// `async`, la commande tourne sur un thread du runtime : `run_on_main_thread`
+/// poste alors VRAIMENT, et `executer` s'exécute plus tard, une fois le
+/// message du menu rendu — comme depuis le tray, qui n'a jamais eu le défaut.
+///
+/// `Result` : Tauri l'exige d'une commande `async` qui emprunte un `State`
+/// (la durée de vie `'_`). Elle ne rend jamais d'erreur.
 #[tauri::command]
-pub fn choisir_entree_menu(
+pub async fn choisir_entree_menu(
     app: tauri::AppHandle,
     actions: tauri::State<'_, std::sync::Arc<crate::actions::Actions>>,
     id: String,
-) {
+) -> Result<(), String> {
     crate::menu_fenetre::fermer(&app);
     match crate::menu_perso::id_connu(&id) {
         // `inner().clone()` : un `Arc` de plus sur les mêmes actions — la
@@ -467,6 +488,7 @@ pub fn choisir_entree_menu(
         Some(id) => actions.inner().clone().executer_choix_du_menu(app, id),
         None => eprintln!("menu : identifiant inconnu « {id} », ignoré"),
     }
+    Ok(())
 }
 
 /// Clic ailleurs ou Échap.
