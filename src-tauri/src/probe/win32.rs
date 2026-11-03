@@ -238,6 +238,24 @@ fn appli_active() -> Option<String> {
         return None;
     }
 
+    // ── Jamais la main sur un jeu en plein écran ────────────────────────
+    //
+    // Une application qui occupe tout son écran (un jeu) n'a PAS de nom
+    // rendu : on n'ouvre jamais son processus. Le 2026-11-03, Vanguard (l'anti-
+    // triche de League of Legends) a coupé une partie par « Vanguard needs to
+    // be running », alors que cette fonction ouvrait le processus du jeu deux
+    // fois par seconde. Rien ne prouve que ce soit la cause — ses journaux
+    // sont chiffrés — mais ce nom ne sert à rien pendant un jeu : les
+    // personnages ont déjà quitté son écran (`plein_ecran.rs`). Le retirer ne
+    // coûte rien, et Shimeji ne touche plus du tout au processus du jeu.
+    //
+    // `ecran_couvert_par` ne lit que la fenêtre (rectangle, état, écran),
+    // jamais le processus : c'est la même détection que celle qui fait
+    // déménager les personnages, donc les deux ne peuvent pas se contredire.
+    if ecran_couvert_par(hwnd).is_some() {
+        return None;
+    }
+
     let mut pid: u32 = 0;
     unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
     if pid == 0 {
